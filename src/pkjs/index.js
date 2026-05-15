@@ -6,7 +6,7 @@ var MAX_ROWS = 20;
 var INITIAL_MESSAGE_ROWS = 8;
 var OLDER_MESSAGE_ROWS = 6;
 var MAX_MESSAGE_ROWS = 10;
-var MAX_MESSAGE_TEXT = 300;
+var MAX_MESSAGE_TEXT = 340;
 var IMAGE_SIZE = 120;
 var IMAGE_WIDTH = 130;
 var IMAGE_COLORS = 64;
@@ -67,7 +67,7 @@ function configureForPlatform() {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 520;
+    MAX_MESSAGE_TEXT = 512;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
     IMAGE_MAX_BYTES = 20000;
@@ -76,7 +76,7 @@ function configureForPlatform() {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 520;
+    MAX_MESSAGE_TEXT = 512;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 20000;
@@ -124,8 +124,16 @@ function isAvatarTransferPayload(payload) {
   return type === 'avatar_start' || type === 'avatar' || type === 'avatar_done';
 }
 
+function isImageTransferPayload(payload) {
+  var type = payload && payload[MessageKeys.Type];
+  return type === 'image_start' || type === 'image' || type === 'image_done' || type === 'image_error';
+}
+
 function cancelQueuedImageTransfers() {
   imageRequestSeq += 1;
+  sendQueue = sendQueue.filter(function(entry, index) {
+    return index === 0 && sending ? true : !isImageTransferPayload(entry.payload);
+  });
 }
 
 function cancelQueuedAvatarTransfers() {
@@ -202,6 +210,22 @@ function clampText(value, maxLength) {
   return value.substring(0, maxLength - 1);
 }
 
+function watchText(value, maxLength) {
+  value = String(value || '')
+    .replace(/[\u200b-\u200f\ufeff]/g, '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/(https?:\/\/|www\.)[^\s]+/ig, function(url) {
+      var match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/?#]+)/i);
+      return match ? '[Link] ' + match[1] : '[Link]';
+    })
+    .replace(/[^\s]{36,}/g, function(token) {
+      return token.substring(0, 28) + '...';
+    })
+    .trim();
+  return clampText(value, maxLength);
+}
+
 function payloadValue(payload, name) {
   if (!payload) {
     return undefined;
@@ -236,7 +260,10 @@ function sendMessageRows(messages) {
     payload[MessageKeys.Count] = Math.min(messages.length, MAX_MESSAGE_ROWS);
     payload[MessageKeys.MessageId] = clampText(message.id, 23);
     payload[MessageKeys.Sender] = clampText(message.sender, 35);
-    payload[MessageKeys.Text] = clampText(message.text, MAX_MESSAGE_TEXT);
+    payload[MessageKeys.Text] = watchText(message.text, MAX_MESSAGE_TEXT);
+    if (message.reactions) {
+      payload[MessageKeys.Reactions] = clampText(message.reactions, 15);
+    }
     payload[MessageKeys.IsOutgoing] = message.outgoing ? 1 : 0;
     if (message.image_token) {
       payload[MessageKeys.ImageToken] = String(message.image_token);
@@ -251,6 +278,65 @@ function sendMessageRows(messages) {
 
 function rememberMessages(chatId, messages) {
   messageStore[chatId] = messages.slice(Math.max(0, messages.length - MAX_MESSAGE_ROWS));
+}
+
+function mergeMessages(existing, incoming, allowAppend, trimNewest) {
+  var byId = {};
+  var merged = [];
+  var changed = false;
+
+  existing.forEach(function(message) {
+    byId[message.id] = message;
+    merged.push(message);
+  });
+
+  incoming.forEach(function(message) {
+    var previous = byId[message.id];
+    if (previous) {
+      if (messageSignature([previous]) !== messageSignature([message])) {
+        for (var i = 0; i < merged.length; i += 1) {
+          if (merged[i].id === message.id) {
+            merged[i] = message;
+            changed = true;
+            break;
+          }
+        }
+      }
+      return;
+    }
+    if (!allowAppend) {
+      return;
+    }
+    byId[message.id] = message;
+    merged.push(message);
+    changed = true;
+  });
+
+  if (trimNewest && merged.length > MAX_MESSAGE_ROWS) {
+    merged = merged.slice(merged.length - MAX_MESSAGE_ROWS);
+    changed = true;
+  }
+
+  return {
+    messages: merged,
+    changed: changed
+  };
+}
+
+function storedWindowTouchesNewestTail(existing, latest) {
+  if (!existing || existing.length === 0) {
+    return true;
+  }
+  if (!latest || latest.length === 0) {
+    return false;
+  }
+  var newestKnownId = existing[existing.length - 1].id;
+  for (var i = 0; i < latest.length; i += 1) {
+    if (latest[i].id === newestKnownId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function sendStoredMessages(chatId) {
@@ -347,10 +433,19 @@ function refreshOpenChat() {
       return;
     }
     currentChatSignature = signature;
-    rememberMessages(chatId, messages || []);
-    markRead(chatId);
-    sendMessageRows(messages);
-    done('messages_done', Math.min(messages.length, INITIAL_MESSAGE_ROWS));
+    var existing = messageStore[chatId] || [];
+    var attachedToNewest = storedWindowTouchesNewestTail(existing, messages);
+    var merged = mergeMessages(existing, messages, attachedToNewest, attachedToNewest);
+    if (attachedToNewest) {
+      messageStore[chatId] = merged.messages;
+      markRead(chatId);
+      sendMessageRows(messageStore[chatId]);
+      done('messages_done', Math.min(messageStore[chatId].length, MAX_MESSAGE_ROWS));
+    } else if (merged.changed) {
+      messageStore[chatId] = merged.messages;
+      sendMessageRows(messageStore[chatId]);
+      done('messages_done', Math.min(messageStore[chatId].length, MAX_MESSAGE_ROWS));
+    }
     scheduleOpenChatRefresh();
   }).catch(function(err) {
     console.log('Open chat refresh failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
@@ -373,7 +468,7 @@ function leaveChat(chatId) {
 
 function messageSignature(messages) {
   return messages.map(function(message) {
-    return [message.id, message.text, message.image_token || '', message.outgoing ? '1' : '0'].join('|');
+    return [message.id, message.text, message.reactions || '', message.image_token || '', message.outgoing ? '1' : '0'].join('|');
   }).join('~');
 }
 

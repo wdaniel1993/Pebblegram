@@ -45,8 +45,7 @@ function objectName(value) {
 
 function messagePhoto(message) {
   var media = message && message.media;
-  var webpage = media && (media.webpage || media.webPage);
-  return (message && message.photo) || (media && media.photo) || (webpage && webpage.photo) || null;
+  return (message && message.photo) || (media && media.photo) || null;
 }
 
 function photoDimensions(message) {
@@ -109,6 +108,33 @@ function hasDocumentAttribute(document, name) {
   return null;
 }
 
+function documentDimensions(message) {
+  var document = messageDocument(message);
+  var attrs = documentAttributes(document);
+  for (var i = 0; i < attrs.length; i += 1) {
+    var attr = attrs[i];
+    var width = attr && (attr.w || attr.width);
+    var height = attr && (attr.h || attr.height);
+    if (width && height) {
+      return {width: width, height: height};
+    }
+  }
+  return null;
+}
+
+function isPngBytes(bytes) {
+  return bytes && bytes.length > 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+}
+
+function isJpegBytes(bytes) {
+  return bytes && bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8;
+}
+
+function isPreviewImageBytes(bytes) {
+  return isPngBytes(bytes) || isJpegBytes(bytes);
+}
+
 function isGif(message) {
   var document = messageDocument(message);
   var file = message && message.file;
@@ -116,6 +142,19 @@ function isGif(message) {
     return !!(hasDocumentAttribute(document, 'Animated') || document.mimeType === 'image/gif');
   }
   return !!(file && file.mimeType === 'image/gif');
+}
+
+function isVideo(message) {
+  var document = messageDocument(message);
+  var file = message && message.file;
+  if (document) {
+    return !!(hasDocumentAttribute(document, 'Video') || (document.mimeType || '').indexOf('video/') === 0);
+  }
+  return !!(file && (file.mimeType || '').indexOf('video/') === 0);
+}
+
+function hasPreviewableStill(message) {
+  return isGif(message) || isVideo(message);
 }
 
 function compactMediaLabel(label, detail) {
@@ -190,7 +229,7 @@ function mediaLabel(message) {
     return compactMediaLabel('GIF', fileName);
   }
   if (hasDocumentAttribute(document, 'Video') || mimeType.indexOf('video/') === 0) {
-    return compactMediaLabel('Video', fileName);
+    return compactMediaLabel('Video preview', fileName);
   }
   if (audioAttr || mimeType.indexOf('audio/') === 0) {
     return compactMediaLabel(audioAttr && audioAttr.voice ? 'Voice' : 'Audio', fileName || (audioAttr && audioAttr.title));
@@ -211,7 +250,123 @@ function displayChatMessageText(message) {
   if (hasPhoto(message)) {
     return messageText(message);
   }
+  if (isGif(message)) {
+    var gifText = messageText(message);
+    return gifText ? compactMediaLabel('GIF preview') + ' ' + gifText : compactMediaLabel('GIF preview');
+  }
+  if (isVideo(message)) {
+    var videoText = messageText(message);
+    return videoText ? compactMediaLabel('Video preview') + ' ' + videoText : compactMediaLabel('Video preview');
+  }
   return displayMessageText(message);
+}
+
+function pushMediaPreviewCandidate(candidates, candidate) {
+  if (!candidate) {
+    return;
+  }
+  if (Array.isArray(candidate)) {
+    for (var i = 0; i < candidate.length; i += 1) {
+      pushMediaPreviewCandidate(candidates, candidate[i]);
+    }
+    return;
+  }
+  candidates.push(candidate);
+}
+
+function mediaPreviewArea(candidate) {
+  var width = candidate && (candidate.w || candidate.width);
+  var height = candidate && (candidate.h || candidate.height);
+  return (width || 0) * (height || 0);
+}
+
+function mediaPreviewCandidates(message) {
+  var media = message && message.media;
+  var document = messageDocument(message);
+  var extendedMedia = media && (media.extendedMedia || media.extended_media);
+  var candidates = [];
+
+  pushMediaPreviewCandidate(candidates, media && (media.videoCover || media.video_cover));
+  pushMediaPreviewCandidate(candidates, extendedMedia && extendedMedia.thumb);
+  pushMediaPreviewCandidate(candidates, document && document.thumbs);
+  pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
+  candidates.sort(function(a, b) {
+    return mediaPreviewArea(b) - mediaPreviewArea(a);
+  });
+  return candidates;
+}
+
+function previewThumbOption(candidate) {
+  if (!candidate) {
+    return null;
+  }
+  return candidate.type || candidate.size || candidate;
+}
+
+function looksLikePhoto(candidate) {
+  var name = objectName(candidate);
+  return !!(candidate && !candidate.type && (name.indexOf('Photo') !== -1 || candidate.sizes));
+}
+
+function downloadImageBytes(client, target, options) {
+  return client.downloadMedia(target, options || {}).then(function(bytes) {
+    if (isPreviewImageBytes(bytes)) {
+      return bytes;
+    }
+    throw new Error('media preview was not an image');
+  });
+}
+
+function downloadMediaPreviewCandidate(client, message, candidate) {
+  var media = message && message.media;
+  var option = previewThumbOption(candidate);
+  var attempts = [];
+  var target = 0;
+
+  if (looksLikePhoto(candidate)) {
+    attempts.push(function() {
+      return downloadImageBytes(client, candidate, {});
+    });
+  }
+  if (option) {
+    attempts.push(function() {
+      return downloadImageBytes(client, message, {thumb: option});
+    });
+    if (media) {
+      attempts.push(function() {
+        return downloadImageBytes(client, media, {thumb: option});
+      });
+    }
+  }
+  attempts.push(function() {
+    return downloadImageBytes(client, message, {thumb: candidate});
+  });
+  if (media) {
+    attempts.push(function() {
+      return downloadImageBytes(client, media, {thumb: candidate});
+    });
+  }
+
+  function tryNext() {
+    if (target >= attempts.length) {
+      throw new Error('no usable media preview candidate');
+    }
+    return attempts[target++]().catch(tryNext);
+  }
+  return tryNext();
+}
+
+function downloadStillPreview(client, message) {
+  var candidates = mediaPreviewCandidates(message);
+  var index = 0;
+
+  function tryNext() {
+    if (index >= candidates.length) {
+      throw new Error('media has no usable still preview');
+    }
+    return downloadMediaPreviewCandidate(client, message, candidates[index++]).catch(tryNext);
+  }
+  return tryNext();
 }
 
 function dialogUnreadMarked(dialog) {
@@ -235,14 +390,69 @@ function senderName(message) {
   return '';
 }
 
+function reactionGlyph(reaction) {
+  var name = objectName(reaction);
+  var glyph;
+  if (!reaction) {
+    return '';
+  }
+  glyph = reaction.emoticon || reaction.emoji || '';
+  if (glyph === '\u2764' || glyph === '\u2764\ufe0f') {
+    return '<3';
+  }
+  if (glyph === '\ud83d\udc4d') {
+    return '+1';
+  }
+  if (glyph === '\ud83d\udc4e') {
+    return '-1';
+  }
+  if (glyph === '\ud83d\ude02') {
+    return 'ha';
+  }
+  if (glyph === '\ud83d\ude2e') {
+    return 'wow';
+  }
+  if (glyph === '\ud83d\ude22') {
+    return 'sad';
+  }
+  if (glyph === '\ud83d\ude21') {
+    return 'mad';
+  }
+  if (name.indexOf('CustomEmoji') !== -1) {
+    return '*';
+  }
+  if (name.indexOf('Paid') !== -1) {
+    return '$';
+  }
+  return glyph && glyph.charCodeAt(0) < 128 ? glyph : '*';
+}
+
+function reactionSummary(message) {
+  var reactions = message && message.reactions;
+  var results = (reactions && reactions.results) || [];
+  var parts = [];
+  for (var i = 0; i < results.length && parts.length < 3; i += 1) {
+    var result = results[i];
+    var glyph = reactionGlyph(result && result.reaction);
+    var count = result && result.count;
+    if (!glyph) {
+      continue;
+    }
+    parts.push(glyph + (count && count > 1 ? String(count) : ''));
+  }
+  return parts.join(' ');
+}
+
 function normalizeMessage(message) {
-  var imageDimensions = photoDimensions(message);
+  var previewable = hasPreviewableStill(message);
+  var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
   return {
     id: String(message.id),
     sender: senderName(message),
     text: displayChatMessageText(message),
+    reactions: reactionSummary(message),
     outgoing: !!message.out,
-    image_token: hasPhoto(message) ? String(message.id) : null,
+    image_token: (hasPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
     image_height: imageDimensions ? imageDimensions.height : 0
   };
@@ -372,14 +582,14 @@ function downloadMedia(chatId, messageId) {
     return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
       var message = rows && rows[0];
       var photo = messagePhoto(message);
-      if (!message || !hasPhoto(message)) {
-        throw new Error('message has no photo');
+      if (!message || (!hasPhoto(message) && !hasPreviewableStill(message))) {
+        throw new Error('message has no previewable media');
       }
-      return client.downloadMedia(message, {}).then(function(bytes) {
-        if (bytes && bytes.length) {
-          return bytes;
-        }
-        return client.downloadMedia(photo || message.media, {});
+      if (hasPreviewableStill(message) && !photo) {
+        return downloadStillPreview(client, message);
+      }
+      return downloadImageBytes(client, message, {}).catch(function() {
+        return downloadImageBytes(client, photo || message.media, {});
       });
     });
   });

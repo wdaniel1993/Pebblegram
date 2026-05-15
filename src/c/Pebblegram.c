@@ -6,9 +6,10 @@
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 24, 24, 24)
-#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 544, 544, 544)
-#define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 96, 96, 96, 96, 180, 180, 180)
+#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 520, 520, 520)
+#define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
+#define MAX_REACTIONS 16
 #define MAX_ID 24
 #define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 20000, 20000, 20000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
@@ -92,6 +93,7 @@ typedef struct {
   char id[MAX_ID];
   char sender[MAX_SENDER];
   char text[MAX_TEXT];
+  char reactions[MAX_REACTIONS];
   char image_token[MAX_ID];
   bool outgoing;
   bool image_placeholder;
@@ -995,21 +997,26 @@ static int message_bubble_height(Message *message, int text_w) {
   char display_text[MESSAGE_PREVIEW_TEXT + 8];
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   int name_h = (!message->outgoing && message->sender[0]) ? 16 : 0;
+  int reaction_h = message->reactions[0] ? 17 : 0;
   int image_h = message->image_placeholder ?
                 message_image_display_height(message, message_image_frame_width(text_w + 10)) + 8 : 0;
   copy_cstr(display_text, sizeof(display_text), message->text);
   if ((int)strlen(message->text) > MESSAGE_PREVIEW_TEXT) {
     copy_cstr(display_text + MESSAGE_PREVIEW_TEXT - 4, sizeof(display_text) - MESSAGE_PREVIEW_TEXT + 4, " ...");
   }
-  GSize size = graphics_text_layout_get_content_size(
-    display_text,
-    text_font,
-    GRect(0, 0, text_w, 2000),
-    GTextOverflowModeWordWrap,
-    GTextAlignmentLeft
-  );
+  GSize size = GSize(0, 0);
+  if (display_text[0] && text_w > 4) {
+    size = graphics_text_layout_get_content_size(
+      display_text,
+      text_font,
+      GRect(0, 0, text_w, 2000),
+      GTextOverflowModeWordWrap,
+      GTextAlignmentLeft
+    );
+  }
   int text_h = display_text[0] ? size.h : 0;
-  return PG_MAX(28, text_h + name_h + image_h + 7);
+  text_h = PG_MAX(0, PG_MIN(text_h, MAX_TEXT * 2));
+  return PG_MAX(28, text_h + name_h + image_h + reaction_h + 7);
 }
 
 static void recalc_message_layout(void) {
@@ -1177,6 +1184,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   recalc_message_layout();
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   int first = 0;
   while (first < s_message_count - 1 &&
          s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
@@ -1195,6 +1203,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     int x = message->outgoing ? bounds.size.w - bubble_w - inset + offset : inset - offset;
     x = PG_MAX(2, PG_MIN(x, bounds.size.w - bubble_w - 2));
     int name_h = (!message->outgoing && message->sender[0]) ? 16 : 0;
+    int reaction_h = message->reactions[0] ? 17 : 0;
     int y = s_message_y[i] - s_chat_scroll_offset;
     int bubble_h = s_message_h[i];
 
@@ -1234,8 +1243,10 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_text_color(ctx, GColorBlack);
     int image_h = message->image_placeholder ?
                   message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
-    if (display_text[0]) {
-      graphics_draw_text(ctx, display_text, text_font, GRect(x + 5, text_y, text_w, bubble_h - name_h - image_h - 6),
+    int text_rect_h = bubble_h - name_h - image_h - reaction_h - 6;
+    if (display_text[0] && text_rect_h > 0 && text_w > 4) {
+      graphics_draw_text(ctx, display_text, text_font,
+                         GRect(x + 5, text_y, text_w, text_rect_h),
                          GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
     }
 
@@ -1244,7 +1255,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
       int image_w = message_image_display_width(message, max_image_w);
       int image_h = message_image_display_height(message, max_image_w);
       GRect image_rect = GRect(x + ((bubble_w - image_w) / 2),
-                              y + bubble_h - image_h - 4,
+                              y + bubble_h - reaction_h - image_h - 4,
                               image_w, image_h);
       if (message->image_bitmap) {
         GRect bitmap_bounds = gbitmap_get_bounds(message->image_bitmap);
@@ -1278,6 +1289,14 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
           draw_loading_bar(ctx, bar, image_percent);
         }
       }
+    }
+
+    if (message->reactions[0]) {
+      graphics_context_set_text_color(ctx, BW_UI ? GColorBlack : GColorDarkGray);
+      graphics_draw_text(ctx, message->reactions, reaction_font,
+                         GRect(x + 7, y + bubble_h - reaction_h - 1, text_w - 4, reaction_h),
+                         GTextOverflowModeTrailingEllipsis,
+                         message->outgoing ? GTextAlignmentRight : GTextAlignmentLeft, NULL);
     }
   }
 
@@ -1840,6 +1859,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     copy_cstr(message->id, sizeof(message->id), incoming_message_id);
     copy_cstr(message->sender, sizeof(message->sender), tuple_cstring(iter, MESSAGE_KEY_Sender));
     copy_cstr(message->text, sizeof(message->text), tuple_cstring(iter, MESSAGE_KEY_Text));
+    copy_cstr(message->reactions, sizeof(message->reactions), tuple_cstring(iter, MESSAGE_KEY_Reactions));
     message->outgoing = tuple_int(iter, MESSAGE_KEY_IsOutgoing, 0) != 0;
     copy_cstr(message->image_token, sizeof(message->image_token), incoming_image_token);
     message->image_placeholder = message->image_token[0] != '\0';
