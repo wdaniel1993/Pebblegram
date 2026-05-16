@@ -1,7 +1,7 @@
 var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
 
-var USE_MOCK_BACKEND = true;
+var USE_MOCK_BACKEND = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
 var INITIAL_MESSAGE_ROWS = 8;
