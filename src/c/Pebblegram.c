@@ -6,7 +6,7 @@
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 24, 24, 24)
-#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 470, 470, 470)
+#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 430, 430, 430)
 #define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
 #define MAX_REACTIONS 17
@@ -65,6 +65,7 @@ typedef enum {
   ActionMenuCanned,
   ActionMenuConfirm,
   ActionMenuReaction,
+  ActionMenuReactionGrid,
   ActionMenuFullText
 } ActionMenuMode;
 
@@ -107,6 +108,11 @@ typedef struct {
   uint16_t image_height;
   GBitmap *image_bitmap;
 } Message;
+
+typedef struct {
+  const char *token;
+  const char *glyph;
+} ReactionChoice;
 
 static Window *s_main_window;
 static MenuLayer *s_chat_menu;
@@ -1712,6 +1718,26 @@ static void delete_selected_message(void) {
   send_command("delete_message", s_current_chat_id, NULL, NULL, s_messages[s_selected_message].id);
 }
 
+static const ReactionChoice *reaction_grid_choices(void) {
+  static const ReactionChoice choices[] = {
+    {"like", "\xF0\x9F\x91\x8D"},
+    {"heart", "\xE2\x9D\xA4"},
+    {"party", "\xF0\x9F\x8E\x89"},
+    {"clap", "\xF0\x9F\x91\x8F"},
+    {"grin", "\xF0\x9F\x98\x81"},
+    {"love", "\xF0\x9F\x98\x8D"},
+    {"dislike", "\xF0\x9F\x91\x8E"},
+    {"poop", "\xF0\x9F\x92\xA9"},
+    {"sleep", "\xF0\x9F\x98\xB4"},
+    {"cool", "\xF0\x9F\x98\x8E"}
+  };
+  return choices;
+}
+
+static int reaction_grid_count(void) {
+  return 10;
+}
+
 static const char *reaction_token_at(int index) {
   static const char *tokens[] = {
     "like",
@@ -1720,12 +1746,20 @@ static const char *reaction_token_at(int index) {
     "wow",
     "sad",
     "angry",
+    "",
     "remove"
   };
   if (index < 0 || index >= (int)(sizeof(tokens) / sizeof(tokens[0]))) {
     return "";
   }
   return tokens[index];
+}
+
+static const char *reaction_grid_token_at(int index) {
+  if (index < 0 || index >= reaction_grid_count()) {
+    return "";
+  }
+  return reaction_grid_choices()[index].token;
 }
 
 static void send_selected_reaction(const char *token) {
@@ -2297,7 +2331,9 @@ static int action_item_count(void) {
     case ActionMenuConfirm:
       return 2;
     case ActionMenuReaction:
-      return 7;
+      return 8;
+    case ActionMenuReactionGrid:
+      return reaction_grid_count();
     case ActionMenuFullText:
       return 0;
   }
@@ -2367,6 +2403,7 @@ static const char *action_item_title(int index) {
       "Wow",
       "Sad",
       "Angry",
+      "More...",
       "Remove"
     };
     return reaction_items[index];
@@ -2457,6 +2494,56 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
                        GRect(content_x + 6, 8 - s_full_text_scroll_offset, text_w, s_full_text_height),
                        GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
     return;
+  }
+
+  if (s_action_mode == ActionMenuReactionGrid) {
+    int cols = 3;
+    int cell_h = ROUND_UI ? 40 : 44;
+    int cell_w = content_w / cols;
+    int rows = (count + cols - 1) / cols;
+    int selected_row = s_action_selected / cols;
+    int visible_rows = PG_MAX(1, bounds.size.h / cell_h);
+    int first_row = selected_row - (visible_rows / 2);
+    int max_first_row = PG_MAX(0, rows - visible_rows);
+    int visible_h;
+    int top;
+
+    first_row = PG_MAX(0, PG_MIN(first_row, max_first_row));
+    visible_h = PG_MIN(rows, visible_rows) * cell_h;
+    top = PG_MAX(0, (bounds.size.h - visible_h) / 2);
+
+    for (int i = 0; i < count; i++) {
+      int row_index = i / cols;
+      int col_index = i % cols;
+      int y = top + ((row_index - first_row) * cell_h);
+      GRect cell = GRect(content_x + (col_index * cell_w), y, cell_w, cell_h);
+      bool selected = i == s_action_selected;
+
+      if (y + cell_h < 0 || y > bounds.size.h) {
+        continue;
+      }
+      if (selected) {
+        graphics_context_set_fill_color(ctx, APP_COLOR);
+        graphics_fill_rect(ctx, cell, 4, GCornersAll);
+      }
+      graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorLightGray);
+      graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
+                         fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
+                         GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
+    return;
+  }
+
+  if (s_action_mode != ActionMenuConfirm) {
+    int list_h = count * row_h;
+    if (list_h > bounds.size.h) {
+      int visible_rows = PG_MAX(1, bounds.size.h / row_h);
+      int first_row = s_action_selected - (visible_rows / 2);
+      int max_first_row = PG_MAX(0, count - visible_rows);
+      first_row = PG_MAX(0, PG_MIN(first_row, max_first_row));
+      top = -(first_row * row_h);
+    }
   }
 
   for (int i = 0; i < count; i++) {
@@ -2614,7 +2701,20 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
   }
 
   if (s_action_mode == ActionMenuReaction) {
+    if (selected == 6) {
+      s_action_mode = ActionMenuReactionGrid;
+      s_action_selected = 0;
+      layer_mark_dirty(s_action_layer);
+      return;
+    }
     const char *token = reaction_token_at(selected);
+    close_action_window();
+    send_selected_reaction(token);
+    return;
+  }
+
+  if (s_action_mode == ActionMenuReactionGrid) {
+    const char *token = reaction_grid_token_at(selected);
     close_action_window();
     send_selected_reaction(token);
     return;
@@ -2680,6 +2780,10 @@ static void action_back_click_handler(ClickRecognizerRef recognizer, void *conte
       s_action_mode == ActionMenuReaction || s_action_mode == ActionMenuFullText) {
     s_action_mode = ActionMenuMain;
     s_action_selected = 0;
+    layer_mark_dirty(s_action_layer);
+  } else if (s_action_mode == ActionMenuReactionGrid) {
+    s_action_mode = ActionMenuReaction;
+    s_action_selected = 6;
     layer_mark_dirty(s_action_layer);
   } else {
     close_action_window();

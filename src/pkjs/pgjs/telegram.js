@@ -529,6 +529,34 @@ function reactionEmoticon(token) {
       return '\ud83d\ude22';
     case 'angry':
       return '\ud83d\ude21';
+    case 'fire':
+      return '\ud83d\udd25';
+    case 'party':
+      return '\ud83c\udf89';
+    case 'clap':
+      return '\ud83d\udc4f';
+    case 'grin':
+      return '\ud83d\ude01';
+    case 'think':
+      return '\ud83e\udd14';
+    case 'eyes':
+      return '\ud83d\udc40';
+    case 'love':
+      return '\ud83d\ude0d';
+    case 'pray':
+      return '\ud83d\ude4f';
+    case 'dislike':
+      return '\ud83d\udc4e';
+    case 'poop':
+      return '\ud83d\udca9';
+    case 'sick':
+      return '\ud83e\udd2e';
+    case 'sleep':
+      return '\ud83d\ude34';
+    case 'cool':
+      return '\ud83d\ude0e';
+    case 'bolt':
+      return '\u26a1';
     default:
       return '';
   }

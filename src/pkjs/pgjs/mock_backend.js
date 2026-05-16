@@ -10,7 +10,21 @@ var reactionGlyphs = {
   laugh: '\ud83e\udd23',
   wow: '\ud83d\ude31',
   sad: '\ud83d\ude22',
-  angry: '\ud83d\ude21'
+  angry: '\ud83d\ude21',
+  fire: '\ud83d\udd25',
+  party: '\ud83c\udf89',
+  clap: '\ud83d\udc4f',
+  grin: '\ud83d\ude01',
+  think: '\ud83e\udd14',
+  eyes: '\ud83d\udc40',
+  love: '\ud83d\ude0d',
+  pray: '\ud83d\ude4f',
+  dislike: '\ud83d\udc4e',
+  poop: '\ud83d\udca9',
+  sick: '\ud83e\udd2e',
+  sleep: '\ud83d\ude34',
+  cool: '\ud83d\ude0e',
+  bolt: '\u26a1'
 };
 
 var MOCK_AVATAR_PNG = [
