@@ -405,7 +405,7 @@ function sendStoredMessages(chatId) {
   if (!messages || messages.length === 0) {
     return false;
   }
-  delete messageStore[chatId];
+  currentChatSignature = messageSignature(messages);
   markRead(chatId);
   sendMessageRows(messages);
   done('messages_done', Math.min(messages.length, MAX_MESSAGE_ROWS));
