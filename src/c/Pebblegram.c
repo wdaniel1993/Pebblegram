@@ -33,6 +33,8 @@
 #define CHAT_BG GColorWhite
 #define IN_BUBBLE GColorPastelYellow
 #define OUT_BUBBLE GColorCeleste
+#define IN_CONTEXT_BUBBLE GColorIcterine
+#define OUT_CONTEXT_BUBBLE GColorCadetBlue
 #define SELECTED_IN_BUBBLE GColorLightGray
 #define SELECTED_OUT_BUBBLE GColorPictonBlue
 #define ACTION_BG GColorBlack
@@ -179,7 +181,7 @@ static int s_full_text_scroll_offset;
 static int s_full_text_height;
 static bool s_full_text_context;
 static char s_full_text_title[MAX_SENDER + 10];
-static char s_full_text_body[MAX_FULL_TEXT];
+static char *s_full_text_body;
 
 static DictationSession *s_dictation_session;
 
@@ -1138,12 +1140,13 @@ static void set_message_context(Message *message, const char *reply_sender, cons
 static void draw_message_context(GContext *ctx, Message *message, GRect rect) {
   char title[MAX_SENDER + 10];
   char body[MAX_CONTEXT_TEXT];
+  GColor fill = BW_UI ? GColorWhite : (message->outgoing ? OUT_CONTEXT_BUBBLE : IN_CONTEXT_BUBBLE);
   GColor accent = BW_UI ? GColorBlack : APP_COLOR;
   if (!message_has_context(message) || rect.size.h <= 0) {
     return;
   }
   message_context_strings(message, title, sizeof(title), body, sizeof(body));
-  graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
+  graphics_context_set_fill_color(ctx, fill);
   graphics_fill_rect(ctx, rect, 3, GCornersAll);
   graphics_context_set_fill_color(ctx, accent);
   graphics_fill_rect(ctx, GRect(rect.origin.x, rect.origin.y + 2, 3, rect.size.h - 4), 1, GCornersAll);
@@ -2400,7 +2403,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       return;
     }
     copy_cstr(s_full_text_title, sizeof(s_full_text_title), tuple_cstring(iter, MESSAGE_KEY_Sender));
-    copy_cstr(s_full_text_body, sizeof(s_full_text_body), tuple_cstring(iter, MESSAGE_KEY_Text));
+    if (s_full_text_body) {
+      copy_cstr(s_full_text_body, MAX_FULL_TEXT, tuple_cstring(iter, MESSAGE_KEY_Text));
+    }
     if (s_action_mode == ActionMenuFullText && s_full_text_context && s_action_layer) {
       s_full_text_scroll_offset = 0;
       layer_mark_dirty(s_action_layer);
@@ -2510,22 +2515,40 @@ static ActionItem action_item_at(int index) {
   if (index == target++) {
     return ActionItemReact;
   }
+  if (selected_message_has_context() && index == target++) {
+    return ActionItemFullContext;
+  }
   if (s_messages[s_selected_message].outgoing) {
     if (index == target) {
       return ActionItemEdit;
     }
     target++;
   }
-  if (index == target++) {
-    return ActionItemDelete;
-  }
-  if (selected_message_has_context() && index == target++) {
-    return ActionItemFullContext;
-  }
   if (selected_message_is_truncated() && index == target++) {
     return ActionItemFullText;
   }
+  if (index == target++) {
+    return ActionItemDelete;
+  }
   return ActionItemRefresh;
+}
+
+static bool action_item_has_chevron(int index) {
+  if (s_action_mode == ActionMenuMain) {
+    return action_item_at(index) == ActionItemReact;
+  }
+  if (s_action_mode == ActionMenuReply) {
+    return index == 2;
+  }
+  return false;
+}
+
+static bool action_item_has_separator_before(int index) {
+  if (s_action_mode == ActionMenuMain) {
+    ActionItem item = action_item_at(index);
+    return item == ActionItemDelete || (!has_selected_message() && item == ActionItemRefresh);
+  }
+  return false;
 }
 
 static const char *action_item_title(int index) {
@@ -2550,7 +2573,7 @@ static const char *action_item_title(int index) {
   }
   if (s_action_mode == ActionMenuReply) {
     static const char *reply_items[] = {
-      "Dictate",
+      "Dictate Reply",
       "Canned Message",
       "Emoji Reply"
     };
@@ -2574,7 +2597,7 @@ static const char *action_item_title(int index) {
       case ActionItemFullText:
         return "View Full Message";
       case ActionItemFullContext:
-        return selected_message_context_is_forward() ? "View Forward" : "View Reply";
+        return selected_message_context_is_forward() ? "View Forward" : "View Quote";
       case ActionItemRefresh:
         return "Refresh";
       case ActionItemReplyDictate:
@@ -2643,7 +2666,7 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
       if (s_full_text_context) {
         copy_cstr(title, sizeof(title), s_full_text_title);
         heading = title;
-        text = s_full_text_body;
+        text = s_full_text_body ? s_full_text_body : "";
       } else {
         text = s_messages[s_selected_message].text;
       }
@@ -2738,10 +2761,22 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
     GRect row = GRect(content_x, top + (i * row_h), content_w, row_h);
     bool selected = i == s_action_selected;
 
+    if (action_item_has_separator_before(i)) {
+      graphics_context_set_stroke_color(ctx, GColorLightGray);
+      graphics_draw_line(ctx, GPoint(row.origin.x + 4, row.origin.y),
+                         GPoint(row.origin.x + row.size.w - 4, row.origin.y));
+    }
+
     graphics_context_set_text_color(ctx, selected ? ACTION_TEXT_SELECTED : ACTION_TEXT);
     graphics_draw_text(ctx, action_item_title(i), fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                       GRect(row.origin.x + 1, row.origin.y + 1, row.size.w - 4, row.size.h - 3),
+                       GRect(row.origin.x + 1, row.origin.y + 1,
+                             row.size.w - (action_item_has_chevron(i) ? 34 : 4), row.size.h - 3),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    if (action_item_has_chevron(i)) {
+      graphics_draw_text(ctx, ">>", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                         GRect(row.origin.x + row.size.w - 32, row.origin.y + 1, 30, row.size.h - 3),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+    }
   }
 }
 
@@ -2878,7 +2913,13 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         delete_selected_message();
         break;
       case ActionItemFullText:
-        s_full_text_context = false;
+        s_full_text_context = true;
+        if (has_selected_message()) {
+          s_full_text_title[0] = '\0';
+          copy_cstr(s_full_text_body, MAX_FULL_TEXT, s_messages[s_selected_message].text);
+          send_command_with_status("get_message_text", s_current_chat_id, NULL, NULL,
+                                   s_messages[s_selected_message].id, false);
+        }
         s_action_mode = ActionMenuFullText;
         s_full_text_scroll_offset = 0;
         layer_mark_dirty(s_action_layer);
@@ -2889,7 +2930,9 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
           char body[MAX_CONTEXT_TEXT];
           message_context_strings(&s_messages[s_selected_message], s_full_text_title,
                                   sizeof(s_full_text_title), body, sizeof(body));
-          copy_cstr(s_full_text_body, sizeof(s_full_text_body), body);
+          if (s_full_text_body) {
+            copy_cstr(s_full_text_body, MAX_FULL_TEXT, body);
+          }
           send_command_with_status("get_context", s_current_chat_id, NULL, NULL,
                                    s_messages[s_selected_message].id, false);
         }
@@ -3197,6 +3240,10 @@ static void init(void) {
   s_view_state = ViewStateLoading;
   s_selected_message = -1;
   s_chats_loading = true;
+  s_full_text_body = malloc(MAX_FULL_TEXT);
+  if (s_full_text_body) {
+    s_full_text_body[0] = '\0';
+  }
   light_enable(false);
 
   app_message_register_inbox_received(inbox_received_callback);
@@ -3220,6 +3267,10 @@ static void deinit(void) {
   destroy_message_images();
   if (s_dictation_session) {
     dictation_session_destroy(s_dictation_session);
+  }
+  if (s_full_text_body) {
+    free(s_full_text_body);
+    s_full_text_body = NULL;
   }
   window_destroy(s_main_window);
 }

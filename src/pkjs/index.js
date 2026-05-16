@@ -415,18 +415,31 @@ function sendStoredMessages(chatId) {
   return true;
 }
 
-function sendMessageContext(chatId, messageId) {
+function storedMessage(chatId, messageId) {
   var rows = messageStore[chatId] || [];
-  var message = null;
+  for (var i = 0; i < rows.length; i += 1) {
+    if (String(rows[i].id) === String(messageId)) {
+      return rows[i];
+    }
+  }
+  return null;
+}
+
+function sendFullMessageText(chatId, messageId) {
+  var message = storedMessage(chatId, messageId);
+  var payload = {};
+  payload[MessageKeys.Type] = 'message_context';
+  payload[MessageKeys.MessageId] = clampText(messageId, 23);
+  payload[MessageKeys.Sender] = '';
+  payload[MessageKeys.Text] = watchText(message ? message.text : 'Message not loaded', MAX_CONTEXT_VIEW_TEXT);
+  sendToWatch(payload);
+}
+
+function sendMessageContext(chatId, messageId) {
+  var message = storedMessage(chatId, messageId);
   var payload = {};
   var title = 'Reply';
   var text = 'Message not loaded';
-  for (var i = 0; i < rows.length; i += 1) {
-    if (String(rows[i].id) === String(messageId)) {
-      message = rows[i];
-      break;
-    }
-  }
   if (message) {
     if (message.reply_text || message.reply_sender) {
       title = message.reply_sender || 'Reply';
@@ -904,6 +917,8 @@ Pebble.addEventListener('appmessage', function(event) {
     getOlderMessages(chatId, messageId);
   } else if (command === 'get_context') {
     sendMessageContext(chatId, messageId);
+  } else if (command === 'get_message_text') {
+    sendFullMessageText(chatId, messageId);
   } else if (command === 'leave_chat') {
     leaveChat(chatId);
   } else if (command === 'send_message') {
