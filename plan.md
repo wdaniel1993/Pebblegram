@@ -1,73 +1,57 @@
-# Pebblegram 2.2 Release Plan
+# Pebblegram 2.4 Release Plan
 
-## Summary
+## Current Goal
 
-Focus 2.2 on image quality, image loading stability, aspect-ratio-aware photo
-layout, GIF support, and release validation. Completed 2.1 trimming and earlier
-polish work are no longer active plan items.
+Ship a stable 2.4 experimental build from the known-good 2.2 checkpoint, keeping
+2.2 available as the rollback release.
 
-## 2.2 Image Pipeline
+## 2.4 Implemented
 
-- Move image quality work to the PGJS phone-side image processing path, not watch
-  rendering.
-- Preserve available platform colors unless testing proves a lower palette looks
-  better; color reduction should not be the main quality strategy.
-- Improve tone mapping before PNG quantization to reduce crushed blacks and harsh
-  gradient banding.
-- Prefer contain-fit photo resizing over crop-fit for chat photos.
-- Keep avatar processing as square cover-cropped circles.
-- Bump `IMAGE_CACHE_VERSION` whenever tone mapping, sizing, palette, or aspect
-  behavior changes.
+- Rebuilt `experiment/2.4` from stable 2.2 instead of carrying forward the
+  crashy 2.3/2.4 branch history.
+- Restored longer message display and faster open-chat live merge behavior.
+- Restored view-only message reactions.
+- Prefer actual Telegram reaction emoji when available; custom or paid reactions
+  fall back to compact text markers.
+- Restored GIF, MP4-as-GIF, and video still-preview loading through Telegram
+  thumbnail/still preview media.
+- Restored webpage preview thumbnails.
+- Kept normal photos uncluttered in chat view while preserving useful media tags
+  in chat-list snippets.
+- Kept image transfer cancellation and selected-image priority from the stable
+  photo-loading work.
+- Added watch-side text layout guards and phone-side URL/token sanitization to
+  reduce crash risk from pathological message content.
 
-## 2.2 Image Loading Stability
+## 2.4 Validation
 
-- Ensure each image request reaches a terminal state: loaded, failed, or retry
-  scheduled.
-- Prevent stale active transfers from blocking the visible photo while scrolling.
-- Preserve visible-photo priority over offscreen active transfers.
-- Validate Basalt with a reduced image target because failures are likely
-  heap-related.
+- Test the chats that previously crashed the OS.
+- Test webpage previews, YouTube previews, GIF previews, MP4/video previews,
+  photo-heavy chats, and older-message scrolling.
+- Confirm reactions render as emoji where Pebble fonts support them and fall
+  back acceptably where they do not.
+- Confirm Basalt still handles photo and preview loading without heap failures.
+- Keep `build/Pebblegram-2.2.0-stable.pbw` as the rollback PBW while 2.4 is
+  tested.
 
-## 2.2 Aspect-Ratio Photo Layout
+## Remaining 2.4 Items
 
-- Add image width/height metadata to message payloads.
-- Store image dimensions in the watch `Message` model.
-- Size photo placeholders and loaded images dynamically from the source aspect
-  ratio, constrained by each platform's max image frame.
-- Draw photos centered with no cropping.
-- Expected effort: medium-high because this touches AppMessage keys, PGJS
-  normalization, image encoding, watch layout, scrolling math, and placeholders.
+- No planned 2.4 feature work remains after validation unless testing finds a
+  regression.
+- If OS crashes return, isolate the single failing content path by toggling:
+  reactions, webpage preview thumbnails, GIF/video preview thumbnails, then
+  sanitized full text.
 
-## 2.2 GIF Support
+## Later Releases
 
-- Keep `[GIF]` labels in snippets and chat view.
-- Revisit one-frame GIF previews with a higher-quality source than the previous
-  Telegram thumbnail attempt.
-- GIF previews must not block or share fragile state with regular photo loading.
-- If preview quality or stability is not acceptable, keep GIFs text-only for 2.2.
-
-## 2.2 Release Validation
-
-- Test photo loading on Emery, Gabbro, Basalt, and Diorite.
-- Test many consecutive photos, YouTube/link previews, mixed media messages, and
-  older-message scrolling.
-- Confirm photos do not get stuck forever on `Photo`, `Loading Image...`, or
-  repeated retry states.
-- Compare Emery/Gabbro gradient quality against the helper-service baseline.
-- Build all targets and confirm PBW size remains acceptable.
+- 2.5: Sending message reactions.
+- 2.6: Reply/quote display and quote navigation.
+- 2.7: Notification launch/deep-link behavior, if the Pebble app and phone
+  notification stack expose enough control.
 
 ## Earmarked for v3.0
 
-- Reply quotes remain v3.0 scope because the AppMessage protocol and watch
-  `Message` struct do not yet carry quote fields.
-- `View Full Quote` stays with the v3.0 quote work.
-- `Go To Quote` stays v3.0 because fetching older history until the quoted
-  message is found needs careful scroll-position handling.
+- Full reply quote navigation remains v3.0 scope if 2.6 exposes backend or watch
+  memory constraints that make it too large for a minor release.
 - Notification suppression remains v3.0 research because Pebblegram likely
   cannot suppress notifications generated by the separate Telegram phone app.
-
-## Assumptions
-
-- The "backend" for image processing means the PGJS phone-side pipeline, not a
-  return to the old helper service.
-- 2.2 prioritizes release stability over adding large new product features.

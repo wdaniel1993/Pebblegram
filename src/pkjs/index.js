@@ -226,6 +226,42 @@ function watchText(value, maxLength) {
   return clampText(value, maxLength);
 }
 
+function utf8ByteLengthAt(value, index) {
+  var code = value.charCodeAt(index);
+  if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+    var next = value.charCodeAt(index + 1);
+    if (next >= 0xdc00 && next <= 0xdfff) {
+      return 4;
+    }
+  }
+  if (code < 0x80) {
+    return 1;
+  }
+  if (code < 0x800) {
+    return 2;
+  }
+  return 3;
+}
+
+function clampUtf8Bytes(value, maxBytes) {
+  value = String(value || '');
+  var bytes = 0;
+  var output = '';
+  for (var i = 0; i < value.length; i += 1) {
+    var charBytes = utf8ByteLengthAt(value, i);
+    if (bytes + charBytes > maxBytes) {
+      break;
+    }
+    output += value.charAt(i);
+    bytes += charBytes;
+    if (charBytes === 4 && i + 1 < value.length) {
+      output += value.charAt(i + 1);
+      i += 1;
+    }
+  }
+  return output;
+}
+
 function payloadValue(payload, name) {
   if (!payload) {
     return undefined;
@@ -262,7 +298,7 @@ function sendMessageRows(messages) {
     payload[MessageKeys.Sender] = clampText(message.sender, 35);
     payload[MessageKeys.Text] = watchText(message.text, MAX_MESSAGE_TEXT);
     if (message.reactions) {
-      payload[MessageKeys.Reactions] = clampText(message.reactions, 15);
+      payload[MessageKeys.Reactions] = clampUtf8Bytes(message.reactions, 21);
     }
     payload[MessageKeys.IsOutgoing] = message.outgoing ? 1 : 0;
     if (message.image_token) {

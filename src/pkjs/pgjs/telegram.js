@@ -45,7 +45,18 @@ function objectName(value) {
 
 function messagePhoto(message) {
   var media = message && message.media;
-  return (message && message.photo) || (media && media.photo) || null;
+  var webpage = messageWebpage(message);
+  return (message && message.photo) || (media && media.photo) || (webpage && webpage.photo) || null;
+}
+
+function hasDirectPhoto(message) {
+  var media = message && message.media;
+  return !!((message && message.photo) || (media && media.photo));
+}
+
+function messageWebpage(message) {
+  var media = message && message.media;
+  return media && (media.webpage || media.webPage) || null;
 }
 
 function photoDimensions(message) {
@@ -154,7 +165,7 @@ function isVideo(message) {
 }
 
 function hasPreviewableStill(message) {
-  return isGif(message) || isVideo(message);
+  return isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message));
 }
 
 function compactMediaLabel(label, detail) {
@@ -164,6 +175,7 @@ function compactMediaLabel(label, detail) {
 function mediaLabel(message) {
   var media = message && message.media;
   var mediaName = objectName(media);
+  var webpage = messageWebpage(message);
   var document = messageDocument(message);
   var file = message && message.file;
   var fileName;
@@ -173,7 +185,7 @@ function mediaLabel(message) {
   if (!message) {
     return '';
   }
-  if (hasPhoto(message)) {
+  if (hasDirectPhoto(message)) {
     return compactMediaLabel('photo');
   }
   if (media) {
@@ -192,8 +204,8 @@ function mediaLabel(message) {
     if (media.game || mediaName.indexOf('Game') !== -1) {
       return compactMediaLabel('Game', media.game && media.game.title);
     }
-    if (media.webpage || media.webPage || mediaName.indexOf('WebPage') !== -1) {
-      var webpage = media.webpage || media.webPage || {};
+    if (webpage || mediaName.indexOf('WebPage') !== -1) {
+      webpage = webpage || {};
       return compactMediaLabel('Link', webpage.title || webpage.url);
     }
   }
@@ -247,7 +259,7 @@ function displayMessageText(message) {
 }
 
 function displayChatMessageText(message) {
-  if (hasPhoto(message)) {
+  if (hasDirectPhoto(message)) {
     return messageText(message);
   }
   if (isGif(message)) {
@@ -397,26 +409,8 @@ function reactionGlyph(reaction) {
     return '';
   }
   glyph = reaction.emoticon || reaction.emoji || '';
-  if (glyph === '\u2764' || glyph === '\u2764\ufe0f') {
-    return '<3';
-  }
-  if (glyph === '\ud83d\udc4d') {
-    return '+1';
-  }
-  if (glyph === '\ud83d\udc4e') {
-    return '-1';
-  }
-  if (glyph === '\ud83d\ude02') {
-    return 'ha';
-  }
-  if (glyph === '\ud83d\ude2e') {
-    return 'wow';
-  }
-  if (glyph === '\ud83d\ude22') {
-    return 'sad';
-  }
-  if (glyph === '\ud83d\ude21') {
-    return 'mad';
+  if (glyph) {
+    return glyph;
   }
   if (name.indexOf('CustomEmoji') !== -1) {
     return '*';
@@ -424,7 +418,7 @@ function reactionGlyph(reaction) {
   if (name.indexOf('Paid') !== -1) {
     return '$';
   }
-  return glyph && glyph.charCodeAt(0) < 128 ? glyph : '*';
+  return '';
 }
 
 function reactionSummary(message) {
