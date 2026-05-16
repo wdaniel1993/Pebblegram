@@ -6,7 +6,7 @@
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 24, 24, 24)
-#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 518, 518, 518)
+#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 488, 488, 488)
 #define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
 #define MAX_REACTIONS 17
@@ -46,6 +46,7 @@
 #define MESSAGE_COMMAND_RETRY_MS 3000
 #define MESSAGE_COMMAND_MAX_ATTEMPTS 3
 #define IMAGE_COMMAND_RETRY_MS 350
+#define IMAGE_TRANSFER_STALL_MS 4000
 #define IMAGE_KEEP_SCREEN_MARGIN 48
 #define IMAGE_LOAD_SCREEN_MARGIN 24
 #define IMAGE_TALL_MAX_MULTIPLIER 2
@@ -156,6 +157,8 @@ static char s_current_chat_id[MAX_ID];
 static char s_current_chat_title[48];
 static char s_status_text[64];
 static char s_loading_text[160] = "Loading...";
+static char s_chat_refresh_selected_id[MAX_ID];
+static char s_chat_list_selected_id[MAX_ID];
 
 static int s_chat_count;
 static int s_message_count;
@@ -390,6 +393,17 @@ static void destroy_chat_avatar(Chat *chat) {
   }
 }
 
+static void preserve_chat_avatar(Chat *chat, const char *incoming_id) {
+  int existing_index = find_chat_index_by_id(incoming_id);
+  if (existing_index < 0 || &s_chats[existing_index] == chat) {
+    destroy_chat_avatar(chat);
+    return;
+  }
+  Chat moved = s_chats[existing_index];
+  s_chats[existing_index] = *chat;
+  *chat = moved;
+}
+
 static void destroy_chat_avatars(void) {
   for (int i = 0; i < MAX_CHATS; i++) {
     destroy_chat_avatar(&s_chats[i]);
@@ -516,6 +530,17 @@ static void destroy_message_images(void) {
 static void schedule_image_retry(void) {
   if (!s_image_retry_timer && s_view_state == ViewStateChat && s_messages_root) {
     s_image_retry_timer = app_timer_register(IMAGE_COMMAND_RETRY_MS, image_retry_timer_callback, NULL);
+  }
+}
+
+static void schedule_image_transfer_timeout(void) {
+  if (s_image_retry_timer) {
+    app_timer_cancel(s_image_retry_timer);
+  }
+  if (s_view_state == ViewStateChat && s_messages_root) {
+    s_image_retry_timer = app_timer_register(IMAGE_TRANSFER_STALL_MS, image_retry_timer_callback, NULL);
+  } else {
+    s_image_retry_timer = NULL;
   }
 }
 
@@ -1365,15 +1390,20 @@ static void show_chat_view_timer(void *data) {
 }
 
 static void render_chat_list(void) {
+  int row = s_selected_chat;
   s_view_state = ViewStateChatList;
   s_chats_loading = false;
   s_loading_error = false;
   window_set_click_config_provider(s_main_window, click_config_provider);
   destroy_chat_view();
   if (s_chat_menu) {
+    int saved_row = find_chat_index_by_id(s_chat_list_selected_id);
+    if (saved_row >= 0) {
+      row = saved_row;
+    }
     layer_set_hidden(menu_layer_get_layer(s_chat_menu), false);
     menu_layer_reload_data(s_chat_menu);
-    select_chat_row(s_selected_chat, false);
+    select_chat_row(row, false);
   }
   show_status("Pebblegram");
 }
@@ -1383,6 +1413,7 @@ static void select_chat_row(int row, bool animated) {
     return;
   }
   s_selected_chat = PG_MAX(0, PG_MIN(row, s_chat_count - 1));
+  copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
   menu_layer_set_selected_index(s_chat_menu, MenuIndex(0, s_selected_chat), MenuRowAlignCenter, animated);
 }
 
@@ -1734,8 +1765,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (strcmp(type, "chats_done") == 0) {
     char selected_id[MAX_ID];
-    selected_id[0] = '\0';
-    if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+    copy_cstr(selected_id, sizeof(selected_id), s_chat_list_selected_id);
+    if (!selected_id[0]) {
+      copy_cstr(selected_id, sizeof(selected_id), s_chat_refresh_selected_id);
+    }
+    s_chat_refresh_selected_id[0] = '\0';
+    if (!selected_id[0] && s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       copy_cstr(selected_id, sizeof(selected_id), s_chats[s_selected_chat].id);
     }
     if (s_view_state == ViewStateLoading) {
@@ -1750,6 +1785,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int preserved_index = find_chat_index_by_id(selected_id);
     if (preserved_index >= 0) {
       s_selected_chat = preserved_index;
+      copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
     } else if (s_selected_chat >= s_chat_count) {
       s_selected_chat = s_chat_count > 0 ? s_chat_count - 1 : 0;
     }
@@ -1831,10 +1867,28 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (s_view_state == ViewStateLoading) {
       s_view_state = ViewStateChatList;
     }
+    if (index == 0) {
+      s_chat_refresh_selected_id[0] = '\0';
+      if (s_chat_menu && s_view_state == ViewStateChatList) {
+        MenuIndex selected = menu_layer_get_selected_index(s_chat_menu);
+        s_selected_chat = selected.row;
+        if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+          copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id),
+                    s_chats[s_selected_chat].id);
+        }
+      }
+      if (s_chat_list_selected_id[0]) {
+        copy_cstr(s_chat_refresh_selected_id, sizeof(s_chat_refresh_selected_id),
+                  s_chat_list_selected_id);
+      } else if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+        copy_cstr(s_chat_refresh_selected_id, sizeof(s_chat_refresh_selected_id),
+                  s_chats[s_selected_chat].id);
+      }
+    }
     Chat *chat = &s_chats[index];
     char *incoming_id = tuple_cstring(iter, MESSAGE_KEY_ChatId);
     if (incoming_id && strcmp(chat->id, incoming_id) != 0) {
-      destroy_chat_avatar(chat);
+      preserve_chat_avatar(chat, incoming_id);
     }
     copy_cstr(chat->id, sizeof(chat->id), incoming_id);
     copy_cstr(chat->title, sizeof(chat->title), tuple_cstring(iter, MESSAGE_KEY_Sender));
@@ -2000,6 +2054,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_image_received = 0;
     s_image_expected_offset = 0;
     s_image_transfer_id = transfer_id;
+    schedule_image_transfer_timeout();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -2029,6 +2084,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     memcpy(s_image_buffer + offset, data->value->data, data->length);
     s_image_received = offset + data->length;
     s_image_expected_offset = s_image_received;
+    schedule_image_transfer_timeout();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -2092,6 +2148,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       }
     }
     if (is_active_image) {
+      if (s_image_retry_timer) {
+        app_timer_cancel(s_image_retry_timer);
+        s_image_retry_timer = NULL;
+      }
       s_image_size = 0;
       s_image_received = 0;
       s_image_expected_offset = 0;
@@ -2114,6 +2174,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       message->image_failed = message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN);
     }
     if (is_active_image) {
+      if (s_image_retry_timer) {
+        app_timer_cancel(s_image_retry_timer);
+        s_image_retry_timer = NULL;
+      }
       s_image_message_id[0] = '\0';
       s_image_size = 0;
       s_image_received = 0;
@@ -2594,6 +2658,10 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
   bool repeating = click_is_repeating(recognizer);
   if (s_view_state == ViewStateChatList && s_chat_menu) {
     menu_layer_set_selected_next(s_chat_menu, true, MenuRowAlignCenter, !repeating);
+    s_selected_chat = menu_layer_get_selected_index(s_chat_menu).row;
+    if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+      copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
+    }
     return;
   }
   if (s_view_state != ViewStateChat || !s_messages_root || s_message_count == 0) {
@@ -2629,6 +2697,10 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
   bool repeating = click_is_repeating(recognizer);
   if (s_view_state == ViewStateChatList && s_chat_menu) {
     menu_layer_set_selected_next(s_chat_menu, false, MenuRowAlignCenter, !repeating);
+    s_selected_chat = menu_layer_get_selected_index(s_chat_menu).row;
+    if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+      copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
+    }
     return;
   }
   if (s_view_state != ViewStateChat || !s_messages_root || s_message_count == 0) {

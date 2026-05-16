@@ -25,14 +25,17 @@ var prefetching = {};
 var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
-var refreshTimer = null;
-var chatListRefreshTimer = null;
+var updateRefreshTimer = null;
+var updatesStarted = false;
+var chatListStale = false;
 var avatarChats = [];
 var avatarIndex = 0;
 var avatarTimer = null;
+var knownAvatarChats = {};
 var imageTransferSeq = 0;
 var avatarTransferSeq = 0;
 var imageRequestSeq = 0;
+var imageTransferActive = false;
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
@@ -132,6 +135,7 @@ function isImageTransferPayload(payload) {
 
 function cancelQueuedImageTransfers() {
   imageRequestSeq += 1;
+  imageTransferActive = false;
   sendQueue = sendQueue.filter(function(entry, index) {
     return index === 0 && sending ? true : !isImageTransferPayload(entry.payload);
   });
@@ -158,6 +162,10 @@ function flushQueue() {
         entry.payload[MessageKeys.Type] === 'chats_done' ||
         entry.payload[MessageKeys.Type] === 'messages_done') {
       logDuration('AppMessage ' + entry.payload[MessageKeys.Type] + ' queue', entry.queuedAt);
+    }
+    if (entry.payload[MessageKeys.Type] === 'image_done' ||
+        entry.payload[MessageKeys.Type] === 'image_error') {
+      imageTransferActive = false;
     }
     sendQueue.shift();
     sending = false;
@@ -410,23 +418,82 @@ function prefetchTopChats(chats) {
   });
 }
 
-function scheduleChatListRefresh() {
-  if (chatListRefreshTimer || currentChatId) {
+function scheduleUpdateRefresh(delay) {
+  if (updateRefreshTimer) {
     return;
   }
-  chatListRefreshTimer = setTimeout(function() {
-    chatListRefreshTimer = null;
+  updateRefreshTimer = setTimeout(function() {
+    updateRefreshTimer = null;
+    if (imageTransferActive) {
+      scheduleUpdateRefresh(1500);
+      return;
+    }
     if (!currentChatId) {
       getChats(true);
+    } else {
+      refreshOpenChat(true);
     }
-  }, 15000);
+  }, delay || 1000);
 }
 
-function cancelChatListRefresh() {
-  if (chatListRefreshTimer) {
-    clearTimeout(chatListRefreshTimer);
-    chatListRefreshTimer = null;
+function cancelUpdateRefresh() {
+  if (updateRefreshTimer) {
+    clearTimeout(updateRefreshTimer);
+    updateRefreshTimer = null;
   }
+}
+
+function idPart(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value);
+}
+
+function peerId(value) {
+  if (!value) {
+    return '';
+  }
+  return idPart(value.userId || value.chatId || value.channelId || value.peerId || value.id);
+}
+
+function updateChatId(update) {
+  var message = update && (update.message || update.Message);
+  return peerId(message && message.peerId) ||
+    peerId(message && message.peer) ||
+    peerId(update && update.peer) ||
+    idPart(update && (update.userId || update.chatId || update.channelId));
+}
+
+function handleTelegramUpdate(update) {
+  var chatId = updateChatId(update);
+  if (currentChatId) {
+    if (chatId && chatId === currentChatId) {
+      scheduleUpdateRefresh(900);
+    } else if (!chatId || chatId !== currentChatId) {
+      chatListStale = true;
+    }
+    return;
+  }
+  scheduleUpdateRefresh(900);
+}
+
+function startTelegramUpdates() {
+  if (updatesStarted) {
+    return;
+  }
+  updatesStarted = true;
+  activePgjs().ready().then(function(client) {
+    if (!client || typeof client.addEventHandler !== 'function') {
+      console.log('Telegram updates unavailable; chat list refresh is manual only.');
+      return;
+    }
+    client.addEventHandler(handleTelegramUpdate);
+    console.log('Telegram updates enabled.');
+  }).catch(function(err) {
+    updatesStarted = false;
+    console.log('Telegram updates failed: ' + (err && err.message ? err.message : err));
+  });
 }
 
 function getChats(silent) {
@@ -442,22 +509,23 @@ function getChats(silent) {
     chats = chats || [];
     sendChatRows(chats, silent);
     done('chats_done', Math.min(chats.length, MAX_ROWS));
-    queueChatAvatars(chats);
+    queueChatAvatars(chats, silent);
     prefetchTopChats(chats);
-    scheduleChatListRefresh();
   }).catch(function(err) {
-    promiseError('Chats failed', err);
-    scheduleChatListRefresh();
+    if (silent) {
+      console.log('Silent chats failed: ' + (err && err.message ? err.message : err));
+    } else {
+      promiseError('Chats failed', err);
+    }
   });
 }
 
 function getMessages(chatId) {
   currentChatId = chatId;
   currentChatSignature = '';
-  cancelChatListRefresh();
+  cancelUpdateRefresh();
   cancelQueuedAvatarTransfers();
   cancelQueuedImageTransfers();
-  scheduleOpenChatRefresh();
   if (sendStoredMessages(chatId)) {
     return;
   }
@@ -473,16 +541,8 @@ function getMessages(chatId) {
   });
 }
 
-function scheduleOpenChatRefresh() {
-  if (refreshTimer) {
-    return;
-  }
-  refreshTimer = setTimeout(refreshOpenChat, 15000);
-}
-
 function refreshOpenChat() {
   var chatId = currentChatId;
-  refreshTimer = null;
   if (!chatId) {
     return;
   }
@@ -494,7 +554,6 @@ function refreshOpenChat() {
     messages = messages || [];
     signature = messageSignature(messages);
     if (signature === currentChatSignature) {
-      scheduleOpenChatRefresh();
       return;
     }
     currentChatSignature = signature;
@@ -511,10 +570,8 @@ function refreshOpenChat() {
       sendMessageRows(messageStore[chatId]);
       done('messages_done', Math.min(messageStore[chatId].length, MAX_MESSAGE_ROWS));
     }
-    scheduleOpenChatRefresh();
   }).catch(function(err) {
     console.log('Open chat refresh failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
-    scheduleOpenChatRefresh();
   });
 }
 
@@ -524,11 +581,10 @@ function leaveChat(chatId) {
     currentChatSignature = '';
     cancelQueuedImageTransfers();
     scheduleChatAvatars(300);
-    scheduleChatListRefresh();
-  }
-  if (refreshTimer) {
-    clearTimeout(refreshTimer);
-    refreshTimer = null;
+    if (chatListStale) {
+      chatListStale = false;
+      getChats(true);
+    }
   }
 }
 
@@ -622,6 +678,7 @@ function sendImage(chatId, messageId) {
   var startedAt = Date.now();
   cancelQueuedAvatarTransfers();
   cancelQueuedImageTransfers();
+  imageTransferActive = true;
   var requestSeq = imageRequestSeq;
   activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES).then(function(bytes) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
@@ -634,6 +691,7 @@ function sendImage(chatId, messageId) {
       return;
     }
     console.log('Image failed: ' + (err && err.message ? err.message : err));
+    imageTransferActive = false;
     var failed = {};
     failed[MessageKeys.Type] = 'image_error';
     failed[MessageKeys.MessageId] = String(messageId || '');
@@ -644,6 +702,7 @@ function sendImage(chatId, messageId) {
 function sendImageBytes(messageId, bytes) {
   var start = {};
   var transferId = ++imageTransferSeq;
+  imageTransferActive = true;
   start[MessageKeys.Type] = 'image_start';
   start[MessageKeys.MessageId] = String(messageId || '');
   start[MessageKeys.ImageSize] = bytes.length;
@@ -704,8 +763,10 @@ function sendAvatar(chatId, bytes) {
   sendToWatch(donePayload);
 }
 
-function queueChatAvatars(chats) {
-  avatarChats = (chats || []).slice(0, Math.min(MAX_ROWS, AVATAR_ROWS));
+function queueChatAvatars(chats, onlyMissing) {
+  avatarChats = (chats || []).slice(0, Math.min(MAX_ROWS, AVATAR_ROWS)).filter(function(chat) {
+    return chat && chat.id && (!onlyMissing || !knownAvatarChats[chat.id]);
+  });
   avatarIndex = 0;
   scheduleChatAvatars(350);
 }
@@ -739,6 +800,7 @@ function sendChatAvatars() {
     if (currentChatId) {
       return;
     }
+    knownAvatarChats[chat.id] = true;
     sendAvatar(chat.id, bytes);
     avatarIndex++;
     scheduleChatAvatars(80);
@@ -756,6 +818,7 @@ Pebble.addEventListener('ready', function() {
   activePgjs().ready().catch(function(err) {
     console.log('Warm connect failed: ' + (err && err.message ? err.message : err));
   });
+  startTelegramUpdates();
   getChats(false);
 });
 
