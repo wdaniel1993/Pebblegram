@@ -110,9 +110,49 @@ typedef struct {
 } Message;
 
 typedef struct {
-  const char *token;
   const char *glyph;
 } ReactionChoice;
+
+static const ReactionChoice REACTION_GRID_CHOICES[] = {
+  // Faces
+  {"\xF0\x9F\x98\x80"}, // 😀
+  {"\xF0\x9F\x98\x84"}, // 😄
+  {"\xF0\x9F\x98\x82"}, // 😂
+  {"\xF0\x9F\x98\xAD"}, // 😭
+  {"\xF0\x9F\x98\x8D"}, // 😍
+  {"\xF0\x9F\x98\x98"}, // 😘
+  {"\xF0\x9F\x98\x8E"}, // 😎
+  {"\xF0\x9F\x98\xB3"}, // 😳
+  {"\xF0\x9F\x98\xAC"}, // 😬
+  {"\xF0\x9F\x98\x90"}, // 😐
+  {"\xF0\x9F\x98\xA2"}, // 😢
+  {"\xF0\x9F\x98\xA1"}, // 😡
+  {"\xF0\x9F\x98\xB1"}, // 😱
+  {"\xF0\x9F\x98\xB4"}, // 😴
+  {"\xF0\x9F\x98\x87"}, // 😇
+  {"\xF0\x9F\x98\x88"}, // 😈
+  // Hands
+  {"\xF0\x9F\x91\x8D"}, // 👍
+  {"\xF0\x9F\x91\x8E"}, // 👎
+  {"\xF0\x9F\x91\x8C"}, // 👌
+  {"\xF0\x9F\x91\x8A"}, // 👊
+  {"\xE2\x9C\x8A"},     // ✊
+  {"\xE2\x9C\x8C"},     // ✌
+  {"\xF0\x9F\x91\x8B"}, // 👋
+  {"\xE2\x9C\x8B"},     // ✋
+  {"\xF0\x9F\x91\x8F"}, // 👏
+  {"\xF0\x9F\x99\x8C"}, // 🙌
+  {"\xF0\x9F\x99\x8F"}, // 🙏
+  // Hearts
+  {"\xE2\x9D\xA4"},     // ❤
+  {"\xF0\x9F\x92\x94"}, // 💔
+  {"\xF0\x9F\x92\x8B"}, // 💋
+  // Symbols
+  {"\xF0\x9F\x8E\x89"}, // 🎉
+  {"\xF0\x9F\x8D\xBB"}, // 🍻
+  {"\xF0\x9F\x8D\xBA"}, // 🍺
+  {"\xF0\x9F\x92\xA9"}  // 💩
+};
 
 static Window *s_main_window;
 static MenuLayer *s_chat_menu;
@@ -1719,23 +1759,11 @@ static void delete_selected_message(void) {
 }
 
 static const ReactionChoice *reaction_grid_choices(void) {
-  static const ReactionChoice choices[] = {
-    {"like", "\xF0\x9F\x91\x8D"},
-    {"heart", "\xE2\x9D\xA4"},
-    {"party", "\xF0\x9F\x8E\x89"},
-    {"clap", "\xF0\x9F\x91\x8F"},
-    {"grin", "\xF0\x9F\x98\x81"},
-    {"love", "\xF0\x9F\x98\x8D"},
-    {"dislike", "\xF0\x9F\x91\x8E"},
-    {"poop", "\xF0\x9F\x92\xA9"},
-    {"sleep", "\xF0\x9F\x98\xB4"},
-    {"cool", "\xF0\x9F\x98\x8E"}
-  };
-  return choices;
+  return REACTION_GRID_CHOICES;
 }
 
 static int reaction_grid_count(void) {
-  return 10;
+  return (int)(sizeof(REACTION_GRID_CHOICES) / sizeof(REACTION_GRID_CHOICES[0]));
 }
 
 static const char *reaction_token_at(int index) {
@@ -1759,7 +1787,7 @@ static const char *reaction_grid_token_at(int index) {
   if (index < 0 || index >= reaction_grid_count()) {
     return "";
   }
-  return reaction_grid_choices()[index].token;
+  return reaction_grid_choices()[index].glyph;
 }
 
 static void send_selected_reaction(const char *token) {
@@ -2528,7 +2556,7 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
       }
       graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorLightGray);
       graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
-                         fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
+                         fonts_get_system_font(FONT_KEY_GOTHIC_28),
                          GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     }

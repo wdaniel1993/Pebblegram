@@ -305,7 +305,7 @@ function deleteMessage(chatId, messageId) {
 
 function sendReaction(chatId, messageId, token) {
   var rows = messages[String(chatId)] || [];
-  var glyph = reactionGlyphs[token] || '';
+  var glyph = reactionGlyphs[token] || (token && /[^\x00-\x7f]/.test(token) ? token : '');
   for (var i = 0; i < rows.length; i += 1) {
     if (rows[i].id === String(messageId)) {
       rows[i].reactions = token === 'remove' ? '' : glyph;

@@ -558,6 +558,9 @@ function reactionEmoticon(token) {
     case 'bolt':
       return '\u26a1';
     default:
+      if (token && /[^\x00-\x7f]/.test(token)) {
+        return token;
+      }
       return '';
   }
 }
