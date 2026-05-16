@@ -1259,7 +1259,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   recalc_message_layout();
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
-  GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
   int first = 0;
   while (first < s_message_count - 1 &&
          s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
@@ -1879,6 +1879,17 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     bool show_pending = s_chat_view_pending;
     bool chat_visible = s_view_state == ViewStateChat && s_messages_root;
     selected_id[0] = '\0';
+    if (loading_older && count == 0) {
+      s_loading_older_messages = false;
+      s_older_move_to_previous = false;
+      s_older_anchor_id[0] = '\0';
+      s_older_anchor_y = 0;
+      show_status("No older messages");
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      return;
+    }
     if (loading_older && s_older_anchor_id[0]) {
       copy_cstr(selected_id, sizeof(selected_id), s_older_anchor_id);
     } else if (s_user_scrolled_messages && s_selected_message >= 0 && s_selected_message < s_message_count) {

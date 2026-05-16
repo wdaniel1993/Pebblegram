@@ -81,9 +81,18 @@ var chats = [
 
 var messages = {
   '1001': [
-    message(100, 'Maya', 'Pinned chat stays above regular chats.', false),
-    message(101, 'You', 'Good. This one has a reaction target too.', true, null, '\ud83d\udc4d2'),
-    message(102, 'Maya', 'Live updates should not yank the selection around.', false)
+    message(100, 'Maya', 'Reaction font test 1', false, null, '\ud83d\ude00\ud83d\ude04\ud83d\ude02'),
+    message(101, 'You', 'Reaction font test 2', true, null, '\ud83d\ude2d\ud83d\ude0d\ud83d\ude18'),
+    message(102, 'Maya', 'Reaction font test 3', false, null, '\ud83d\ude0e\ud83d\ude33\ud83d\ude2c'),
+    message(103, 'You', 'Reaction font test 4', true, null, '\ud83d\ude10\ud83d\ude22\ud83d\ude21'),
+    message(104, 'Maya', 'Reaction font test 5', false, null, '\ud83d\ude31\ud83d\ude34\ud83d\ude07'),
+    message(105, 'You', 'Reaction font test 6', true, null, '\ud83d\ude08\ud83d\udc4d\ud83d\udc4e'),
+    message(106, 'Maya', 'Reaction font test 7', false, null, '\ud83d\udc4c\ud83d\udc4a\u270a'),
+    message(107, 'You', 'Reaction font test 8', true, null, '\u270c\ud83d\udc4b\u270b'),
+    message(108, 'Maya', 'Reaction font test 9', false, null, '\ud83d\udc4f\ud83d\ude4c\ud83d\ude4f'),
+    message(109, 'You', 'Reaction font test 10', true, null, '\u2764\ud83d\udc94\ud83d\udc8b'),
+    message(110, 'Maya', 'Reaction font test 11', false, null, '\ud83c\udf89\ud83c\udf7b\ud83c\udf7a'),
+    message(111, 'You', 'Reaction font test 12', true, null, '\ud83d\udca9')
   ],
   '1002': [
     message(200, 'Riley', 'Several photos in a row exercise image eviction.', false),
