@@ -116,7 +116,7 @@ function createClient(gram, config, sessionString) {
   return new gram.TelegramClient(new gram.StringSession(sessionString || ''), config.apiId, config.apiHash, {
     connectionRetries: 3,
     requestRetries: 3,
-    reconnectRetries: 0,
+    reconnectRetries: 3,
     useWSS: config.forceWSS === true,
     testServers: config.testServers === true,
     deviceModel: 'Pebblegram',

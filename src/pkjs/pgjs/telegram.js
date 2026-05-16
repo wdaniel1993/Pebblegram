@@ -45,8 +45,18 @@ function objectName(value) {
 
 function messagePhoto(message) {
   var media = message && message.media;
-  var webpage = media && (media.webpage || media.webPage);
+  var webpage = messageWebpage(message);
   return (message && message.photo) || (media && media.photo) || (webpage && webpage.photo) || null;
+}
+
+function hasDirectPhoto(message) {
+  var media = message && message.media;
+  return !!((message && message.photo) || (media && media.photo));
+}
+
+function messageWebpage(message) {
+  var media = message && message.media;
+  return media && (media.webpage || media.webPage) || null;
 }
 
 function photoDimensions(message) {
@@ -145,6 +155,19 @@ function isGif(message) {
   return !!(file && file.mimeType === 'image/gif');
 }
 
+function isVideo(message) {
+  var document = messageDocument(message);
+  var file = message && message.file;
+  if (document) {
+    return !!(hasDocumentAttribute(document, 'Video') || (document.mimeType || '').indexOf('video/') === 0);
+  }
+  return !!(file && (file.mimeType || '').indexOf('video/') === 0);
+}
+
+function hasPreviewableStill(message) {
+  return isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message));
+}
+
 function compactMediaLabel(label, detail) {
   return detail ? '[' + label + '] ' + detail : '[' + label + ']';
 }
@@ -152,6 +175,7 @@ function compactMediaLabel(label, detail) {
 function mediaLabel(message) {
   var media = message && message.media;
   var mediaName = objectName(media);
+  var webpage = messageWebpage(message);
   var document = messageDocument(message);
   var file = message && message.file;
   var fileName;
@@ -161,7 +185,7 @@ function mediaLabel(message) {
   if (!message) {
     return '';
   }
-  if (hasPhoto(message)) {
+  if (hasDirectPhoto(message)) {
     return compactMediaLabel('photo');
   }
   if (media) {
@@ -180,8 +204,8 @@ function mediaLabel(message) {
     if (media.game || mediaName.indexOf('Game') !== -1) {
       return compactMediaLabel('Game', media.game && media.game.title);
     }
-    if (media.webpage || media.webPage || mediaName.indexOf('WebPage') !== -1) {
-      var webpage = media.webpage || media.webPage || {};
+    if (webpage || mediaName.indexOf('WebPage') !== -1) {
+      webpage = webpage || {};
       return compactMediaLabel('Link', webpage.title || webpage.url);
     }
   }
@@ -217,7 +241,7 @@ function mediaLabel(message) {
     return compactMediaLabel('GIF', fileName);
   }
   if (hasDocumentAttribute(document, 'Video') || mimeType.indexOf('video/') === 0) {
-    return compactMediaLabel('Video', fileName);
+    return compactMediaLabel('Video preview', fileName);
   }
   if (audioAttr || mimeType.indexOf('audio/') === 0) {
     return compactMediaLabel(audioAttr && audioAttr.voice ? 'Voice' : 'Audio', fileName || (audioAttr && audioAttr.title));
@@ -235,8 +259,16 @@ function displayMessageText(message) {
 }
 
 function displayChatMessageText(message) {
-  if (hasPhoto(message)) {
+  if (hasDirectPhoto(message)) {
     return messageText(message);
+  }
+  if (isGif(message)) {
+    var gifText = messageText(message);
+    return gifText ? compactMediaLabel('GIF preview') + ' ' + gifText : compactMediaLabel('GIF preview');
+  }
+  if (isVideo(message)) {
+    var videoText = messageText(message);
+    return videoText ? compactMediaLabel('Video preview') + ' ' + videoText : compactMediaLabel('Video preview');
   }
   return displayMessageText(message);
 }
@@ -270,7 +302,6 @@ function mediaPreviewCandidates(message) {
   pushMediaPreviewCandidate(candidates, extendedMedia && extendedMedia.thumb);
   pushMediaPreviewCandidate(candidates, document && document.thumbs);
   pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
-
   candidates.sort(function(a, b) {
     return mediaPreviewArea(b) - mediaPreviewArea(a);
   });
@@ -337,13 +368,13 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
   return tryNext();
 }
 
-function downloadGifPreview(client, message) {
+function downloadStillPreview(client, message) {
   var candidates = mediaPreviewCandidates(message);
   var index = 0;
 
   function tryNext() {
     if (index >= candidates.length) {
-      throw new Error('gif has no usable still preview');
+      throw new Error('media has no usable still preview');
     }
     return downloadMediaPreviewCandidate(client, message, candidates[index++]).catch(tryNext);
   }
@@ -371,15 +402,51 @@ function senderName(message) {
   return '';
 }
 
+function reactionGlyph(reaction) {
+  var name = objectName(reaction);
+  var glyph;
+  if (!reaction) {
+    return '';
+  }
+  glyph = reaction.emoticon || reaction.emoji || '';
+  if (glyph) {
+    return glyph;
+  }
+  if (name.indexOf('CustomEmoji') !== -1) {
+    return '*';
+  }
+  if (name.indexOf('Paid') !== -1) {
+    return '$';
+  }
+  return '';
+}
+
+function reactionSummary(message) {
+  var reactions = message && message.reactions;
+  var results = (reactions && reactions.results) || [];
+  var parts = [];
+  for (var i = 0; i < results.length && parts.length < 3; i += 1) {
+    var result = results[i];
+    var glyph = reactionGlyph(result && result.reaction);
+    var count = result && result.count;
+    if (!glyph) {
+      continue;
+    }
+    parts.push(glyph + (count && count > 1 ? String(count) : ''));
+  }
+  return parts.join(' ');
+}
+
 function normalizeMessage(message) {
-  var gif = isGif(message);
-  var imageDimensions = photoDimensions(message) || (gif ? documentDimensions(message) : null);
+  var previewable = hasPreviewableStill(message);
+  var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
   return {
     id: String(message.id),
     sender: senderName(message),
     text: displayChatMessageText(message),
+    reactions: reactionSummary(message),
     outgoing: !!message.out,
-    image_token: (hasPhoto(message) || gif) ? String(message.id) : null,
+    image_token: (hasPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
     image_height: imageDimensions ? imageDimensions.height : 0
   };
@@ -388,7 +455,7 @@ function normalizeMessage(message) {
 function chats(limit) {
   return auth.getClient().then(function(client) {
     return client.getDialogs({limit: limit, folder: 0}).then(function(dialogs) {
-      return dialogs.map(function(dialog) {
+      return dialogs.map(function(dialog, index) {
         var entity = dialog.entity || {};
         var id = entityId(entity);
         var preview = dialog.message ? displayMessageText(dialog.message) : '';
@@ -397,8 +464,15 @@ function chats(limit) {
           title: displayName(entity),
           preview: preview,
           unread: !!(dialog.unreadCount || dialogUnreadMarked(dialog)),
-          unread_count: dialog.unreadCount || 0
+          unread_count: dialog.unreadCount || 0,
+          pinned: !!(dialog.pinned || dialog.isPinned || (dialog.dialog && (dialog.dialog.pinned || dialog.dialog.isPinned))),
+          order: index
         };
+      }).sort(function(a, b) {
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return a.order - b.order;
       });
     });
   });
@@ -509,11 +583,11 @@ function downloadMedia(chatId, messageId) {
     return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
       var message = rows && rows[0];
       var photo = messagePhoto(message);
-      if (!message || (!hasPhoto(message) && !isGif(message))) {
+      if (!message || (!hasPhoto(message) && !hasPreviewableStill(message))) {
         throw new Error('message has no previewable media');
       }
-      if (isGif(message) && !photo) {
-        return downloadGifPreview(client, message);
+      if (hasPreviewableStill(message) && !photo) {
+        return downloadStillPreview(client, message);
       }
       return downloadImageBytes(client, message, {}).catch(function() {
         return downloadImageBytes(client, photo || message.media, {});
