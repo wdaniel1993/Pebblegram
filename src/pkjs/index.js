@@ -72,8 +72,8 @@ function configureForPlatform() {
   if (info && info.platform === 'emery') {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
-    MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 510;
+    MAX_MESSAGE_ROWS = 22;
+    MAX_MESSAGE_TEXT = 300;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
     IMAGE_MAX_BYTES = 20000;
@@ -81,8 +81,8 @@ function configureForPlatform() {
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
-    MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 510;
+    MAX_MESSAGE_ROWS = 22;
+    MAX_MESSAGE_TEXT = 300;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 20000;
@@ -313,6 +313,18 @@ function sendMessageRows(messages) {
     if (message.reactions) {
       payload[MessageKeys.Reactions] = clampUtf8Bytes(message.reactions, 16);
     }
+    if (message.reply_sender) {
+      payload[MessageKeys.ReplySender] = clampText(message.reply_sender, 35);
+    }
+    if (message.reply_text) {
+      payload[MessageKeys.ReplyText] = watchText(message.reply_text, 95);
+    }
+    if (message.forward_sender) {
+      payload[MessageKeys.ForwardSender] = clampText(message.forward_sender, 35);
+    }
+    if (message.forward_text) {
+      payload[MessageKeys.ForwardText] = watchText(message.forward_text, 95);
+    }
     payload[MessageKeys.IsOutgoing] = message.outgoing ? 1 : 0;
     if (message.image_token) {
       payload[MessageKeys.ImageToken] = String(message.image_token);
@@ -398,6 +410,34 @@ function sendStoredMessages(chatId) {
   sendMessageRows(messages);
   done('messages_done', Math.min(messages.length, MAX_MESSAGE_ROWS));
   return true;
+}
+
+function sendMessageContext(chatId, messageId) {
+  var rows = messageStore[chatId] || [];
+  var message = null;
+  var payload = {};
+  var title = 'Reply';
+  var text = 'Message not loaded';
+  for (var i = 0; i < rows.length; i += 1) {
+    if (String(rows[i].id) === String(messageId)) {
+      message = rows[i];
+      break;
+    }
+  }
+  if (message) {
+    if (message.reply_text || message.reply_sender) {
+      title = message.reply_sender || 'Reply';
+      text = message.reply_text || 'Message';
+    } else if (message.forward_text || message.forward_sender) {
+      title = 'Fwd from ' + (message.forward_sender || 'Forwarded');
+      text = message.forward_text || 'Message';
+    }
+  }
+  payload[MessageKeys.Type] = 'message_context';
+  payload[MessageKeys.MessageId] = clampText(messageId, 23);
+  payload[MessageKeys.Sender] = clampText(title, 35);
+  payload[MessageKeys.Text] = watchText(text, MAX_MESSAGE_TEXT);
+  sendToWatch(payload);
 }
 
 function prefetchMessages(chatId) {
@@ -592,7 +632,17 @@ function leaveChat(chatId) {
 
 function messageSignature(messages) {
   return messages.map(function(message) {
-    return [message.id, message.text, message.reactions || '', message.image_token || '', message.outgoing ? '1' : '0'].join('|');
+    return [
+      message.id,
+      message.text,
+      message.reactions || '',
+      message.reply_sender || '',
+      message.reply_text || '',
+      message.forward_sender || '',
+      message.forward_text || '',
+      message.image_token || '',
+      message.outgoing ? '1' : '0'
+    ].join('|');
   }).join('~');
 }
 
@@ -849,6 +899,8 @@ Pebble.addEventListener('appmessage', function(event) {
     getMessages(chatId);
   } else if (command === 'get_older_messages') {
     getOlderMessages(chatId, messageId);
+  } else if (command === 'get_context') {
+    sendMessageContext(chatId, messageId);
   } else if (command === 'leave_chat') {
     leaveChat(chatId);
   } else if (command === 'send_message') {

@@ -49,7 +49,11 @@
       "ImageWidth",
       "ImageHeight",
       "Reactions",
-      "EditMessageId"
+      "EditMessageId",
+      "ReplySender",
+      "ReplyText",
+      "ForwardSender",
+      "ForwardText"
     ],
     "resources": {
       "media": [

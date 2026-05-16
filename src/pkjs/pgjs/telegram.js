@@ -437,6 +437,106 @@ function reactionSummary(message) {
   return parts.join(' ');
 }
 
+
+function replyMessageId(message) {
+  var reply = message && (message.replyTo || message.reply_to);
+  if (!reply) {
+    return '';
+  }
+  return String(reply.replyToMsgId || reply.reply_to_msg_id || reply.replyToTopId || reply.reply_to_top_id || '');
+}
+
+function contextText(message) {
+  return displayChatMessageText(message) || mediaLabel(message) || 'Message';
+}
+
+function replyContext(message) {
+  if (!message) {
+    return null;
+  }
+  return {
+    sender: senderName(message) || 'Message',
+    text: contextText(message)
+  };
+}
+
+function peerLabel(peer) {
+  var id = peerId(peer);
+  return id ? 'Peer ' + id : '';
+}
+
+function forwardContext(message) {
+  var forward = message && (message.fwdFrom || message.fwd_from);
+  var sender = '';
+  if (!forward) {
+    return null;
+  }
+  sender = forward.fromName || forward.from_name || forward.postAuthor || forward.post_author ||
+    forward.savedFromName || forward.saved_from_name || peerLabel(forward.fromId || forward.from_id || forward.savedFromPeer || forward.saved_from_peer) ||
+    'Forwarded';
+  return {
+    sender: sender,
+    text: contextText(message)
+  };
+}
+
+function normalizeMessageWithContext(message, replies) {
+  var row = normalizeMessage(message);
+  var replyId = replyMessageId(message);
+  var reply = replyId && replies ? replies[replyId] : null;
+  var forward = forwardContext(message);
+  if (reply) {
+    row.reply_sender = reply.sender;
+    row.reply_text = reply.text;
+  }
+  if (forward) {
+    row.forward_sender = forward.sender;
+    row.forward_text = forward.text;
+  }
+  return row;
+}
+
+function normalizeMessageRows(client, chatId, rows) {
+  rows = rows || [];
+  var byId = {};
+  var replies = {};
+  var missing = [];
+  rows.forEach(function(row) {
+    byId[String(row.id)] = row;
+  });
+  rows.forEach(function(row) {
+    var replyId = replyMessageId(row);
+    if (!replyId) {
+      return;
+    }
+    if (byId[replyId]) {
+      replies[replyId] = replyContext(byId[replyId]);
+    } else if (!replies[replyId]) {
+      missing.push(parseInt(replyId, 10) || replyId);
+      replies[replyId] = {sender: 'Reply', text: 'Message not loaded'};
+    }
+  });
+  if (!missing.length) {
+    return Promise.resolve(rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    }));
+  }
+  return client.getMessages(chatId, {ids: missing}).then(function(replyRows) {
+    (replyRows || []).forEach(function(replyRow) {
+      if (replyRow && replyRow.id !== undefined && replyRow.id !== null) {
+        replies[String(replyRow.id)] = replyContext(replyRow);
+      }
+    });
+    return rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    });
+  }).catch(function() {
+    return rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    });
+  });
+}
+
 function normalizeMessage(message) {
   var previewable = hasPreviewableStill(message);
   var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
@@ -485,7 +585,7 @@ function messages(chatId, limit, beforeId) {
       options.offsetId = parseInt(beforeId, 10) || 0;
     }
     return client.getMessages(chatId, options).then(function(rows) {
-      return rows.slice().reverse().map(normalizeMessage);
+      return normalizeMessageRows(client, chatId, rows.slice().reverse());
     });
   });
 }

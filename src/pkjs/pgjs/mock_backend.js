@@ -76,7 +76,8 @@ var chats = [
   {id: '1005', title: 'Muted Project', pinned: false, unread: false, unread_count: 0, muted: true, archived: false},
   {id: '1006', title: 'Archive Candidate', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
   {id: '1007', title: 'Long Names and Wrapping', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
-  {id: '1008', title: 'Basalt Photos', pinned: false, unread: false, unread_count: 0, muted: false, archived: false}
+  {id: '1008', title: 'Basalt Photos', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
+  {id: '1009', title: 'Reply Forward Matrix', pinned: false, unread: false, unread_count: 0, muted: false, archived: false}
 ];
 
 var messages = {
@@ -92,7 +93,15 @@ var messages = {
     message(108, 'Maya', 'Reaction font test 9', false, null, '\ud83d\udc4f\ud83d\ude4c\ud83d\ude4f'),
     message(109, 'You', 'Reaction font test 10', true, null, '\u2764\ud83d\udc94\ud83d\udc8b'),
     message(110, 'Maya', 'Reaction font test 11', false, null, '\ud83c\udf89\ud83c\udf7b\ud83c\udf7a'),
-    message(111, 'You', 'Reaction font test 12', true, null, '\ud83d\udca9')
+    message(111, 'You', 'Reaction font test 12', true, null, '\ud83d\udca9'),
+    message(112, 'Maya', 'Reply quote should fit above this bubble body.', false, null, '', {
+      reply_sender: 'You',
+      reply_text: 'Reaction font test 8'
+    }),
+    message(113, 'You', 'Forward details should appear above this outgoing bubble.', true, null, '', {
+      forward_sender: 'Watch Lab',
+      forward_text: 'Original forwarded note with a useful compact preview.'
+    })
   ],
   '1002': [
     message(200, 'Riley', 'Several photos in a row exercise image eviction.', false),
@@ -130,11 +139,62 @@ var messages = {
     imageMessage(800, 'Alex', 'Basalt-sized image target', false, 640, 900),
     imageMessage(801, 'Alex', 'Another image follows closely', false, 900, 640),
     message(802, 'Alex', 'If this fails in emulator, the bug is in UI/image transfer, not Telegram.', false)
+  ],
+  '1009': [
+    message(900, 'Nora', 'Old anchor from the start of history: this reply target is intentionally far above the initially loaded window and should still appear in the quote viewer when referenced later.', false),
+    message(901, 'You', 'Old outgoing anchor from the start of history for testing replies to your own old messages.', true),
+    message(902, 'Nora', 'Spacer 1 for older history.', false),
+    message(903, 'You', 'Spacer 2 for older history.', true),
+    message(904, 'Nora', 'Spacer 3 for older history.', false),
+    message(905, 'You', 'Spacer 4 for older history.', true),
+    message(906, 'Nora', 'Incoming reply to a recent outgoing message.', false, null, '', {
+      reply_sender: 'You',
+      reply_text: 'Spacer 4 for older history.'
+    }),
+    message(907, 'You', 'Outgoing reply to a recent incoming message.', true, null, '', {
+      reply_sender: 'Nora',
+      reply_text: 'Incoming reply to a recent outgoing message.'
+    }),
+    message(908, 'Nora', 'Incoming forward with compact details.', false, null, '', {
+      forward_sender: 'Design Room',
+      forward_text: 'Forwarded incoming note for the watch bubble.'
+    }),
+    message(909, 'You', 'Outgoing forward with compact details.', true, null, '', {
+      forward_sender: 'Release Desk',
+      forward_text: 'Forwarded outgoing note for the watch bubble.'
+    }),
+    message(910, 'Nora', 'Incoming reply to an old incoming message from way back in history.', false, null, '', {
+      reply_sender: 'Nora',
+      reply_text: 'Old anchor from the start of history: this reply target is intentionally far above the initially loaded window and should still appear in the quote viewer when referenced later.'
+    }),
+    message(911, 'You', 'Outgoing reply to an old outgoing message from way back in history.', true, null, '', {
+      reply_sender: 'You',
+      reply_text: 'Old outgoing anchor from the start of history for testing replies to your own old messages.'
+    }),
+    message(912, 'Nora', 'Incoming forward whose source text is long enough that the bubble preview should ellipsize but the View Forward action should show the full compact watch text.', false, null, '', {
+      forward_sender: 'Longform Notes',
+      forward_text: 'This forwarded source text deliberately runs long so the quote area stays compact inside the message bubble while the action menu can open the full forwarded text without moving your place in the chat.'
+    }),
+    message(913, 'You', 'Outgoing reply with a long quoted source. Open View Reply here to confirm the submenu can scroll the quote while keeping the chat position.', true, null, '', {
+      reply_sender: 'Nora',
+      reply_text: 'This is a long replied message body used to verify that reply quotes can be expanded from the message action menu. It should not warp to the original message; it should open in the same full text viewer pattern used by truncated messages.'
+    }),
+    message(914, 'Nora', 'Plain incoming message after all context cases.', false),
+    message(915, 'You', 'Plain outgoing message after all context cases.', true),
+    message(916, 'Nora', 'Latest incoming reply to the oldest anchor, so the first page catches an old-history reference.', false, null, '', {
+      reply_sender: 'Nora',
+      reply_text: 'Old anchor from the start of history: this reply target is intentionally far above the initially loaded window and should still appear in the quote viewer when referenced later.'
+    }),
+    message(917, 'You', 'Latest outgoing forward to keep sent forwards visible on first load.', true, null, '', {
+      forward_sender: 'Archive Bot',
+      forward_text: 'Forwarded from far back in the conversation, shown without jumping away from the current chat position.'
+    })
+
   ]
 };
 
-function message(id, sender, text, outgoing, imageToken, reactions) {
-  return {
+function message(id, sender, text, outgoing, imageToken, reactions, context) {
+  var row = {
     id: String(id),
     sender: outgoing ? 'You' : sender,
     text: text || '',
@@ -144,6 +204,13 @@ function message(id, sender, text, outgoing, imageToken, reactions) {
     image_width: 0,
     image_height: 0
   };
+  context = context || {};
+  row.reply_sender = context.reply_sender || '';
+  row.reply_text = context.reply_text || '';
+  row.forward_sender = context.forward_sender || '';
+  row.forward_text = context.forward_text || '';
+  row.reply_to = context.reply_to || '';
+  return row;
 }
 
 function imageMessage(id, sender, text, outgoing, width, height) {
@@ -277,13 +344,27 @@ function getMessages(chatId, limit, beforeId) {
   return delayed(cloneRows(rows.slice(Math.max(0, end - (limit || 8)), end)), 160);
 }
 
-function sendMessage(chatId, text) {
+function sendMessage(chatId, text, replyTo) {
   var id = nextMessageId++;
   var chat = chatById(chatId);
+  var rows = messages[String(chatId)] || [];
+  var target = null;
+  var context = {};
   if (!messages[String(chatId)]) {
-    messages[String(chatId)] = [];
+    messages[String(chatId)] = rows;
   }
-  messages[String(chatId)].push(message(id, 'You', text, true));
+  if (replyTo) {
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i].id === String(replyTo)) {
+        target = rows[i];
+        break;
+      }
+    }
+    context.reply_to = String(replyTo);
+    context.reply_sender = target ? target.sender : 'Reply';
+    context.reply_text = target ? target.text : 'Message not loaded';
+  }
+  rows.push(message(id, 'You', text, true, null, '', context));
   if (chat) {
     chat.updated = Date.now();
   }
