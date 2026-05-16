@@ -1,57 +1,46 @@
-# Pebblegram 2.4 Release Plan
+# Pebblegram 2.5 Release Plan
 
 ## Current Goal
 
-Ship a stable 2.4 experimental build from the known-good 2.2 checkpoint, keeping
-2.2 available as the rollback release.
+Build 2.5 on top of the stable 2.4 mainline release. The 2.5 target is sending
+message reactions while keeping the 2.4 live refresh, media preview, pinned chat,
+and image-loading stability intact.
 
-## 2.4 Implemented
+## Stable Base
 
-- Rebuilt `experiment/2.4` from stable 2.2 instead of carrying forward the
-  crashy 2.3/2.4 branch history.
-- Restored longer message display and faster open-chat live merge behavior.
-- Restored view-only message reactions.
-- Prefer actual Telegram reaction emoji when available; custom or paid reactions
-  fall back to compact text markers.
-- Restored GIF, MP4-as-GIF, and video still-preview loading through Telegram
-  thumbnail/still preview media.
-- Restored webpage preview thumbnails.
-- Refresh chat-list snippets/unread counts while the app is sitting on the chat
-  list.
-- Keep pinned Telegram chats grouped at the top of the chat list.
-- Preserve the selected chat by chat id when chat-list refreshes reorder rows.
-- Kept normal photos uncluttered in chat view while preserving useful media tags
-  in chat-list snippets.
-- Kept image transfer cancellation and selected-image priority from the stable
-  photo-loading work.
-- Added watch-side text layout guards and phone-side URL/token sanitization to
-  reduce crash risk from pathological message content.
+- `main` now carries the stable 2.4 build.
+- `build/Pebblegram-2.4.0-stable.pbw` is the current rollback/release PBW.
+- 2.4 includes view-only reactions, GIF/MP4/video still previews, webpage
+  previews, pinned chat ordering, live chat-list refresh, and selected-row
+  preservation during chat-list refresh.
 
-## 2.4 Validation
+## 2.5 Implementation Plan
 
-- Test the chats that previously crashed the OS.
-- Test webpage previews, YouTube previews, GIF previews, MP4/video previews,
-  photo-heavy chats, and older-message scrolling.
-- Test incoming messages while sitting on the chat list: the affected chat should
-  update its snippet/unread count and move according to Telegram ordering.
-- Test pinned chats with and without new incoming messages.
-- Confirm reactions render as emoji where Pebble fonts support them and fall
-  back acceptably where they do not.
-- Confirm Basalt still handles photo and preview loading without heap failures.
-- Keep `build/Pebblegram-2.2.0-stable.pbw` as the rollback PBW while 2.4 is
-  tested.
+- Add a selected-message action menu item for reactions, reusing the existing
+  message action flow rather than adding a new screen type if possible.
+- Start with a compact fixed reaction set that is useful on Pebble input:
+  thumbs up, heart, laugh, surprised, sad, and angry.
+- Add a JS command path that sends the selected reaction to Telegram for the
+  selected message, then refreshes the active chat so the viewed reaction state
+  confirms the action.
+- Prefer Telegram's native reaction API through GramJS; if the current bundled
+  API lacks a helper, use the raw `messages.SendReaction` request.
+- Keep reaction text rendering unchanged for 2.5 unless sending exposes a
+  rendering bug.
 
-## Remaining 2.4 Items
+## Validation
 
-- No planned 2.4 feature work remains after validation unless testing finds a
-  regression.
-- If OS crashes return, isolate the single failing content path by toggling:
-  reactions, webpage preview thumbnails, GIF/video preview thumbnails, then
-  sanitized full text.
+- Send each built-in reaction to incoming and outgoing messages.
+- Replace an existing reaction with a different reaction.
+- Clear/remove a reaction if Telegram's API supports an empty reaction request
+  cleanly in this bundled GramJS version; otherwise defer reaction removal.
+- Confirm the active chat refreshes without moving the selected message.
+- Confirm live incoming messages and image loading still work after sending a
+  reaction.
+- Build on all platforms and keep Gabbro under the app footprint limit.
 
 ## Later Releases
 
-- 2.5: Sending message reactions.
 - 2.6: Reply/quote display and quote navigation.
 - 2.7: Notification launch/deep-link behavior, if the Pebble app and phone
   notification stack expose enough control.
