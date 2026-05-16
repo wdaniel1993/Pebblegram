@@ -1,4 +1,5 @@
 var auth = require('./auth');
+var gram = require('./gramjs.bundle');
 
 function entityId(entity) {
   if (!entity) {
@@ -35,7 +36,357 @@ function messageText(message) {
 }
 
 function hasPhoto(message) {
-  return !!(message && message.photo);
+  return !!messagePhoto(message);
+}
+
+function objectName(value) {
+  return value && (value.className || value.classType || value.constructorName || (value.constructor && value.constructor.name) || '');
+}
+
+function messagePhoto(message) {
+  var media = message && message.media;
+  var webpage = messageWebpage(message);
+  return (message && message.photo) || (media && media.photo) || (webpage && webpage.photo) || null;
+}
+
+function hasDirectPhoto(message) {
+  var media = message && message.media;
+  return !!((message && message.photo) || (media && media.photo));
+}
+
+function messageWebpage(message) {
+  var media = message && message.media;
+  return media && (media.webpage || media.webPage) || null;
+}
+
+function photoDimensions(message) {
+  var photo = messagePhoto(message);
+  var sizes = (photo && photo.sizes) || [];
+  var best = null;
+  var width = photo && (photo.w || photo.width);
+  var height = photo && (photo.h || photo.height);
+  for (var i = 0; i < sizes.length; i += 1) {
+    var size = sizes[i];
+    var sizeWidth = size && (size.w || size.width);
+    var sizeHeight = size && (size.h || size.height);
+    if (!sizeWidth || !sizeHeight) {
+      continue;
+    }
+    if (!best || (sizeWidth * sizeHeight) > (best.width * best.height)) {
+      best = {width: sizeWidth, height: sizeHeight};
+    }
+  }
+  if (best) {
+    return best;
+  }
+  if (width && height) {
+    return {width: width, height: height};
+  }
+  return null;
+}
+
+function messageDocument(message) {
+  var media = message && message.media;
+  return (message && message.document) || (media && media.document) || null;
+}
+
+function attributeName(attribute) {
+  return objectName(attribute);
+}
+
+function documentAttributes(document) {
+  return (document && document.attributes) || [];
+}
+
+function documentFileName(document) {
+  var attrs = documentAttributes(document);
+  for (var i = 0; i < attrs.length; i += 1) {
+    if ((attributeName(attrs[i]).indexOf('Filename') !== -1 || attrs[i].fileName) && attrs[i].fileName) {
+      return attrs[i].fileName;
+    }
+  }
+  return document && (document.fileName || document.name) || '';
+}
+
+function hasDocumentAttribute(document, name) {
+  var attrs = documentAttributes(document);
+  var propName = name.charAt(0).toLowerCase() + name.slice(1);
+  for (var i = 0; i < attrs.length; i += 1) {
+    if (attributeName(attrs[i]).indexOf(name) !== -1 || attrs[i][propName]) {
+      return attrs[i];
+    }
+  }
+  return null;
+}
+
+function documentDimensions(message) {
+  var document = messageDocument(message);
+  var attrs = documentAttributes(document);
+  for (var i = 0; i < attrs.length; i += 1) {
+    var attr = attrs[i];
+    var width = attr && (attr.w || attr.width);
+    var height = attr && (attr.h || attr.height);
+    if (width && height) {
+      return {width: width, height: height};
+    }
+  }
+  return null;
+}
+
+function isPngBytes(bytes) {
+  return bytes && bytes.length > 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+}
+
+function isJpegBytes(bytes) {
+  return bytes && bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8;
+}
+
+function isPreviewImageBytes(bytes) {
+  return isPngBytes(bytes) || isJpegBytes(bytes);
+}
+
+function isGif(message) {
+  var document = messageDocument(message);
+  var file = message && message.file;
+  if (document) {
+    return !!(hasDocumentAttribute(document, 'Animated') || document.mimeType === 'image/gif');
+  }
+  return !!(file && file.mimeType === 'image/gif');
+}
+
+function isVideo(message) {
+  var document = messageDocument(message);
+  var file = message && message.file;
+  if (document) {
+    return !!(hasDocumentAttribute(document, 'Video') || (document.mimeType || '').indexOf('video/') === 0);
+  }
+  return !!(file && (file.mimeType || '').indexOf('video/') === 0);
+}
+
+function hasPreviewableStill(message) {
+  return isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message));
+}
+
+function compactMediaLabel(label, detail) {
+  return detail ? '[' + label + '] ' + detail : '[' + label + ']';
+}
+
+function mediaLabel(message) {
+  var media = message && message.media;
+  var mediaName = objectName(media);
+  var webpage = messageWebpage(message);
+  var document = messageDocument(message);
+  var file = message && message.file;
+  var fileName;
+  var mimeType;
+  var audioAttr;
+
+  if (!message) {
+    return '';
+  }
+  if (hasDirectPhoto(message)) {
+    return compactMediaLabel('photo');
+  }
+  if (media) {
+    if (media.phoneNumber || media.firstName || media.lastName || mediaName.indexOf('Contact') !== -1) {
+      return compactMediaLabel('Contact', [media.firstName, media.lastName].filter(Boolean).join(' ') || media.phoneNumber);
+    }
+    if (media.geo || media.venue || mediaName.indexOf('Geo') !== -1 || mediaName.indexOf('Venue') !== -1) {
+      return compactMediaLabel('Location');
+    }
+    if (media.poll || mediaName.indexOf('Poll') !== -1) {
+      return compactMediaLabel('Poll');
+    }
+    if (media.invoice || mediaName.indexOf('Invoice') !== -1) {
+      return compactMediaLabel('Invoice');
+    }
+    if (media.game || mediaName.indexOf('Game') !== -1) {
+      return compactMediaLabel('Game', media.game && media.game.title);
+    }
+    if (webpage || mediaName.indexOf('WebPage') !== -1) {
+      webpage = webpage || {};
+      return compactMediaLabel('Link', webpage.title || webpage.url);
+    }
+  }
+  if (!document) {
+    if (file) {
+      fileName = file.name || '';
+      mimeType = file.mimeType || '';
+      if (mimeType === 'image/gif') {
+        return compactMediaLabel('GIF', fileName);
+      }
+      if (mimeType.indexOf('image/') === 0) {
+        return compactMediaLabel('photo', fileName);
+      }
+      if (mimeType.indexOf('video/') === 0) {
+        return compactMediaLabel('Video', fileName);
+      }
+      if (mimeType.indexOf('audio/') === 0) {
+        return compactMediaLabel('Audio', fileName || file.title);
+      }
+      return compactMediaLabel('File', fileName);
+    }
+    return media ? compactMediaLabel('Media') : '';
+  }
+
+  fileName = documentFileName(document);
+  mimeType = document.mimeType || '';
+  audioAttr = hasDocumentAttribute(document, 'Audio');
+
+  if (hasDocumentAttribute(document, 'Sticker')) {
+    return compactMediaLabel('Sticker');
+  }
+  if (hasDocumentAttribute(document, 'Animated') || mimeType === 'image/gif') {
+    return compactMediaLabel('GIF', fileName);
+  }
+  if (hasDocumentAttribute(document, 'Video') || mimeType.indexOf('video/') === 0) {
+    return compactMediaLabel('Video preview', fileName);
+  }
+  if (audioAttr || mimeType.indexOf('audio/') === 0) {
+    return compactMediaLabel(audioAttr && audioAttr.voice ? 'Voice' : 'Audio', fileName || (audioAttr && audioAttr.title));
+  }
+  return compactMediaLabel('File', fileName);
+}
+
+function displayMessageText(message) {
+  var text = messageText(message);
+  var label = mediaLabel(message);
+  if (label && text) {
+    return label + ' ' + text;
+  }
+  return text || label;
+}
+
+function displayChatMessageText(message) {
+  if (hasDirectPhoto(message)) {
+    return messageText(message);
+  }
+  if (isGif(message)) {
+    var gifText = messageText(message);
+    return gifText ? compactMediaLabel('GIF preview') + ' ' + gifText : compactMediaLabel('GIF preview');
+  }
+  if (isVideo(message)) {
+    var videoText = messageText(message);
+    return videoText ? compactMediaLabel('Video preview') + ' ' + videoText : compactMediaLabel('Video preview');
+  }
+  return displayMessageText(message);
+}
+
+function pushMediaPreviewCandidate(candidates, candidate) {
+  if (!candidate) {
+    return;
+  }
+  if (Array.isArray(candidate)) {
+    for (var i = 0; i < candidate.length; i += 1) {
+      pushMediaPreviewCandidate(candidates, candidate[i]);
+    }
+    return;
+  }
+  candidates.push(candidate);
+}
+
+function mediaPreviewArea(candidate) {
+  var width = candidate && (candidate.w || candidate.width);
+  var height = candidate && (candidate.h || candidate.height);
+  return (width || 0) * (height || 0);
+}
+
+function mediaPreviewCandidates(message) {
+  var media = message && message.media;
+  var document = messageDocument(message);
+  var extendedMedia = media && (media.extendedMedia || media.extended_media);
+  var candidates = [];
+
+  pushMediaPreviewCandidate(candidates, media && (media.videoCover || media.video_cover));
+  pushMediaPreviewCandidate(candidates, extendedMedia && extendedMedia.thumb);
+  pushMediaPreviewCandidate(candidates, document && document.thumbs);
+  pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
+  candidates.sort(function(a, b) {
+    return mediaPreviewArea(b) - mediaPreviewArea(a);
+  });
+  return candidates;
+}
+
+function previewThumbOption(candidate) {
+  if (!candidate) {
+    return null;
+  }
+  return candidate.type || candidate.size || candidate;
+}
+
+function looksLikePhoto(candidate) {
+  var name = objectName(candidate);
+  return !!(candidate && !candidate.type && (name.indexOf('Photo') !== -1 || candidate.sizes));
+}
+
+function downloadImageBytes(client, target, options) {
+  return client.downloadMedia(target, options || {}).then(function(bytes) {
+    if (isPreviewImageBytes(bytes)) {
+      return bytes;
+    }
+    throw new Error('media preview was not an image');
+  });
+}
+
+function downloadMediaPreviewCandidate(client, message, candidate) {
+  var media = message && message.media;
+  var option = previewThumbOption(candidate);
+  var attempts = [];
+  var target = 0;
+
+  if (looksLikePhoto(candidate)) {
+    attempts.push(function() {
+      return downloadImageBytes(client, candidate, {});
+    });
+  }
+  if (option) {
+    attempts.push(function() {
+      return downloadImageBytes(client, message, {thumb: option});
+    });
+    if (media) {
+      attempts.push(function() {
+        return downloadImageBytes(client, media, {thumb: option});
+      });
+    }
+  }
+  attempts.push(function() {
+    return downloadImageBytes(client, message, {thumb: candidate});
+  });
+  if (media) {
+    attempts.push(function() {
+      return downloadImageBytes(client, media, {thumb: candidate});
+    });
+  }
+
+  function tryNext() {
+    if (target >= attempts.length) {
+      throw new Error('no usable media preview candidate');
+    }
+    return attempts[target++]().catch(tryNext);
+  }
+  return tryNext();
+}
+
+function downloadStillPreview(client, message) {
+  var candidates = mediaPreviewCandidates(message);
+  var index = 0;
+
+  function tryNext() {
+    if (index >= candidates.length) {
+      throw new Error('media has no usable still preview');
+    }
+    return downloadMediaPreviewCandidate(client, message, candidates[index++]).catch(tryNext);
+  }
+  return tryNext();
+}
+
+function dialogUnreadMarked(dialog) {
+  return !!(
+    dialog.unreadMark ||
+    dialog.unread_mark ||
+    (dialog.dialog && (dialog.dialog.unreadMark || dialog.dialog.unread_mark))
+  );
 }
 
 function senderName(message) {
@@ -51,34 +402,177 @@ function senderName(message) {
   return '';
 }
 
+function reactionGlyph(reaction) {
+  var name = objectName(reaction);
+  var glyph;
+  if (!reaction) {
+    return '';
+  }
+  glyph = reaction.emoticon || reaction.emoji || '';
+  if (glyph) {
+    return glyph;
+  }
+  if (name.indexOf('CustomEmoji') !== -1) {
+    return '*';
+  }
+  if (name.indexOf('Paid') !== -1) {
+    return '$';
+  }
+  return '';
+}
+
+function reactionSummary(message) {
+  var reactions = message && message.reactions;
+  var results = (reactions && reactions.results) || [];
+  var parts = [];
+  for (var i = 0; i < results.length && parts.length < 3; i += 1) {
+    var result = results[i];
+    var glyph = reactionGlyph(result && result.reaction);
+    var count = result && result.count;
+    if (!glyph) {
+      continue;
+    }
+    parts.push(glyph + (count && count > 1 ? String(count) : ''));
+  }
+  return parts.join(' ');
+}
+
+
+function replyMessageId(message) {
+  var reply = message && (message.replyTo || message.reply_to);
+  if (!reply) {
+    return '';
+  }
+  return String(reply.replyToMsgId || reply.reply_to_msg_id || reply.replyToTopId || reply.reply_to_top_id || '');
+}
+
+function contextText(message) {
+  return displayChatMessageText(message) || mediaLabel(message) || 'Message';
+}
+
+function replyContext(message) {
+  if (!message) {
+    return null;
+  }
+  return {
+    sender: senderName(message) || 'Message',
+    text: contextText(message)
+  };
+}
+
+function peerLabel(peer) {
+  var id = peerId(peer);
+  return id ? 'Peer ' + id : '';
+}
+
+function forwardContext(message) {
+  var forward = message && (message.fwdFrom || message.fwd_from);
+  var sender = '';
+  if (!forward) {
+    return null;
+  }
+  sender = forward.fromName || forward.from_name || forward.postAuthor || forward.post_author ||
+    forward.savedFromName || forward.saved_from_name || peerLabel(forward.fromId || forward.from_id || forward.savedFromPeer || forward.saved_from_peer) ||
+    'Forwarded';
+  return {
+    sender: sender,
+    text: contextText(message)
+  };
+}
+
+function normalizeMessageWithContext(message, replies) {
+  var row = normalizeMessage(message);
+  var replyId = replyMessageId(message);
+  var reply = replyId && replies ? replies[replyId] : null;
+  var forward = forwardContext(message);
+  if (reply) {
+    row.reply_sender = reply.sender;
+    row.reply_text = reply.text;
+  }
+  if (forward) {
+    row.forward_sender = forward.sender;
+    row.forward_text = forward.text;
+  }
+  return row;
+}
+
+function normalizeMessageRows(client, chatId, rows) {
+  rows = rows || [];
+  var byId = {};
+  var replies = {};
+  var missing = [];
+  rows.forEach(function(row) {
+    byId[String(row.id)] = row;
+  });
+  rows.forEach(function(row) {
+    var replyId = replyMessageId(row);
+    if (!replyId) {
+      return;
+    }
+    if (byId[replyId]) {
+      replies[replyId] = replyContext(byId[replyId]);
+    } else if (!replies[replyId]) {
+      missing.push(parseInt(replyId, 10) || replyId);
+      replies[replyId] = {sender: 'Reply', text: 'Message not loaded'};
+    }
+  });
+  if (!missing.length) {
+    return Promise.resolve(rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    }));
+  }
+  return client.getMessages(chatId, {ids: missing}).then(function(replyRows) {
+    (replyRows || []).forEach(function(replyRow) {
+      if (replyRow && replyRow.id !== undefined && replyRow.id !== null) {
+        replies[String(replyRow.id)] = replyContext(replyRow);
+      }
+    });
+    return rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    });
+  }).catch(function() {
+    return rows.map(function(row) {
+      return normalizeMessageWithContext(row, replies);
+    });
+  });
+}
+
 function normalizeMessage(message) {
+  var previewable = hasPreviewableStill(message);
+  var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
   return {
     id: String(message.id),
     sender: senderName(message),
-    text: messageText(message),
+    text: displayChatMessageText(message),
+    reactions: reactionSummary(message),
     outgoing: !!message.out,
-    image_token: hasPhoto(message) ? String(message.id) : null
+    image_token: (hasPhoto(message) || previewable) ? String(message.id) : null,
+    image_width: imageDimensions ? imageDimensions.width : 0,
+    image_height: imageDimensions ? imageDimensions.height : 0
   };
 }
 
 function chats(limit) {
   return auth.getClient().then(function(client) {
-    return client.getDialogs({limit: limit * 3, folder: 0}).then(function(dialogs) {
-      dialogs = dialogs.filter(function(dialog) {
-        return dialog.folderId !== 1;
-      }).slice(0, limit);
-      return dialogs.map(function(dialog) {
+    return client.getDialogs({limit: limit, folder: 0}).then(function(dialogs) {
+      return dialogs.map(function(dialog, index) {
         var entity = dialog.entity || {};
-        var preview = dialog.message ? messageText(dialog.message) : '';
-        if (!preview && dialog.message && hasPhoto(dialog.message)) {
-          preview = '[photo]';
-        }
+        var id = entityId(entity);
+        var preview = dialog.message ? displayMessageText(dialog.message) : '';
         return {
-          id: entityId(entity),
+          id: id,
           title: displayName(entity),
           preview: preview,
-          unread: !!dialog.unreadCount
+          unread: !!(dialog.unreadCount || dialogUnreadMarked(dialog)),
+          unread_count: dialog.unreadCount || 0,
+          pinned: !!(dialog.pinned || dialog.isPinned || (dialog.dialog && (dialog.dialog.pinned || dialog.dialog.isPinned))),
+          order: index
         };
+      }).sort(function(a, b) {
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return a.order - b.order;
       });
     });
   });
@@ -91,7 +585,7 @@ function messages(chatId, limit, beforeId) {
       options.offsetId = parseInt(beforeId, 10) || 0;
     }
     return client.getMessages(chatId, options).then(function(rows) {
-      return rows.slice().reverse().map(normalizeMessage);
+      return normalizeMessageRows(client, chatId, rows.slice().reverse());
     });
   });
 }
@@ -112,18 +606,161 @@ function deleteMessage(chatId, messageId) {
   });
 }
 
+function editMessage(chatId, messageId, text) {
+  return auth.getClient().then(function(client) {
+    return client.editMessage(chatId, {
+      message: parseInt(messageId, 10) || messageId,
+      text: text
+    });
+  });
+}
+
+function reactionEmoticon(token) {
+  switch (token) {
+    case 'like':
+      return '\ud83d\udc4d';
+    case 'heart':
+      return '\u2764';
+    case 'laugh':
+      return '\ud83e\udd23';
+    case 'wow':
+      return '\ud83d\ude31';
+    case 'sad':
+      return '\ud83d\ude22';
+    case 'angry':
+      return '\ud83d\ude21';
+    case 'fire':
+      return '\ud83d\udd25';
+    case 'party':
+      return '\ud83c\udf89';
+    case 'clap':
+      return '\ud83d\udc4f';
+    case 'grin':
+      return '\ud83d\ude01';
+    case 'think':
+      return '\ud83e\udd14';
+    case 'eyes':
+      return '\ud83d\udc40';
+    case 'love':
+      return '\ud83d\ude0d';
+    case 'pray':
+      return '\ud83d\ude4f';
+    case 'dislike':
+      return '\ud83d\udc4e';
+    case 'poop':
+      return '\ud83d\udca9';
+    case 'sick':
+      return '\ud83e\udd2e';
+    case 'sleep':
+      return '\ud83d\ude34';
+    case 'cool':
+      return '\ud83d\ude0e';
+    case 'bolt':
+      return '\u26a1';
+    default:
+      if (token && /[^\x00-\x7f]/.test(token)) {
+        return token;
+      }
+      return '';
+  }
+}
+
+function sendReaction(chatId, messageId, token) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      var emoticon = reactionEmoticon(token);
+      var request = {
+        peer: peer,
+        msgId: parseInt(messageId, 10) || messageId,
+        addToRecent: true
+      };
+      if (token !== 'remove') {
+        if (!emoticon) {
+          throw new Error('unsupported reaction');
+        }
+        request.reaction = [new gram.Api.ReactionEmoji({emoticon: emoticon})];
+      }
+      return client.invoke(new gram.Api.messages.SendReaction(request));
+    });
+  });
+}
+
+function markRead(chatId) {
+  return auth.getClient().then(function(client) {
+    return client.markAsRead(chatId);
+  });
+}
+
+function inputPeer(client, chatId) {
+  return client.getInputEntity(parseInt(chatId, 10) || chatId);
+}
+
+function archiveChat(chatId) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      return client.invoke(new gram.Api.folders.EditPeerFolders({
+        folderPeers: [new gram.Api.InputFolderPeer({peer: peer, folderId: 1})]
+      }));
+    });
+  });
+}
+
+function markUnread(chatId) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      return client.invoke(new gram.Api.messages.MarkDialogUnread({
+        peer: new gram.Api.InputDialogPeer({peer: peer}),
+        unread: true
+      }));
+    });
+  });
+}
+
+function muteChat(chatId) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      return client.invoke(new gram.Api.account.UpdateNotifySettings({
+        peer: new gram.Api.InputNotifyPeer({peer: peer}),
+        settings: new gram.Api.InputPeerNotifySettings({muteUntil: 2147483647})
+      }));
+    });
+  });
+}
+
+function deleteChat(chatId) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      return client.invoke(new gram.Api.messages.DeleteHistory({
+        peer: peer,
+        maxId: 2147483647,
+        justClear: false,
+        revoke: false
+      }));
+    });
+  });
+}
+
+function downloadProfilePhoto(chatId) {
+  return auth.getClient().then(function(client) {
+    return client.getEntity(parseInt(chatId, 10) || chatId).then(function(entity) {
+      return client.downloadProfilePhoto(entity, {isBig: false});
+    });
+  });
+}
+
 function downloadMedia(chatId, messageId) {
   return auth.getClient().then(function(client) {
     return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
       var message = rows && rows[0];
-      if (!message || !hasPhoto(message)) {
-        throw new Error('message has no photo');
+      var photo = messagePhoto(message);
+      if (!message || (!hasPhoto(message) && !hasPreviewableStill(message))) {
+        throw new Error('message has no previewable media');
       }
-      return client.downloadMedia(message, {}).then(function(bytes) {
-        if (bytes && bytes.length) {
-          return bytes;
-        }
-        return client.downloadMedia(message.media, {});
+      if (hasPreviewableStill(message) && !photo) {
+        return downloadStillPreview(client, message);
+      }
+      return downloadImageBytes(client, message, {}).catch(function() {
+        return downloadImageBytes(client, photo || message.media, {});
       });
     });
   });
@@ -133,6 +770,14 @@ module.exports = {
   chats: chats,
   messages: messages,
   sendMessage: sendMessage,
+  editMessage: editMessage,
+  sendReaction: sendReaction,
   deleteMessage: deleteMessage,
+  markRead: markRead,
+  archiveChat: archiveChat,
+  deleteChat: deleteChat,
+  muteChat: muteChat,
+  markUnread: markUnread,
+  downloadProfilePhoto: downloadProfilePhoto,
   downloadMedia: downloadMedia
 };

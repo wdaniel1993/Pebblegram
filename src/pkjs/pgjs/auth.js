@@ -57,23 +57,25 @@ function telegramErrorCode(err) {
 
 function authErrorMessage(err) {
   var code = telegramErrorCode(err);
+  var waitMatch;
   if (code === 'PHONE_CODE_INVALID') {
-    return 'Bad code. Save phone again.';
+    return 'Bad login code. Open Pebblegram settings on your phone, enter the new Telegram code, then tap Save.';
   }
   if (code === 'PHONE_CODE_EXPIRED') {
-    return 'Code expired. Save phone.';
+    return 'Code expired. Open Pebblegram settings, save your phone number again, then enter the new Telegram code.';
   }
   if (code === 'PHONE_CODE_EMPTY') {
-    return 'Enter Telegram code.';
+    return 'Open Pebblegram settings on your phone, enter the Telegram login code, then tap Save.';
   }
   if (code === 'PHONE_CODE_HASH_EMPTY' || code === 'PHONE_CODE_HASH_INVALID') {
-    return 'Code stale. Save phone.';
+    return 'Code stale. Open settings, save your phone number again, then enter the new Telegram code.';
   }
   if (code === 'PHONE_NUMBER_INVALID') {
     return 'Bad phone number.';
   }
   if (code.indexOf('FLOOD_WAIT') === 0) {
-    return 'Rate limited. Wait.';
+    waitMatch = code.match(/FLOOD_WAIT_?(\d+)/);
+    return waitMatch ? 'Telegram rate limited login. Wait ' + waitMatch[1] + ' seconds.' : 'Telegram rate limited login. Wait before retrying.';
   }
   return err && err.message ? err.message : String(err || 'Telegram auth failed.');
 }
@@ -114,7 +116,7 @@ function createClient(gram, config, sessionString) {
   return new gram.TelegramClient(new gram.StringSession(sessionString || ''), config.apiId, config.apiHash, {
     connectionRetries: 3,
     requestRetries: 3,
-    reconnectRetries: 0,
+    reconnectRetries: 3,
     useWSS: config.forceWSS === true,
     testServers: config.testServers === true,
     deviceModel: 'Pebblegram',
@@ -158,7 +160,7 @@ function requestCode(gram, config, creds) {
       cache.clearCode();
       return closeClient(client);
     }).then(function(value) {
-      throw new Error('Enter Telegram code.');
+      throw new Error('Open Pebblegram settings on your phone, enter the Telegram login code, then tap Save.');
     }, function(err) {
       return closeClient(client).then(function() {
         throw err;
@@ -178,11 +180,11 @@ function signInWithCode(gram, config, creds) {
       return client.connect();
     }).then(function() {
       if (!creds.phoneCodeHash) {
-        throw new Error('Save phone for new code.');
+        throw new Error('Open settings, save your phone number again, then enter the new Telegram code.');
       }
       if (!creds.pendingSession) {
         cache.clearCodeRequest();
-        throw new Error('Code stale. Save phone.');
+        throw new Error('Code stale. Open settings, save your phone number again, then enter the new Telegram code.');
       }
       reportStatus('Signing in...');
       return client.invoke(new gram.Api.auth.SignIn({
@@ -211,8 +213,8 @@ function signInWithCode(gram, config, creds) {
             return client;
           });
         }
-        cache.clearCodeRequest();
-        throw new Error('Two-step verification is not supported yet.');
+        cache.set('authStage', 'password');
+        throw new Error('Open Pebblegram settings on your phone, enter your Telegram two-step password, then tap Save.');
       }
       if (shouldClearCodeRequest(err)) {
         cache.clearCodeRequest();

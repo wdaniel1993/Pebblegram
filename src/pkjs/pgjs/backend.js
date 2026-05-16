@@ -1,8 +1,13 @@
 var auth = require('./auth');
 var telegram = require('./telegram');
 var image = require('./image');
+var mockBackend = require('./mock_backend');
 
 function create(options) {
+  if (options && options.mock) {
+    return mockBackend.create(options);
+  }
+
   auth.setStatusHandler(options.status);
 
   return {
@@ -34,8 +39,16 @@ function create(options) {
       return telegram.messages(chatId, limit, beforeId);
     },
     sendMessage: telegram.sendMessage,
+    editMessage: telegram.editMessage,
+    sendReaction: telegram.sendReaction,
     deleteMessage: telegram.deleteMessage,
-    imageBytes: image.imageBytes
+    markRead: telegram.markRead,
+    archiveChat: telegram.archiveChat,
+    deleteChat: telegram.deleteChat,
+    muteChat: telegram.muteChat,
+    markUnread: telegram.markUnread,
+    imageBytes: image.imageBytes,
+    avatarBytes: image.avatarBytes
   };
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "Pebblegram",
   "author": "Bolger Innovations",
-  "version": "2.0.0",
+  "version": "2.5.0",
   "keywords": [
     "pebble-app"
   ],
@@ -37,13 +37,23 @@
       "Text",
       "IsOutgoing",
       "IsUnread",
+      "UnreadCount",
       "BridgeUrl",
       "CannedReplies",
       "Status",
       "Error",
       "ImageToken",
       "ImageData",
-      "ImageSize"
+      "ImageSize",
+      "ImageTransferId",
+      "ImageWidth",
+      "ImageHeight",
+      "Reactions",
+      "EditMessageId",
+      "ReplySender",
+      "ReplyText",
+      "ForwardSender",
+      "ForwardText"
     ],
     "resources": {
       "media": [
