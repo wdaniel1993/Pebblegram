@@ -6,10 +6,10 @@
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 24, 24, 24)
-#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 520, 520, 520)
+#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 518, 518, 518)
 #define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
-#define MAX_REACTIONS 22
+#define MAX_REACTIONS 17
 #define MAX_ID 24
 #define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 20000, 20000, 20000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
@@ -1733,6 +1733,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   s_expected_rows = count;
 
   if (strcmp(type, "chats_done") == 0) {
+    char selected_id[MAX_ID];
+    selected_id[0] = '\0';
+    if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+      copy_cstr(selected_id, sizeof(selected_id), s_chats[s_selected_chat].id);
+    }
     if (s_view_state == ViewStateLoading) {
       s_view_state = ViewStateChatList;
     }
@@ -1741,6 +1746,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_loading_error = false;
     if (s_chat_count > count) {
       s_chat_count = count;
+    }
+    int preserved_index = find_chat_index_by_id(selected_id);
+    if (preserved_index >= 0) {
+      s_selected_chat = preserved_index;
+    } else if (s_selected_chat >= s_chat_count) {
+      s_selected_chat = s_chat_count > 0 ? s_chat_count - 1 : 0;
     }
     if (s_chat_menu) {
       menu_layer_reload_data(s_chat_menu);
@@ -1835,7 +1846,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     }
     s_bridge_ready = true;
     s_loading_error = false;
-    if (s_chat_menu) {
+    if (s_chat_menu && s_chats_loading) {
       menu_layer_reload_data(s_chat_menu);
     }
     if (s_chat_count >= s_expected_rows) {

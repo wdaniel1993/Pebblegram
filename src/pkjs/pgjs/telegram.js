@@ -455,7 +455,7 @@ function normalizeMessage(message) {
 function chats(limit) {
   return auth.getClient().then(function(client) {
     return client.getDialogs({limit: limit, folder: 0}).then(function(dialogs) {
-      return dialogs.map(function(dialog) {
+      return dialogs.map(function(dialog, index) {
         var entity = dialog.entity || {};
         var id = entityId(entity);
         var preview = dialog.message ? displayMessageText(dialog.message) : '';
@@ -464,8 +464,15 @@ function chats(limit) {
           title: displayName(entity),
           preview: preview,
           unread: !!(dialog.unreadCount || dialogUnreadMarked(dialog)),
-          unread_count: dialog.unreadCount || 0
+          unread_count: dialog.unreadCount || 0,
+          pinned: !!(dialog.pinned || dialog.isPinned || (dialog.dialog && (dialog.dialog.pinned || dialog.dialog.isPinned))),
+          order: index
         };
+      }).sort(function(a, b) {
+        if (a.pinned !== b.pinned) {
+          return a.pinned ? -1 : 1;
+        }
+        return a.order - b.order;
       });
     });
   });

@@ -16,6 +16,10 @@ Ship a stable 2.4 experimental build from the known-good 2.2 checkpoint, keeping
 - Restored GIF, MP4-as-GIF, and video still-preview loading through Telegram
   thumbnail/still preview media.
 - Restored webpage preview thumbnails.
+- Refresh chat-list snippets/unread counts while the app is sitting on the chat
+  list.
+- Keep pinned Telegram chats grouped at the top of the chat list.
+- Preserve the selected chat by chat id when chat-list refreshes reorder rows.
 - Kept normal photos uncluttered in chat view while preserving useful media tags
   in chat-list snippets.
 - Kept image transfer cancellation and selected-image priority from the stable
@@ -28,6 +32,9 @@ Ship a stable 2.4 experimental build from the known-good 2.2 checkpoint, keeping
 - Test the chats that previously crashed the OS.
 - Test webpage previews, YouTube previews, GIF previews, MP4/video previews,
   photo-heavy chats, and older-message scrolling.
+- Test incoming messages while sitting on the chat list: the affected chat should
+  update its snippet/unread count and move according to Telegram ordering.
+- Test pinned chats with and without new incoming messages.
 - Confirm reactions render as emoji where Pebble fonts support them and fall
   back acceptably where they do not.
 - Confirm Basalt still handles photo and preview loading without heap failures.

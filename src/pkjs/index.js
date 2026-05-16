@@ -26,6 +26,7 @@ var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
 var refreshTimer = null;
+var chatListRefreshTimer = null;
 var avatarChats = [];
 var avatarIndex = 0;
 var avatarTimer = null;
@@ -67,7 +68,7 @@ function configureForPlatform() {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 512;
+    MAX_MESSAGE_TEXT = 510;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
     IMAGE_MAX_BYTES = 20000;
@@ -76,7 +77,7 @@ function configureForPlatform() {
     INITIAL_MESSAGE_ROWS = 12;
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 24;
-    MAX_MESSAGE_TEXT = 512;
+    MAX_MESSAGE_TEXT = 510;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 20000;
@@ -272,8 +273,10 @@ function payloadValue(payload, name) {
   return payload[name];
 }
 
-function sendChatRows(chats) {
-  status('Sending chats...');
+function sendChatRows(chats, silent) {
+  if (!silent) {
+    status('Sending chats...');
+  }
   chats.slice(0, MAX_ROWS).forEach(function(chat, index) {
     var payload = {};
     payload[MessageKeys.Type] = 'chat';
@@ -298,7 +301,7 @@ function sendMessageRows(messages) {
     payload[MessageKeys.Sender] = clampText(message.sender, 35);
     payload[MessageKeys.Text] = watchText(message.text, MAX_MESSAGE_TEXT);
     if (message.reactions) {
-      payload[MessageKeys.Reactions] = clampUtf8Bytes(message.reactions, 21);
+      payload[MessageKeys.Reactions] = clampUtf8Bytes(message.reactions, 16);
     }
     payload[MessageKeys.IsOutgoing] = message.outgoing ? 1 : 0;
     if (message.image_token) {
@@ -407,25 +410,51 @@ function prefetchTopChats(chats) {
   });
 }
 
-function getChats() {
-  status('Connecting...');
+function scheduleChatListRefresh() {
+  if (chatListRefreshTimer || currentChatId) {
+    return;
+  }
+  chatListRefreshTimer = setTimeout(function() {
+    chatListRefreshTimer = null;
+    if (!currentChatId) {
+      getChats(true);
+    }
+  }, 15000);
+}
+
+function cancelChatListRefresh() {
+  if (chatListRefreshTimer) {
+    clearTimeout(chatListRefreshTimer);
+    chatListRefreshTimer = null;
+  }
+}
+
+function getChats(silent) {
+  if (!silent) {
+    status('Connecting...');
+  }
   timed('telegram connect', activePgjs().ready()).then(function() {
-    status('Fetching chats...');
+    if (!silent) {
+      status('Fetching chats...');
+    }
     return timed('chat list load', activePgjs().chats(MAX_ROWS));
   }).then(function(chats) {
     chats = chats || [];
-    sendChatRows(chats);
+    sendChatRows(chats, silent);
     done('chats_done', Math.min(chats.length, MAX_ROWS));
     queueChatAvatars(chats);
     prefetchTopChats(chats);
+    scheduleChatListRefresh();
   }).catch(function(err) {
     promiseError('Chats failed', err);
+    scheduleChatListRefresh();
   });
 }
 
 function getMessages(chatId) {
   currentChatId = chatId;
   currentChatSignature = '';
+  cancelChatListRefresh();
   cancelQueuedAvatarTransfers();
   cancelQueuedImageTransfers();
   scheduleOpenChatRefresh();
@@ -495,6 +524,7 @@ function leaveChat(chatId) {
     currentChatSignature = '';
     cancelQueuedImageTransfers();
     scheduleChatAvatars(300);
+    scheduleChatListRefresh();
   }
   if (refreshTimer) {
     clearTimeout(refreshTimer);
@@ -726,7 +756,7 @@ Pebble.addEventListener('ready', function() {
   activePgjs().ready().catch(function(err) {
     console.log('Warm connect failed: ' + (err && err.message ? err.message : err));
   });
-  getChats();
+  getChats(false);
 });
 
 Pebble.addEventListener('appmessage', function(event) {
@@ -738,7 +768,7 @@ Pebble.addEventListener('appmessage', function(event) {
   var editMessageId = payloadValue(event.payload, 'EditMessageId');
 
   if (command === 'get_chats') {
-    getChats();
+    getChats(false);
   } else if (command === 'get_messages') {
     getMessages(chatId);
   } else if (command === 'get_older_messages') {
@@ -790,7 +820,7 @@ Pebble.addEventListener('webviewclosed', function(event) {
   status('Requesting Telegram login...');
   timed('telegram login', activePgjs().ready()).then(function() {
     status('Telegram connected');
-    getChats();
+    getChats(false);
   }).catch(function(err) {
     console.log('Auth failed: ' + (err && err.message ? err.message : String(err || 'unknown error')));
     error(err && err.message ? err.message : 'Auth failed');
