@@ -64,7 +64,6 @@ typedef enum {
   ActionMenuChat,
   ActionMenuCanned,
   ActionMenuConfirm,
-  ActionMenuReaction,
   ActionMenuReactionGrid,
   ActionMenuFullText
 } ActionMenuMode;
@@ -110,48 +109,51 @@ typedef struct {
 } Message;
 
 typedef struct {
+  const char *token;
   const char *glyph;
 } ReactionChoice;
 
 static const ReactionChoice REACTION_GRID_CHOICES[] = {
+  // Favorites
+  {"\xF0\x9F\x91\x8D", "\xF0\x9F\x91\x8D"}, // 👍
+  {"\xE2\x9D\xA4", "\xE2\x9D\xA4"},         // ❤
+  {"\xF0\x9F\x98\x82", "\xF0\x9F\x98\x82"}, // 😂
+  {"\xF0\x9F\x98\xB1", "\xF0\x9F\x98\xB1"}, // 😱
+  {"\xF0\x9F\x98\xA2", "\xF0\x9F\x98\xA2"}, // 😢
+  {"\xF0\x9F\x98\xA1", "\xF0\x9F\x98\xA1"}, // 😡
   // Faces
-  {"\xF0\x9F\x98\x80"}, // 😀
-  {"\xF0\x9F\x98\x84"}, // 😄
-  {"\xF0\x9F\x98\x82"}, // 😂
-  {"\xF0\x9F\x98\xAD"}, // 😭
-  {"\xF0\x9F\x98\x8D"}, // 😍
-  {"\xF0\x9F\x98\x98"}, // 😘
-  {"\xF0\x9F\x98\x8E"}, // 😎
-  {"\xF0\x9F\x98\xB3"}, // 😳
-  {"\xF0\x9F\x98\xAC"}, // 😬
-  {"\xF0\x9F\x98\x90"}, // 😐
-  {"\xF0\x9F\x98\xA2"}, // 😢
-  {"\xF0\x9F\x98\xA1"}, // 😡
-  {"\xF0\x9F\x98\xB1"}, // 😱
-  {"\xF0\x9F\x98\xB4"}, // 😴
-  {"\xF0\x9F\x98\x87"}, // 😇
-  {"\xF0\x9F\x98\x88"}, // 😈
+  {"\xF0\x9F\x98\x80", "\xF0\x9F\x98\x80"}, // 😀
+  {"\xF0\x9F\x98\x84", "\xF0\x9F\x98\x84"}, // 😄
+  {"\xF0\x9F\x98\xAD", "\xF0\x9F\x98\xAD"}, // 😭
+  {"\xF0\x9F\x98\x8D", "\xF0\x9F\x98\x8D"}, // 😍
+  {"\xF0\x9F\x98\x98", "\xF0\x9F\x98\x98"}, // 😘
+  {"\xF0\x9F\x98\x8E", "\xF0\x9F\x98\x8E"}, // 😎
+  {"\xF0\x9F\x98\xB3", "\xF0\x9F\x98\xB3"}, // 😳
+  {"\xF0\x9F\x98\xAC", "\xF0\x9F\x98\xAC"}, // 😬
+  {"\xF0\x9F\x98\x90", "\xF0\x9F\x98\x90"}, // 😐
+  {"\xF0\x9F\x98\xB4", "\xF0\x9F\x98\xB4"}, // 😴
+  {"\xF0\x9F\x98\x87", "\xF0\x9F\x98\x87"}, // 😇
+  {"\xF0\x9F\x98\x88", "\xF0\x9F\x98\x88"}, // 😈
   // Hands
-  {"\xF0\x9F\x91\x8D"}, // 👍
-  {"\xF0\x9F\x91\x8E"}, // 👎
-  {"\xF0\x9F\x91\x8C"}, // 👌
-  {"\xF0\x9F\x91\x8A"}, // 👊
-  {"\xE2\x9C\x8A"},     // ✊
-  {"\xE2\x9C\x8C"},     // ✌
-  {"\xF0\x9F\x91\x8B"}, // 👋
-  {"\xE2\x9C\x8B"},     // ✋
-  {"\xF0\x9F\x91\x8F"}, // 👏
-  {"\xF0\x9F\x99\x8C"}, // 🙌
-  {"\xF0\x9F\x99\x8F"}, // 🙏
+  {"\xF0\x9F\x91\x8E", "\xF0\x9F\x91\x8E"}, // 👎
+  {"\xF0\x9F\x91\x8C", "\xF0\x9F\x91\x8C"}, // 👌
+  {"\xF0\x9F\x91\x8A", "\xF0\x9F\x91\x8A"}, // 👊
+  {"\xE2\x9C\x8A", "\xE2\x9C\x8A"},         // ✊
+  {"\xE2\x9C\x8C", "\xE2\x9C\x8C"},         // ✌
+  {"\xF0\x9F\x91\x8B", "\xF0\x9F\x91\x8B"}, // 👋
+  {"\xE2\x9C\x8B", "\xE2\x9C\x8B"},         // ✋
+  {"\xF0\x9F\x91\x8F", "\xF0\x9F\x91\x8F"}, // 👏
+  {"\xF0\x9F\x99\x8C", "\xF0\x9F\x99\x8C"}, // 🙌
+  {"\xF0\x9F\x99\x8F", "\xF0\x9F\x99\x8F"}, // 🙏
   // Hearts
-  {"\xE2\x9D\xA4"},     // ❤
-  {"\xF0\x9F\x92\x94"}, // 💔
-  {"\xF0\x9F\x92\x8B"}, // 💋
+  {"\xF0\x9F\x92\x94", "\xF0\x9F\x92\x94"}, // 💔
+  {"\xF0\x9F\x92\x8B", "\xF0\x9F\x92\x8B"}, // 💋
   // Symbols
-  {"\xF0\x9F\x8E\x89"}, // 🎉
-  {"\xF0\x9F\x8D\xBB"}, // 🍻
-  {"\xF0\x9F\x8D\xBA"}, // 🍺
-  {"\xF0\x9F\x92\xA9"}  // 💩
+  {"\xF0\x9F\x8E\x89", "\xF0\x9F\x8E\x89"}, // 🎉
+  {"\xF0\x9F\x8D\xBB", "\xF0\x9F\x8D\xBB"}, // 🍻
+  {"\xF0\x9F\x8D\xBA", "\xF0\x9F\x8D\xBA"}, // 🍺
+  {"\xF0\x9F\x92\xA9", "\xF0\x9F\x92\xA9"}, // 💩
+  {"remove", "Remove"}
 };
 
 static Window *s_main_window;
@@ -1766,28 +1768,11 @@ static int reaction_grid_count(void) {
   return (int)(sizeof(REACTION_GRID_CHOICES) / sizeof(REACTION_GRID_CHOICES[0]));
 }
 
-static const char *reaction_token_at(int index) {
-  static const char *tokens[] = {
-    "like",
-    "heart",
-    "laugh",
-    "wow",
-    "sad",
-    "angry",
-    "",
-    "remove"
-  };
-  if (index < 0 || index >= (int)(sizeof(tokens) / sizeof(tokens[0]))) {
-    return "";
-  }
-  return tokens[index];
-}
-
 static const char *reaction_grid_token_at(int index) {
   if (index < 0 || index >= reaction_grid_count()) {
     return "";
   }
-  return reaction_grid_choices()[index].glyph;
+  return reaction_grid_choices()[index].token;
 }
 
 static void send_selected_reaction(const char *token) {
@@ -2358,8 +2343,6 @@ static int action_item_count(void) {
       return canned_reply_count();
     case ActionMenuConfirm:
       return 2;
-    case ActionMenuReaction:
-      return 8;
     case ActionMenuReactionGrid:
       return reaction_grid_count();
     case ActionMenuFullText:
@@ -2423,20 +2406,6 @@ static const char *action_item_title(int index) {
     };
     return chat_items[index];
   }
-  if (s_action_mode == ActionMenuReaction) {
-    static const char *reaction_items[] = {
-      "Like",
-      "Heart",
-      "Laugh",
-      "Wow",
-      "Sad",
-      "Angry",
-      "More...",
-      "Remove"
-    };
-    return reaction_items[index];
-  }
-
   if (s_action_mode == ActionMenuMain) {
     ActionItem item = action_item_at(index);
     switch (item) {
@@ -2555,10 +2524,17 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
         graphics_fill_rect(ctx, cell, 4, GCornersAll);
       }
       graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorLightGray);
-      graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
-                         fonts_get_system_font(FONT_KEY_GOTHIC_28),
-                         GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
-                         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      if (strcmp(reaction_grid_choices()[i].token, "remove") == 0) {
+        graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                           GRect(cell.origin.x, cell.origin.y + 10, cell.size.w, cell.size.h - 10),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      } else {
+        graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_28),
+                           GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      }
     }
     return;
   }
@@ -2694,7 +2670,7 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         layer_mark_dirty(s_action_layer);
         break;
       case ActionItemReact:
-        s_action_mode = ActionMenuReaction;
+        s_action_mode = ActionMenuReactionGrid;
         s_action_selected = 0;
         layer_mark_dirty(s_action_layer);
         break;
@@ -2725,19 +2701,6 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
       case ActionItemGoBack:
         break;
     }
-    return;
-  }
-
-  if (s_action_mode == ActionMenuReaction) {
-    if (selected == 6) {
-      s_action_mode = ActionMenuReactionGrid;
-      s_action_selected = 0;
-      layer_mark_dirty(s_action_layer);
-      return;
-    }
-    const char *token = reaction_token_at(selected);
-    close_action_window();
-    send_selected_reaction(token);
     return;
   }
 
@@ -2805,13 +2768,9 @@ static void action_down_click_handler(ClickRecognizerRef recognizer, void *conte
 
 static void action_back_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_action_mode == ActionMenuCanned || s_action_mode == ActionMenuConfirm ||
-      s_action_mode == ActionMenuReaction || s_action_mode == ActionMenuFullText) {
+      s_action_mode == ActionMenuReactionGrid || s_action_mode == ActionMenuFullText) {
     s_action_mode = ActionMenuMain;
     s_action_selected = 0;
-    layer_mark_dirty(s_action_layer);
-  } else if (s_action_mode == ActionMenuReactionGrid) {
-    s_action_mode = ActionMenuReaction;
-    s_action_selected = 6;
     layer_mark_dirty(s_action_layer);
   } else {
     close_action_window();
