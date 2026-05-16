@@ -8,6 +8,7 @@ var INITIAL_MESSAGE_ROWS = 8;
 var OLDER_MESSAGE_ROWS = 6;
 var MAX_MESSAGE_ROWS = 10;
 var MAX_MESSAGE_TEXT = 340;
+var MAX_CONTEXT_VIEW_TEXT = 700;
 var IMAGE_SIZE = 120;
 var IMAGE_WIDTH = 130;
 var IMAGE_COLORS = 64;
@@ -74,6 +75,7 @@ function configureForPlatform() {
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 22;
     MAX_MESSAGE_TEXT = 300;
+    MAX_CONTEXT_VIEW_TEXT = 700;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
     IMAGE_MAX_BYTES = 20000;
@@ -83,6 +85,7 @@ function configureForPlatform() {
     OLDER_MESSAGE_ROWS = 8;
     MAX_MESSAGE_ROWS = 22;
     MAX_MESSAGE_TEXT = 300;
+    MAX_CONTEXT_VIEW_TEXT = 700;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 20000;
@@ -436,7 +439,7 @@ function sendMessageContext(chatId, messageId) {
   payload[MessageKeys.Type] = 'message_context';
   payload[MessageKeys.MessageId] = clampText(messageId, 23);
   payload[MessageKeys.Sender] = clampText(title, 35);
-  payload[MessageKeys.Text] = watchText(text, MAX_MESSAGE_TEXT);
+  payload[MessageKeys.Text] = watchText(text, MAX_CONTEXT_VIEW_TEXT);
   sendToWatch(payload);
 }
 

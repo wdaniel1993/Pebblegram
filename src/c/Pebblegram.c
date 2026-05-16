@@ -7,6 +7,7 @@
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 22, 22, 22)
 #define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 300, 300, 300)
+#define MAX_FULL_TEXT 700
 #define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
 #define MAX_REACTIONS 17
@@ -178,7 +179,7 @@ static int s_full_text_scroll_offset;
 static int s_full_text_height;
 static bool s_full_text_context;
 static char s_full_text_title[MAX_SENDER + 10];
-static char s_full_text_body[MAX_TEXT];
+static char s_full_text_body[MAX_FULL_TEXT];
 
 static DictationSession *s_dictation_session;
 
@@ -2629,7 +2630,6 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
 
   if (s_action_mode == ActionMenuFullText) {
     char title[MAX_SENDER + 10];
-    char body[MAX_CONTEXT_TEXT];
     const char *text = "";
     const char *heading = NULL;
     GFont full_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
@@ -2639,13 +2639,11 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
     GSize text_size;
 
     title[0] = '\0';
-    body[0] = '\0';
     if (s_selected_message >= 0 && s_selected_message < s_message_count) {
       if (s_full_text_context) {
         copy_cstr(title, sizeof(title), s_full_text_title);
-        copy_cstr(body, sizeof(body), s_full_text_body);
         heading = title;
-        text = body;
+        text = s_full_text_body;
       } else {
         text = s_messages[s_selected_message].text;
       }
