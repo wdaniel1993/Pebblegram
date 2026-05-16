@@ -475,31 +475,85 @@ function replyContext(message) {
   };
 }
 
+function forwardHeader(message) {
+  return message && (message.fwdFrom || message.fwd_from) || null;
+}
+
+function forwardPeer(message) {
+  var forward = forwardHeader(message);
+  if (!forward) {
+    return null;
+  }
+  return forward.fromId || forward.from_id || forward.savedFromPeer || forward.saved_from_peer || null;
+}
+
 function peerLabel(peer) {
   var id = peerId(peer);
   return id ? 'Peer ' + id : '';
 }
 
-function forwardContext(message) {
-  var forward = message && (message.fwdFrom || message.fwd_from);
-  var sender = '';
+function peerCacheKey(peer) {
+  var name = objectName(peer);
+  var id = peerId(peer);
+  return id ? name + ':' + id : '';
+}
+
+function namedForwardSender(message, forwardEntities) {
+  var forward = forwardHeader(message);
+  var peer;
+  var key;
+  var entity;
   if (!forward) {
+    return '';
+  }
+  peer = forwardPeer(message);
+  key = peerCacheKey(peer);
+  entity = key && forwardEntities ? forwardEntities[key] : null;
+  return forward.fromName || forward.from_name || forward.postAuthor || forward.post_author ||
+    forward.savedFromName || forward.saved_from_name || (entity ? displayName(entity) : '') ||
+    peerLabel(peer) || 'Forwarded';
+}
+
+function forwardContext(message, forwardEntities) {
+  var sender = namedForwardSender(message, forwardEntities);
+  if (!sender) {
     return null;
   }
-  sender = forward.fromName || forward.from_name || forward.postAuthor || forward.post_author ||
-    forward.savedFromName || forward.saved_from_name || peerLabel(forward.fromId || forward.from_id || forward.savedFromPeer || forward.saved_from_peer) ||
-    'Forwarded';
   return {
     sender: sender,
     text: contextText(message)
   };
 }
 
-function normalizeMessageWithContext(message, replies) {
+function resolveForwardEntities(client, rows) {
+  var byKey = {};
+  var pending = [];
+  rows.forEach(function(row) {
+    var peer = forwardPeer(row);
+    var key = peerCacheKey(peer);
+    if (!key || Object.prototype.hasOwnProperty.call(byKey, key)) {
+      return;
+    }
+    byKey[key] = null;
+    try {
+      pending.push(Promise.resolve(client.getEntity(peer)).then(function(entity) {
+        byKey[key] = entity;
+      }).catch(function() {}));
+    } catch (e) {}
+  });
+  if (!pending.length) {
+    return Promise.resolve(byKey);
+  }
+  return Promise.all(pending).then(function() {
+    return byKey;
+  });
+}
+
+function normalizeMessageWithContext(message, replies, forwardEntities) {
   var row = normalizeMessage(message);
   var replyId = replyMessageId(message);
   var reply = replyId && replies ? replies[replyId] : null;
-  var forward = forwardContext(message);
+  var forward = forwardContext(message, forwardEntities);
   if (reply) {
     row.reply_sender = reply.sender;
     row.reply_text = reply.text;
@@ -531,10 +585,15 @@ function normalizeMessageRows(client, chatId, rows) {
       replies[replyId] = {sender: 'Reply', text: 'Message not loaded'};
     }
   });
+  function finish() {
+    return resolveForwardEntities(client, rows).then(function(forwardEntities) {
+      return rows.map(function(row) {
+        return normalizeMessageWithContext(row, replies, forwardEntities);
+      });
+    });
+  }
   if (!missing.length) {
-    return Promise.resolve(rows.map(function(row) {
-      return normalizeMessageWithContext(row, replies);
-    }));
+    return finish();
   }
   return client.getMessages(chatId, {ids: missing}).then(function(replyRows) {
     (replyRows || []).forEach(function(replyRow) {
@@ -542,13 +601,9 @@ function normalizeMessageRows(client, chatId, rows) {
         replies[String(replyRow.id)] = replyContext(replyRow);
       }
     });
-    return rows.map(function(row) {
-      return normalizeMessageWithContext(row, replies);
-    });
+    return finish();
   }).catch(function() {
-    return rows.map(function(row) {
-      return normalizeMessageWithContext(row, replies);
-    });
+    return finish();
   });
 }
 
