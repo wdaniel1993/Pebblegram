@@ -1,6 +1,21 @@
 var auth = require('./auth');
 var gram = require('./gramjs.bundle');
 
+function idPart(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value);
+}
+
+function peerId(value) {
+  if (!value) {
+    return '';
+  }
+  return idPart(value.userId || value.user_id || value.chatId || value.chat_id ||
+    value.channelId || value.channel_id || value.peerId || value.peer_id || value.id);
+}
+
 function entityId(entity) {
   if (!entity) {
     return '';
