@@ -659,9 +659,9 @@ function editMessage(chatId, messageId, text) {
 function sendReaction(chatId, messageId, token) {
   timed('send reaction ' + chatId, activePgjs().sendReaction(chatId, messageId, token)).then(function() {
     var payload = {};
-    delete messageStore[chatId];
     payload[MessageKeys.Type] = 'reacted';
     sendToWatch(payload);
+    refreshOpenChat();
   }).catch(function(err) {
     promiseError('Reaction failed', err);
   });

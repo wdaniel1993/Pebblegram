@@ -2217,11 +2217,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
 
+  if (strcmp(type, "reacted") == 0) {
+    show_status("Reacted");
+  }
+
   if (strcmp(type, "sent") == 0 || strcmp(type, "deleted") == 0 ||
-      strcmp(type, "edited") == 0 || strcmp(type, "reacted") == 0) {
-    if (strcmp(type, "reacted") == 0) {
-      show_status("Reacted");
-    }
+      strcmp(type, "edited") == 0) {
     request_messages(s_current_chat_id);
   }
 

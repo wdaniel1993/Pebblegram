@@ -524,7 +524,7 @@ function reactionEmoticon(token) {
     case 'laugh':
       return '\ud83e\udd23';
     case 'wow':
-      return '\ud83d\ude2e';
+      return '\ud83d\ude31';
     case 'sad':
       return '\ud83d\ude22';
     case 'angry':
