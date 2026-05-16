@@ -1,6 +1,7 @@
 var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
 
+var USE_MOCK_BACKEND = true;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
 var INITIAL_MESSAGE_ROWS = 8;
@@ -53,6 +54,7 @@ function settingsPageUrl() {
 function activePgjs() {
   if (!pgjs) {
     pgjs = pgjsBackend.create({
+      mock: USE_MOCK_BACKEND,
       cannedReplies: cannedReplies,
       status: status
     });
@@ -824,7 +826,7 @@ function sendChatAvatars() {
 
 Pebble.addEventListener('ready', function() {
   configureForPlatform();
-  console.log('Pebblegram JS ready, backend=pgjs, canned=' + cannedReplies());
+  console.log('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
   sendSettings();
   activePgjs().ready().catch(function(err) {
     console.log('Warm connect failed: ' + (err && err.message ? err.message : err));
