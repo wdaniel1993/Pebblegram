@@ -6,7 +6,7 @@
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 20, 20, 20, 20, 24, 24, 24)
-#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 488, 488, 488)
+#define MAX_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 360, 360, 360, 360, 470, 470, 470)
 #define MESSAGE_PREVIEW_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 132, 132, 132, 240, 240, 240)
 #define MAX_SENDER 36
 #define MAX_REACTIONS 17
@@ -64,12 +64,14 @@ typedef enum {
   ActionMenuChat,
   ActionMenuCanned,
   ActionMenuConfirm,
+  ActionMenuReaction,
   ActionMenuFullText
 } ActionMenuMode;
 
 typedef enum {
   ActionItemCompose,
   ActionItemCanned,
+  ActionItemReact,
   ActionItemEdit,
   ActionItemDelete,
   ActionItemFullText,
@@ -1710,6 +1712,30 @@ static void delete_selected_message(void) {
   send_command("delete_message", s_current_chat_id, NULL, NULL, s_messages[s_selected_message].id);
 }
 
+static const char *reaction_token_at(int index) {
+  static const char *tokens[] = {
+    "like",
+    "heart",
+    "laugh",
+    "wow",
+    "sad",
+    "angry",
+    "remove"
+  };
+  if (index < 0 || index >= (int)(sizeof(tokens) / sizeof(tokens[0]))) {
+    return "";
+  }
+  return tokens[index];
+}
+
+static void send_selected_reaction(const char *token) {
+  if (!has_selected_message()) {
+    return;
+  }
+  show_status((token && strcmp(token, "remove") == 0) ? "Removing..." : "Reacting...");
+  send_command("send_reaction", s_current_chat_id, token, NULL, s_messages[s_selected_message].id);
+}
+
 static void send_selected_chat_action(const char *command) {
   if (s_selected_chat < 0 || s_selected_chat >= s_chat_count) {
     return;
@@ -2191,7 +2217,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
 
-  if (strcmp(type, "sent") == 0 || strcmp(type, "deleted") == 0 || strcmp(type, "edited") == 0) {
+  if (strcmp(type, "sent") == 0 || strcmp(type, "deleted") == 0 ||
+      strcmp(type, "edited") == 0 || strcmp(type, "reacted") == 0) {
+    if (strcmp(type, "reacted") == 0) {
+      show_status("Reacted");
+    }
     request_messages(s_current_chat_id);
   }
 
@@ -2258,13 +2288,15 @@ static int action_item_count(void) {
       if (!has_selected_message()) {
         return 3;
       }
-      return (selected_message_is_truncated() ? 5 : 4) + (s_messages[s_selected_message].outgoing ? 1 : 0);
+      return (selected_message_is_truncated() ? 6 : 5) + (s_messages[s_selected_message].outgoing ? 1 : 0);
     case ActionMenuChat:
       return 5;
     case ActionMenuCanned:
       return canned_reply_count();
     case ActionMenuConfirm:
       return 2;
+    case ActionMenuReaction:
+      return 7;
     case ActionMenuFullText:
       return 0;
   }
@@ -2281,32 +2313,29 @@ static ActionItem action_item_at(int index) {
     return compose_items[index];
   }
 
-  if (index == 0) {
+  int target = 0;
+  if (index == target++) {
     return ActionItemCompose;
   }
-  if (index == 1) {
+  if (index == target++) {
     return ActionItemCanned;
   }
+  if (index == target++) {
+    return ActionItemReact;
+  }
   if (s_messages[s_selected_message].outgoing) {
-    if (index == 2) {
+    if (index == target) {
       return ActionItemEdit;
     }
-    index--;
+    target++;
   }
-  if (index == 2) {
+  if (index == target++) {
     return ActionItemDelete;
   }
-  if (!selected_message_is_truncated() && index >= 3) {
-    index++;
+  if (selected_message_is_truncated() && index == target++) {
+    return ActionItemFullText;
   }
-  static const ActionItem selected_items[] = {
-    ActionItemCompose,
-    ActionItemCanned,
-    ActionItemDelete,
-    ActionItemFullText,
-    ActionItemRefresh
-  };
-  return selected_items[index];
+  return ActionItemRefresh;
 }
 
 static const char *action_item_title(int index) {
@@ -2329,6 +2358,18 @@ static const char *action_item_title(int index) {
     };
     return chat_items[index];
   }
+  if (s_action_mode == ActionMenuReaction) {
+    static const char *reaction_items[] = {
+      "Like",
+      "Heart",
+      "Laugh",
+      "Wow",
+      "Sad",
+      "Angry",
+      "Remove"
+    };
+    return reaction_items[index];
+  }
 
   if (s_action_mode == ActionMenuMain) {
     ActionItem item = action_item_at(index);
@@ -2337,6 +2378,8 @@ static const char *action_item_title(int index) {
         return has_selected_message() ? "Dictate Reply" : "New Message";
       case ActionItemCanned:
         return has_selected_message() ? "Canned Reply" : "Canned Message";
+      case ActionItemReact:
+        return "React";
       case ActionItemEdit:
         return "Edit Message";
       case ActionItemDelete:
@@ -2534,6 +2577,11 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         s_action_selected = 0;
         layer_mark_dirty(s_action_layer);
         break;
+      case ActionItemReact:
+        s_action_mode = ActionMenuReaction;
+        s_action_selected = 0;
+        layer_mark_dirty(s_action_layer);
+        break;
       case ActionItemEdit:
         if (has_selected_message() && s_messages[s_selected_message].outgoing) {
           copy_cstr(s_pending_edit_message_id, sizeof(s_pending_edit_message_id), s_messages[s_selected_message].id);
@@ -2561,6 +2609,13 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
       case ActionItemGoBack:
         break;
     }
+    return;
+  }
+
+  if (s_action_mode == ActionMenuReaction) {
+    const char *token = reaction_token_at(selected);
+    close_action_window();
+    send_selected_reaction(token);
     return;
   }
 
@@ -2621,7 +2676,7 @@ static void action_down_click_handler(ClickRecognizerRef recognizer, void *conte
 
 static void action_back_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_action_mode == ActionMenuCanned || s_action_mode == ActionMenuConfirm ||
-      s_action_mode == ActionMenuFullText) {
+      s_action_mode == ActionMenuReaction || s_action_mode == ActionMenuFullText) {
     s_action_mode = ActionMenuMain;
     s_action_selected = 0;
     layer_mark_dirty(s_action_layer);

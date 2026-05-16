@@ -656,6 +656,17 @@ function editMessage(chatId, messageId, text) {
   });
 }
 
+function sendReaction(chatId, messageId, token) {
+  timed('send reaction ' + chatId, activePgjs().sendReaction(chatId, messageId, token)).then(function() {
+    var payload = {};
+    delete messageStore[chatId];
+    payload[MessageKeys.Type] = 'reacted';
+    sendToWatch(payload);
+  }).catch(function(err) {
+    promiseError('Reaction failed', err);
+  });
+}
+
 function chatAction(kind, chatId) {
   var action = activePgjs()[kind];
   if (typeof action !== 'function') {
@@ -844,6 +855,8 @@ Pebble.addEventListener('appmessage', function(event) {
     deleteMessage(chatId, messageId);
   } else if (command === 'edit_message') {
     editMessage(chatId, editMessageId || messageId, text);
+  } else if (command === 'send_reaction') {
+    sendReaction(chatId, messageId, text);
   } else if (command === 'archive_chat') {
     chatAction('archiveChat', chatId);
   } else if (command === 'delete_chat') {

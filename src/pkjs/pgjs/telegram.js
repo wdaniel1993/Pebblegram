@@ -515,6 +515,45 @@ function editMessage(chatId, messageId, text) {
   });
 }
 
+function reactionEmoticon(token) {
+  switch (token) {
+    case 'like':
+      return '\ud83d\udc4d';
+    case 'heart':
+      return '\u2764';
+    case 'laugh':
+      return '\ud83e\udd23';
+    case 'wow':
+      return '\ud83d\ude2e';
+    case 'sad':
+      return '\ud83d\ude22';
+    case 'angry':
+      return '\ud83d\ude21';
+    default:
+      return '';
+  }
+}
+
+function sendReaction(chatId, messageId, token) {
+  return auth.getClient().then(function(client) {
+    return inputPeer(client, chatId).then(function(peer) {
+      var emoticon = reactionEmoticon(token);
+      var request = {
+        peer: peer,
+        msgId: parseInt(messageId, 10) || messageId,
+        addToRecent: true
+      };
+      if (token !== 'remove') {
+        if (!emoticon) {
+          throw new Error('unsupported reaction');
+        }
+        request.reaction = [new gram.Api.ReactionEmoji({emoticon: emoticon})];
+      }
+      return client.invoke(new gram.Api.messages.SendReaction(request));
+    });
+  });
+}
+
 function markRead(chatId) {
   return auth.getClient().then(function(client) {
     return client.markAsRead(chatId);
@@ -601,6 +640,7 @@ module.exports = {
   messages: messages,
   sendMessage: sendMessage,
   editMessage: editMessage,
+  sendReaction: sendReaction,
   deleteMessage: deleteMessage,
   markRead: markRead,
   archiveChat: archiveChat,

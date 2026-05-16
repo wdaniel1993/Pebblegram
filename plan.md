@@ -14,19 +14,19 @@ and image-loading stability intact.
   previews, pinned chat ordering, live chat-list refresh, and selected-row
   preservation during chat-list refresh.
 
-## 2.5 Implementation Plan
+## 2.5 Implemented
 
-- Add a selected-message action menu item for reactions, reusing the existing
-  message action flow rather than adding a new screen type if possible.
-- Start with a compact fixed reaction set that is useful on Pebble input:
-  thumbs up, heart, laugh, surprised, sad, and angry.
-- Add a JS command path that sends the selected reaction to Telegram for the
-  selected message, then refreshes the active chat so the viewed reaction state
-  confirms the action.
-- Prefer Telegram's native reaction API through GramJS; if the current bundled
-  API lacks a helper, use the raw `messages.SendReaction` request.
-- Keep reaction text rendering unchanged for 2.5 unless sending exposes a
-  rendering bug.
+- Added a selected-message `React` action using the existing custom action menu.
+- Added a compact fixed reaction set: Like, Heart, Laugh, Wow, Sad, Angry, and
+  Remove.
+- Added a `send_reaction` watch-to-JS command using existing AppMessage fields.
+- Added a GramJS `messages.SendReaction` backend path with standard
+  `ReactionEmoji` reactions.
+- Successful reaction sends return a `reacted` event and refresh the active chat
+  so the displayed reaction state can confirm the action.
+- Kept existing reaction display rendering unchanged.
+- Trimmed large-screen retained message text to keep Gabbro under the app
+  footprint limit.
 
 ## Validation
 
@@ -38,6 +38,7 @@ and image-loading stability intact.
 - Confirm live incoming messages and image loading still work after sending a
   reaction.
 - Build on all platforms and keep Gabbro under the app footprint limit.
+- Use `build/Pebblegram-2.5.0-experimental.pbw` for tester builds.
 
 ## Later Releases
 

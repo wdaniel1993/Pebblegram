@@ -35,6 +35,7 @@ function create(options) {
     },
     sendMessage: telegram.sendMessage,
     editMessage: telegram.editMessage,
+    sendReaction: telegram.sendReaction,
     deleteMessage: telegram.deleteMessage,
     markRead: telegram.markRead,
     archiveChat: telegram.archiveChat,
