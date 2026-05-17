@@ -311,28 +311,31 @@ function promiseError(prefix, err) {
   error(prefix + ': ' + message);
 }
 
+function normalizeWatchString(value) {
+  return String(value || '')
+    .replace(/[\u200b-\u200f\ufe00-\ufe0f\ufeff]/g, '')
+    .replace(/[\ud800-\udbff][\udc00-\udfff]/g, '*');
+}
+
 function clampText(value, maxLength) {
-  value = String(value || '');
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return value.substring(0, maxLength - 1);
+  return clampUtf8Bytes(normalizeWatchString(value), maxLength);
+}
+
+function shortenToken(token) {
+  return clampUtf8Bytes(token, 28) + '...';
 }
 
 function watchText(value, maxLength) {
-  value = String(value || '')
-    .replace(/[\u200b-\u200f\ufeff]/g, '')
+  value = normalizeWatchString(value)
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/(https?:\/\/|www\.)[^\s]+/ig, function(url) {
       var match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/?#]+)/i);
       return match ? '[Link] ' + match[1] : '[Link]';
     })
-    .replace(/[^\s]{36,}/g, function(token) {
-      return token.substring(0, 28) + '...';
-    })
+    .replace(/[^\s]{36,}/g, shortenToken)
     .trim();
-  return clampText(value, maxLength);
+  return clampUtf8Bytes(value, maxLength);
 }
 
 function utf8ByteLengthAt(value, index) {

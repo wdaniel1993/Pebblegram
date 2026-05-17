@@ -266,6 +266,14 @@ preparation layer.
   labels with Telegram alt text where available.
 - [done] Keep downward selection into viewport-tall bubbles aligned to the top
   so sender/caption text remains visible before paging through the bubble.
+- [done] Stop selected GIF/media failures from immediately retrying forever;
+  failed selected media now settles until the user leaves and reselects it.
+- [done] Add phone-side media pipeline timeout cleanup so a hung GIF thumbnail
+  fetch clears in-flight state and reports failure back to the watch.
+- [done] Sanitize emoji-heavy chat/message text on the phone and trim incomplete
+  UTF-8 on the watch before drawing to reduce OS crashes in large chats.
+- [done] Add flattened Telegram folder support by fetching Archive/custom folder
+  dialogs and labeling folder-origin previews in the chat list.
 
 
 ## 2.6 Validation

@@ -201,6 +201,7 @@ static int s_compose_bubble_y;
 static uint8_t s_image_buffer[MAX_IMAGE_BYTES];
 static uint8_t s_avatar_buffer[MAX_AVATAR_BYTES];
 static char s_image_message_id[MAX_ID];
+static char s_selected_image_focus_id[MAX_ID];
 static char s_avatar_chat_id[MAX_ID];
 static int s_image_size;
 static int s_image_received;
@@ -353,6 +354,54 @@ static int canned_reply_count(void) {
   return PG_MAX(1, count);
 }
 
+static int utf8_expected_bytes(unsigned char lead) {
+  if (lead < 0x80) {
+    return 1;
+  }
+  if ((lead & 0xe0) == 0xc0) {
+    return 2;
+  }
+  if ((lead & 0xf0) == 0xe0) {
+    return 3;
+  }
+  if ((lead & 0xf8) == 0xf0) {
+    return 4;
+  }
+  return 0;
+}
+
+static void trim_incomplete_utf8(char *text) {
+  size_t len;
+  size_t lead;
+  int expected;
+  if (!text || !text[0]) {
+    return;
+  }
+  len = strlen(text);
+  lead = len;
+  while (lead > 0 && (((unsigned char)text[lead - 1] & 0xc0) == 0x80)) {
+    lead--;
+  }
+  if (lead == len) {
+    expected = utf8_expected_bytes((unsigned char)text[len - 1]);
+    if (expected == 1) {
+      return;
+    }
+    if (expected == 0 || len - 1 + (size_t)expected > len) {
+      text[len - 1] = '\0';
+    }
+    return;
+  }
+  if (lead == 0) {
+    text[0] = '\0';
+    return;
+  }
+  expected = utf8_expected_bytes((unsigned char)text[lead - 1]);
+  if (expected == 0 || lead - 1 + (size_t)expected > len) {
+    text[lead - 1] = '\0';
+  }
+}
+
 // Pebble's string helpers do not consistently protect callers from NULL input.
 static void copy_cstr(char *dest, size_t dest_size, const char *src) {
   if (!dest || dest_size == 0) {
@@ -364,6 +413,21 @@ static void copy_cstr(char *dest, size_t dest_size, const char *src) {
   }
   strncpy(dest, src, dest_size - 1);
   dest[dest_size - 1] = '\0';
+  trim_incomplete_utf8(dest);
+}
+
+static void truncate_cstr_bytes(char *text, size_t size, size_t max_bytes, const char *suffix) {
+  size_t suffix_len = suffix ? strlen(suffix) : 0;
+  size_t cut;
+  if (!text || size == 0 || strlen(text) <= max_bytes || max_bytes + 1 > size) {
+    return;
+  }
+  cut = max_bytes > suffix_len ? max_bytes - suffix_len : 0;
+  text[cut] = '\0';
+  trim_incomplete_utf8(text);
+  if (suffix_len && strlen(text) + suffix_len < size) {
+    strncat(text, suffix, size - strlen(text) - 1);
+  }
 }
 
 static char *tuple_cstring(DictionaryIterator *iter, uint32_t key) {
@@ -627,6 +691,7 @@ static void destroy_message_images(void) {
   s_image_expected_offset = 0;
   s_image_transfer_id = 0;
   s_image_message_id[0] = '\0';
+  s_selected_image_focus_id[0] = '\0';
 }
 
 static void schedule_image_retry(void) {
@@ -747,11 +812,18 @@ static bool destroy_farthest_loaded_image(void) {
 }
 
 static void prepare_selected_image_request(void) {
-  if (!selected_message_needs_image()) {
+  if (s_selected_message < 0 || s_selected_message >= s_message_count ||
+      !s_messages[s_selected_message].image_placeholder ||
+      !s_messages[s_selected_message].image_token[0]) {
+    s_selected_image_focus_id[0] = '\0';
     return;
   }
   Message *selected = &s_messages[s_selected_message];
-  selected->image_failed = false;
+  if (strcmp(s_selected_image_focus_id, selected->image_token) != 0) {
+    copy_cstr(s_selected_image_focus_id, sizeof(s_selected_image_focus_id), selected->image_token);
+    selected->image_failed = false;
+    selected->image_decode_retries = 0;
+  }
 
   if (s_image_message_id[0] && strcmp(s_image_message_id, selected->image_token) != 0) {
     clear_active_image_request();
@@ -808,6 +880,7 @@ static bool selected_message_needs_image(void) {
   return s_selected_message >= 0 && s_selected_message < s_message_count &&
          s_messages[s_selected_message].image_placeholder &&
          s_messages[s_selected_message].image_token[0] &&
+         !s_messages[s_selected_message].image_failed &&
          !s_messages[s_selected_message].image_bitmap;
 }
 
@@ -1487,9 +1560,7 @@ static int message_bubble_height(Message *message, int text_w) {
   int image_h = message->image_placeholder ?
                 message_image_display_height(message, message_image_frame_width(text_w)) + 8 : 0;
   copy_cstr(display_text, sizeof(display_text), message->text);
-  if ((int)strlen(message->text) > MESSAGE_PREVIEW_TEXT) {
-    copy_cstr(display_text + MESSAGE_PREVIEW_TEXT - 4, sizeof(display_text) - MESSAGE_PREVIEW_TEXT + 4, " ...");
-  }
+  truncate_cstr_bytes(display_text, sizeof(display_text), MESSAGE_PREVIEW_TEXT, " ...");
   GSize size = GSize(0, 0);
   if (display_text[0] && text_w > 4) {
     size = graphics_text_layout_get_content_size(
@@ -1725,7 +1796,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 
     copy_cstr(display_text, sizeof(display_text), message->text);
     if (truncated) {
-      copy_cstr(display_text + MESSAGE_PREVIEW_TEXT - 4, sizeof(display_text) - MESSAGE_PREVIEW_TEXT + 4, " ...");
+      truncate_cstr_bytes(display_text, sizeof(display_text), MESSAGE_PREVIEW_TEXT, " ...");
     }
 
     GColor fill = BW_UI ? GColorWhite : (message->outgoing ? OUT_BUBBLE : IN_BUBBLE);

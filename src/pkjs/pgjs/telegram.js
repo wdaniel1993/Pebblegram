@@ -828,30 +828,112 @@ function normalizeMessage(message, readOutboxMaxId) {
   };
 }
 
+function textWithEntitiesText(value) {
+  if (!value) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return value.text || value.title || '';
+}
+
+function dialogFilterTitle(filter) {
+  if (!filter) {
+    return '';
+  }
+  return textWithEntitiesText(filter.title) || filter.name || '';
+}
+
+function dialogFilters(client) {
+  if (!(gram.Api.messages && gram.Api.messages.GetDialogFilters)) {
+    return Promise.resolve([]);
+  }
+  return client.invoke(new gram.Api.messages.GetDialogFilters({})).then(function(result) {
+    return result && (result.filters || result) || [];
+  }).catch(function(err) {
+    console.log('Dialog filters unavailable: ' + (err && err.message ? err.message : err));
+    return [];
+  });
+}
+
+function dialogRows(dialogs, folderName, folderOrder) {
+  return (dialogs || []).map(function(dialog, index) {
+    var entity = dialog.entity || {};
+    var id = entityId(entity);
+    var preview = dialog.message ? displayMessageText(dialog.message) : '';
+    if (folderName) {
+      preview = '[' + folderName + '] ' + preview;
+    }
+    if (id) {
+      readOutboxByChatId[id] = dialogReadOutboxMaxId(dialog);
+    }
+    return {
+      id: id,
+      title: displayName(entity),
+      preview: preview,
+      unread: !!(dialog.unreadCount || dialogUnreadMarked(dialog)),
+      unread_count: dialog.unreadCount || 0,
+      pinned: !!(dialog.pinned || dialog.isPinned || (dialog.dialog && (dialog.dialog.pinned || dialog.dialog.isPinned))),
+      folder_order: folderOrder || 0,
+      order: index
+    };
+  });
+}
+
+function mergeDialogRows(groups) {
+  var byId = {};
+  var rows = [];
+  (groups || []).forEach(function(group) {
+    (group || []).forEach(function(row) {
+      if (!row || !row.id) {
+        return;
+      }
+      if (!byId[row.id]) {
+        byId[row.id] = row;
+        rows.push(row);
+      } else if (row.unread || row.pinned) {
+        byId[row.id].unread = byId[row.id].unread || row.unread;
+        byId[row.id].unread_count = Math.max(byId[row.id].unread_count || 0, row.unread_count || 0);
+        byId[row.id].pinned = byId[row.id].pinned || row.pinned;
+      }
+    });
+  });
+  return rows.sort(function(a, b) {
+    if (a.pinned !== b.pinned) {
+      return a.pinned ? -1 : 1;
+    }
+    if (a.folder_order !== b.folder_order) {
+      return a.folder_order - b.folder_order;
+    }
+    return a.order - b.order;
+  });
+}
+
 function chats(limit) {
   return auth.getClient().then(function(client) {
-    return client.getDialogs({limit: limit, folder: 0}).then(function(dialogs) {
-      return dialogs.map(function(dialog, index) {
-        var entity = dialog.entity || {};
-        var id = entityId(entity);
-        var preview = dialog.message ? displayMessageText(dialog.message) : '';
-        if (id) {
-          readOutboxByChatId[id] = dialogReadOutboxMaxId(dialog);
-        }
-        return {
-          id: id,
-          title: displayName(entity),
-          preview: preview,
-          unread: !!(dialog.unreadCount || dialogUnreadMarked(dialog)),
-          unread_count: dialog.unreadCount || 0,
-          pinned: !!(dialog.pinned || dialog.isPinned || (dialog.dialog && (dialog.dialog.pinned || dialog.dialog.isPinned))),
-          order: index
-        };
-      }).sort(function(a, b) {
-        if (a.pinned !== b.pinned) {
-          return a.pinned ? -1 : 1;
-        }
-        return a.order - b.order;
+    return client.getDialogs({limit: limit, folder: 0}).then(function(mainDialogs) {
+      return dialogFilters(client).then(function(filters) {
+        var groups = [dialogRows(mainDialogs, '', 0)];
+        var requests = [];
+        requests.push(client.getDialogs({limit: limit, folder: 1}).then(function(dialogs) {
+          groups.push(dialogRows(dialogs, 'Archive', 1));
+        }).catch(function() {}));
+        (filters || []).forEach(function(filter, index) {
+          var folderId = filter && filter.id;
+          var name = dialogFilterTitle(filter);
+          if (!folderId || folderId <= 1) {
+            return;
+          }
+          requests.push(client.getDialogs({limit: limit, folder: folderId}).then(function(dialogs) {
+            groups.push(dialogRows(dialogs, name || ('Folder ' + folderId), index + 2));
+          }).catch(function(err) {
+            console.log('Folder ' + folderId + ' unavailable: ' + (err && err.message ? err.message : err));
+          }));
+        });
+        return Promise.all(requests).then(function() {
+          return mergeDialogRows(groups);
+        });
       });
     });
   });

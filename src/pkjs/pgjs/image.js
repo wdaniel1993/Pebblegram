@@ -6,7 +6,24 @@ var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 16;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
-var IMAGE_CACHE_VERSION = 'v11';
+var IMAGE_CACHE_VERSION = 'v12';
+var MEDIA_PIPELINE_TIMEOUT_MS = 12000;
+
+function withTimeout(promise, label, timeoutMs) {
+  var timer = null;
+  var timeoutPromise = new Promise(function(resolve, reject) {
+    timer = setTimeout(function() {
+      reject(new Error(label));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).then(function(value) {
+    clearTimeout(timer);
+    return value;
+  }, function(err) {
+    clearTimeout(timer);
+    throw err;
+  });
+}
 
 function toUint8Array(value) {
   if (!value) {
@@ -357,7 +374,7 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
     return imageInflight[key];
   }
   var downloadStartedAt = Date.now();
-  imageInflight[key] = downloader().then(function(raw) {
+  imageInflight[key] = withTimeout(Promise.resolve().then(downloader), 'image pipeline timed out', MEDIA_PIPELINE_TIMEOUT_MS).then(function(raw) {
     logDuration('image download ' + label, downloadStartedAt);
     var encodeStartedAt = Date.now();
     var bytes = toUint8Array(raw);
