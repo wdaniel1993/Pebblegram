@@ -278,6 +278,8 @@ preparation layer.
   previews so successful GIF previews are not the lowest-resolution fallback first.
 - [done] Cap GIF thumbnail probing to fewer high-value thumb attempts, extend
   only the phone-side media pipeline window, and keep stripped previews as fallback.
+- [done] Restore normal photo/link media to the longer raw download path so
+  GIF preview validation cannot break regular images.
 - [done] Hide unsupported large/broadcast Telegram channels from the watch chat
   list to avoid OS crashes from feature-heavy channel payloads.
 - [done] Preserve folder labels when Telegram returns folder dialogs that overlap
