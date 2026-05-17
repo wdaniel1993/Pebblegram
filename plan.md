@@ -252,6 +252,9 @@ preparation layer.
   and Telegram thumb-type fallbacks.
 - [done] Replace the passive client-object keepalive with a small Telegram
   network keepalive so stale locked-phone connections are exercised regularly.
+- [done] Add watch-side paging watchdogs and phone-side message fetch
+  timeouts so older/newer loading cannot stay stuck forever after a backend
+  stall or partial transfer.
 
 
 ## 2.6 Validation

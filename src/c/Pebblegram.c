@@ -54,8 +54,9 @@
 #define COMPOSE_BUBBLE_GAP 8
 #define MESSAGE_COMMAND_RETRY_MS 3000
 #define MESSAGE_COMMAND_MAX_ATTEMPTS 3
+#define MESSAGE_TRANSFER_TIMEOUT_MS 20000
 #define IMAGE_COMMAND_RETRY_MS 350
-#define IMAGE_TRANSFER_STALL_MS 6500
+#define IMAGE_TRANSFER_STALL_MS 12000
 #define IMAGE_KEEP_SCREEN_MARGIN 48
 #define IMAGE_LOAD_SCREEN_MARGIN 24
 #define IMAGE_TALL_MAX_MULTIPLIER 2
@@ -1927,6 +1928,11 @@ static void cancel_message_timeout(void) {
   }
 }
 
+static void schedule_message_timeout(void) {
+  cancel_message_timeout();
+  s_message_timeout_timer = app_timer_register(MESSAGE_TRANSFER_TIMEOUT_MS, message_timeout_timer_callback, NULL);
+}
+
 static void cancel_message_retry(void) {
   if (s_message_retry_timer) {
     app_timer_cancel(s_message_retry_timer);
@@ -1936,12 +1942,21 @@ static void cancel_message_retry(void) {
 
 static void message_timeout_timer_callback(void *data) {
   s_message_timeout_timer = NULL;
-  if (s_loading_messages && s_message_count == 0) {
-    s_loading_messages = false;
-    show_status("Messages failed");
-    if (s_messages_root) {
-      layer_mark_dirty(s_messages_root);
-    }
+  if (!s_loading_messages && !s_loading_older_messages && !s_loading_newer_messages) {
+    return;
+  }
+  bool had_rows = s_message_count > 0;
+  s_loading_messages = false;
+  s_loading_older_messages = false;
+  s_loading_newer_messages = false;
+  s_message_transfer_id = 0;
+  s_older_anchor_id[0] = '\0';
+  s_newer_anchor_id[0] = '\0';
+  clear_message_stage();
+  reset_message_stream_state();
+  show_status(had_rows ? s_current_chat_title : "Messages failed");
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
   }
 }
 
@@ -2080,6 +2095,8 @@ static void request_older_messages(bool silent) {
     s_loading_older_messages = false;
     s_older_anchor_id[0] = '\0';
     s_older_anchor_y = 0;
+  } else {
+    schedule_message_timeout();
   }
 }
 
@@ -2120,6 +2137,8 @@ static void request_newer_messages(bool silent) {
     s_loading_newer_messages = false;
     s_newer_anchor_id[0] = '\0';
     s_newer_anchor_y = 0;
+  } else {
+    schedule_message_timeout();
   }
 }
 
@@ -2160,7 +2179,7 @@ static void request_messages(const char *chat_id) {
   if (send_command("get_messages", chat_id, NULL, NULL, NULL)) {
     s_message_retry_timer = app_timer_register(MESSAGE_COMMAND_RETRY_MS, message_retry_timer_callback, NULL);
   }
-  s_message_timeout_timer = app_timer_register(20000, message_timeout_timer_callback, NULL);
+  schedule_message_timeout();
 }
 
 static void maybe_prefetch_older_messages(void) {
@@ -2682,6 +2701,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       layer_mark_dirty(s_messages_root);
     }
     int loaded_count = stream_initial ? s_message_count : s_message_stage_count;
+    if (loaded_count < s_expected_rows &&
+        (s_loading_messages || s_loading_older_messages || s_loading_newer_messages)) {
+      schedule_message_timeout();
+    }
     if (loaded_count >= s_expected_rows) {
       if (stream_initial) {
         if (!s_user_scrolled_messages) {

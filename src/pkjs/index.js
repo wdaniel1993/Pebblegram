@@ -53,6 +53,7 @@ var messageStreamTimer = null;
 var sendFailureDelay = 250;
 var cancelledImageTransferSeq = 0;
 var IMAGE_PREPARE_TIMEOUT_MS = 25000;
+var MESSAGE_FETCH_TIMEOUT_MS = 25000;
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
@@ -950,7 +951,8 @@ function getMessages(chatId) {
     return;
   }
   status('Loading messages...');
-  timed('messages load ' + chatId, activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS)).then(function(messages) {
+  timed('messages load ' + chatId, withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
+                                      'messages load timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(messages) {
     rememberMessages(chatId, messages || []);
     currentChatSignature = messageSignature(messages || []);
     markRead(chatId);
@@ -966,7 +968,8 @@ function refreshOpenChat() {
   if (!chatId) {
     return;
   }
-  activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS).then(function(messages) {
+  withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
+              'chat refresh timed out', MESSAGE_FETCH_TIMEOUT_MS).then(function(messages) {
     var signature;
     if (currentChatId !== chatId) {
       return;
@@ -1043,7 +1046,8 @@ function getOlderMessages(chatId, anchorId, beforeId, silent) {
   if (!silent) {
     status('Loading older...');
   }
-  timed('older messages load ' + chatId, activePgjs().olderMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, beforeId)).then(function(older) {
+  timed('older messages load ' + chatId, withTimeout(activePgjs().olderMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, beforeId),
+                                            'older messages timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(older) {
     older = older || [];
     if (older.length === 0) {
       oldestComplete[chatId] = true;
@@ -1068,7 +1072,8 @@ function getNewerMessages(chatId, anchorId, afterId, silent) {
   if (!silent) {
     status('Loading newer...');
   }
-  timed('newer messages load ' + chatId, activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId)).then(function(newer) {
+  timed('newer messages load ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId),
+                                            'newer messages timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(newer) {
     newer = newer || [];
     if (newer.length === 0) {
       newestComplete[chatId] = true;
