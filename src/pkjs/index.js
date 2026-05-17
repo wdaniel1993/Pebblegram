@@ -4,16 +4,16 @@ var pgjsBackend = require('./pgjs/backend');
 var USE_MOCK_BACKEND = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
-var INITIAL_MESSAGE_ROWS = 8;
-var OLDER_MESSAGE_ROWS = 6;
-var NEWER_MESSAGE_ROWS = 6;
-var MESSAGE_PAGE_FETCH_ROWS = 80;
-var PHONE_MESSAGE_CACHE_ROWS = 600;
-var MAX_MESSAGE_ROWS = 8;
-var MESSAGE_EDGE_BUFFER_ROWS = 3;
+var INITIAL_MESSAGE_ROWS = 9;
+var OLDER_MESSAGE_ROWS = 7;
+var NEWER_MESSAGE_ROWS = 7;
+var MESSAGE_PAGE_FETCH_ROWS = 120;
+var PHONE_MESSAGE_CACHE_ROWS = 1000;
+var MAX_MESSAGE_ROWS = 9;
+var MESSAGE_EDGE_BUFFER_ROWS = 4;
 var MAX_MESSAGE_TEXT = 500;
 var MAX_CONTEXT_VIEW_TEXT = 1200;
-var MESSAGE_WINDOW_BUDGET = 4800;
+var MESSAGE_WINDOW_BUDGET = 5400;
 var IMAGE_SIZE = 120;
 var IMAGE_WIDTH = 130;
 var IMAGE_COLORS = 64;
@@ -51,6 +51,8 @@ var imageTransferActive = false;
 var messageStreamSeq = 0;
 var messageStreamTimer = null;
 var sendFailureDelay = 250;
+var cancelledImageTransferSeq = 0;
+var IMAGE_PREPARE_TIMEOUT_MS = 25000;
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
@@ -84,25 +86,25 @@ function configureForPlatform() {
     info = null;
   }
   if (info && info.platform === 'emery') {
-    INITIAL_MESSAGE_ROWS = 8;
-    OLDER_MESSAGE_ROWS = 6;
-    NEWER_MESSAGE_ROWS = 6;
-    MAX_MESSAGE_ROWS = 8;
+    INITIAL_MESSAGE_ROWS = 9;
+    OLDER_MESSAGE_ROWS = 7;
+    NEWER_MESSAGE_ROWS = 7;
+    MAX_MESSAGE_ROWS = 9;
     MAX_MESSAGE_TEXT = 500;
     MAX_CONTEXT_VIEW_TEXT = 1200;
-    MESSAGE_WINDOW_BUDGET = 4800;
+    MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
     IMAGE_MAX_BYTES = 20000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
-    INITIAL_MESSAGE_ROWS = 8;
-    OLDER_MESSAGE_ROWS = 6;
-    NEWER_MESSAGE_ROWS = 6;
-    MAX_MESSAGE_ROWS = 8;
+    INITIAL_MESSAGE_ROWS = 9;
+    OLDER_MESSAGE_ROWS = 7;
+    NEWER_MESSAGE_ROWS = 7;
+    MAX_MESSAGE_ROWS = 9;
     MAX_MESSAGE_TEXT = 500;
     MAX_CONTEXT_VIEW_TEXT = 1200;
-    MESSAGE_WINDOW_BUDGET = 4800;
+    MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 20000;
@@ -134,6 +136,22 @@ function timed(label, promise) {
     return value;
   }, function(err) {
     logDuration(label + ' failed', startedAt);
+    throw err;
+  });
+}
+
+function withTimeout(promise, label, timeoutMs) {
+  var timer = null;
+  var timeoutPromise = new Promise(function(resolve, reject) {
+    timer = setTimeout(function() {
+      reject(new Error(label));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).then(function(value) {
+    clearTimeout(timer);
+    return value;
+  }, function(err) {
+    clearTimeout(timer);
     throw err;
   });
 }
@@ -173,10 +191,30 @@ function cancelQueuedMessageTransfers() {
 
 function cancelQueuedImageTransfers() {
   imageRequestSeq += 1;
+  cancelledImageTransferSeq = imageTransferSeq;
   imageTransferActive = false;
   sendQueue = sendQueue.filter(function(entry, index) {
     return index === 0 && sending ? true : !isImageTransferPayload(entry.payload);
   });
+}
+
+function transferId(payload) {
+  return payload && payload[MessageKeys.ImageTransferId] || 0;
+}
+
+function isObsoleteQueuedPayload(entry) {
+  var payload = entry && entry.payload;
+  var id = transferId(payload);
+  if (!payload) {
+    return true;
+  }
+  if (isImageTransferPayload(payload)) {
+    return id > 0 && id <= cancelledImageTransferSeq;
+  }
+  if (isMessageTransferPayload(payload)) {
+    return id > 0 && id < messageStreamSeq;
+  }
+  return false;
 }
 
 function cancelQueuedAvatarTransfers() {
@@ -190,6 +228,9 @@ function cancelQueuedAvatarTransfers() {
 }
 
 function flushQueue() {
+  while (sendQueue.length > 0 && isObsoleteQueuedPayload(sendQueue[0])) {
+    sendQueue.shift();
+  }
   if (sending || sendQueue.length === 0) {
     return;
   }
@@ -210,8 +251,20 @@ function flushQueue() {
     sending = false;
     flushQueue();
   }, function(error) {
+    entry.attempts = (entry.attempts || 0) + 1;
     sending = false;
     console.log('sendAppMessage failed: ' + JSON.stringify(error));
+    if (isObsoleteQueuedPayload(entry) || (entry.attempts >= 6 && (isImageTransferPayload(entry.payload) || isAvatarTransferPayload(entry.payload)))) {
+      if (sendQueue[0] === entry) {
+        sendQueue.shift();
+      }
+      if (isImageTransferPayload(entry.payload)) {
+        imageTransferActive = false;
+      }
+      sendFailureDelay = 250;
+      flushQueue();
+      return;
+    }
     setTimeout(flushQueue, sendFailureDelay);
     sendFailureDelay = Math.min(5000, Math.floor(sendFailureDelay * 1.6));
   });
@@ -616,11 +669,12 @@ function warmMessageMedia(chatId, messages) {
     }
     mediaWarming[key] = true;
     setTimeout(function() {
-      activePgjs().imageBytes(chatId, message.image_token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES).catch(function(err) {
+      withTimeout(activePgjs().imageBytes(chatId, message.image_token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
+                  'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).catch(function(err) {
         console.log('Media warm failed ' + key + ': ' + (err && err.message ? err.message : err));
       });
     }, delay);
-    delay += 250;
+    delay += 500;
   });
 }
 
@@ -837,10 +891,11 @@ function startConnectionKeepalive() {
     return;
   }
   connectionKeepaliveTimer = setInterval(function() {
-    activePgjs().ready().catch(function(err) {
+    var keepalive = activePgjs().keepalive || activePgjs().ready;
+    withTimeout(keepalive(), 'keepalive timed out', 10000).catch(function(err) {
       console.log('Keepalive reconnect failed: ' + (err && err.message ? err.message : err));
     });
-  }, 60000);
+  }, 30000);
 }
 
 function startTelegramUpdates() {
@@ -1106,7 +1161,8 @@ function sendImage(chatId, messageId) {
   cancelQueuedImageTransfers();
   imageTransferActive = true;
   var requestSeq = imageRequestSeq;
-  activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES).then(function(bytes) {
+  withTimeout(activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
+              'image prepare timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function(bytes) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
       return;
     }

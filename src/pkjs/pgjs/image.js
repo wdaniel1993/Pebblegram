@@ -2,6 +2,7 @@ var telegram = require('./telegram');
 var codecs = require('./gramjs.bundle');
 var imageCache = {};
 var imageCacheOrder = [];
+var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 16;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
@@ -351,8 +352,12 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
     console.log('persistent image cache hit ' + label);
     return Promise.resolve(cached);
   }
+  if (imageInflight[key]) {
+    console.log('image inflight hit ' + label);
+    return imageInflight[key];
+  }
   var downloadStartedAt = Date.now();
-  return downloader().then(function(raw) {
+  imageInflight[key] = downloader().then(function(raw) {
     logDuration('image download ' + label, downloadStartedAt);
     var encodeStartedAt = Date.now();
     var bytes = toUint8Array(raw);
@@ -368,7 +373,14 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
     logDuration('image encode ' + label, encodeStartedAt);
     cacheSet(key, encoded);
     return encoded;
+  }).then(function(bytes) {
+    delete imageInflight[key];
+    return bytes;
+  }, function(err) {
+    delete imageInflight[key];
+    throw err;
   });
+  return imageInflight[key];
 }
 
 function imageBytes(chatId, messageId, width, height, colors, maxBytes) {

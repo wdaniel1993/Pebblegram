@@ -230,6 +230,30 @@ viewer paths to fetch substantially longer text.
 - [done] Raise the JS message window budget to match the larger per-row text
   buffers without abandoning the dynamic 8-row resident window.
 
+## 2.7 Media Reliability Review
+
+Review and simplify the media-loading path after the 2.6 scrolling overhaul, with
+the goal of making photos, stickers, GIF stills, video stills, and link previews
+load predictably from live Telegram while using the phone as the heavy cache and
+preparation layer.
+
+- [done] Increase the resident watch message window from 8 to 9 rows and the
+  phone-side older/newer page size from 80 to 120 rows, with a 1000-row phone
+  history cache, so scrolling has more cushion before hitting an edge.
+- [done] Extend the image transfer stall timeout and drop obsolete queued media
+  or message-transfer payloads so a canceled/failed chunk cannot wedge the
+  bridge.
+- [done] Add image preparation/download timeouts so GIF/video/sticker previews
+  fail and retry cleanly instead of sitting at 0 percent forever.
+- [done] Deduplicate in-flight phone-side image encoding so warm-cache work and
+  watch requests share the same prepared PNG instead of racing each other.
+- [done] Broaden Telegram preview candidates for stickers, GIFs, videos, and
+  webpage media, including document thumbnails, file thumbnails, photo sizes,
+  and Telegram thumb-type fallbacks.
+- [done] Replace the passive client-object keepalive with a small Telegram
+  network keepalive so stale locked-phone connections are exercised regularly.
+
+
 ## 2.6 Validation
 
 - In mock mode, confirm reply quote strips render for incoming and outgoing

@@ -39,6 +39,7 @@ function create(options) {
       return telegram.messages(chatId, limit, beforeId);
     },
     newerMessages: telegram.newerMessages,
+    keepalive: telegram.keepalive,
     sendMessage: telegram.sendMessage,
     editMessage: telegram.editMessage,
     sendReaction: telegram.sendReaction,
