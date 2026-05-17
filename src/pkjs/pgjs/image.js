@@ -7,7 +7,7 @@ var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 16;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
 var IMAGE_CACHE_VERSION = 'v12';
-var MEDIA_PIPELINE_TIMEOUT_MS = 12000;
+var MEDIA_PIPELINE_TIMEOUT_MS = 22000;
 
 function withTimeout(promise, label, timeoutMs) {
   var timer = null;
