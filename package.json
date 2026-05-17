@@ -53,7 +53,8 @@
       "ReplySender",
       "ReplyText",
       "ForwardSender",
-      "ForwardText"
+      "ForwardText",
+      "MessageMeta"
     ],
     "resources": {
       "media": [

@@ -112,11 +112,27 @@ function closeClient(client) {
   return Promise.resolve();
 }
 
+function ensureConnected(client) {
+  if (!client || typeof client.connect !== 'function') {
+    return Promise.resolve(client);
+  }
+  if (client.connected === false) {
+    reportStatus('Reconnecting...');
+    return timeout(Promise.resolve(client.connect()).then(function() {
+      return client;
+    }), 'Telegram reconnect timed out.', 15000).catch(function(err) {
+      clientPromise = null;
+      throw err;
+    });
+  }
+  return Promise.resolve(client);
+}
+
 function createClient(gram, config, sessionString) {
   return new gram.TelegramClient(new gram.StringSession(sessionString || ''), config.apiId, config.apiHash, {
-    connectionRetries: 3,
-    requestRetries: 3,
-    reconnectRetries: 3,
+    connectionRetries: 5,
+    requestRetries: 2,
+    reconnectRetries: 8,
     useWSS: config.forceWSS === true,
     testServers: config.testServers === true,
     deviceModel: 'Pebblegram',
@@ -243,7 +259,10 @@ function reset() {
 
 function getClient() {
   if (clientPromise) {
-    return clientPromise;
+    return clientPromise.then(ensureConnected).catch(function(err) {
+      clientPromise = null;
+      throw err;
+    });
   }
 
   clientPromise = new Promise(function(resolve, reject) {
@@ -277,7 +296,9 @@ function getClient() {
       reportStatus('Connecting...');
       return client.connect();
     }).then(function() {
-      resolve(client);
+      return ensureConnected(client);
+    }).then(function(connectedClient) {
+      resolve(connectedClient);
     }), 'Telegram connect timed out.').catch(function(err) {
       clientPromise = null;
       reject(err);

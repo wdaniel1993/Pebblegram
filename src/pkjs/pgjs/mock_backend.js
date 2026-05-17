@@ -77,7 +77,9 @@ var chats = [
   {id: '1006', title: 'Archive Candidate', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
   {id: '1007', title: 'Long Names and Wrapping', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
   {id: '1008', title: 'Basalt Photos', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
-  {id: '1009', title: 'Reply Forward Matrix', pinned: false, unread: false, unread_count: 0, muted: false, archived: false}
+  {id: '1009', title: 'Reply Forward Matrix', pinned: false, unread: false, unread_count: 0, muted: false, archived: false},
+  {id: '1010', title: 'Huge Timeline Stress', pinned: false, unread: false, unread_count: 0, muted: false, archived: false, updated: 50},
+  {id: '1011', title: 'Numbered Scroll Test', pinned: false, unread: false, unread_count: 0, muted: false, archived: false, updated: 60}
 ];
 
 var messages = {
@@ -117,7 +119,9 @@ var messages = {
     message(302, 'Sam', '[Video preview] short_clip.mp4', false, 'video:302'),
     message(303, 'Sam', '[Audio] voice-note.ogg', false),
     message(304, 'Sam', '[File] schedule.pdf', false),
-    message(305, 'You', 'Reactions should show as emoji when supported.', true, null, '\u2764')
+    message(305, 'You', 'Reactions should show as emoji when supported.', true, null, '\u2764'),
+    stickerMessage(306, 'Sam', false),
+    stickerMessage(307, 'You', true)
   ],
   '1004': [
     message(400, 'Jordan', 'This chat is marked unread with a dot only.', false),
@@ -140,6 +144,8 @@ var messages = {
     imageMessage(801, 'Alex', 'Another image follows closely', false, 900, 640),
     message(802, 'Alex', 'If this fails in emulator, the bug is in UI/image transfer, not Telegram.', false)
   ],
+  '1010': buildStressMessages(),
+  '1011': buildNumberedMessages(),
   '1009': [
     message(900, 'Nora', 'Old anchor from the start of history: this reply target is intentionally far above the initially loaded window and should still appear in the quote viewer when referenced later.', false),
     message(901, 'You', 'Old outgoing anchor from the start of history for testing replies to your own old messages.', true),
@@ -218,6 +224,83 @@ function imageMessage(id, sender, text, outgoing, width, height) {
   row.image_width = width;
   row.image_height = height;
   return row;
+}
+
+function stickerMessage(id, sender, outgoing) {
+  var row = message(id, sender, '[Sticker]', outgoing, 'sticker:' + id, '');
+  row.image_width = 512;
+  row.image_height = 512;
+  return row;
+}
+
+function buildNumberedMessages() {
+  var rows = [];
+  for (var n = 50; n >= 1; n -= 1) {
+    var outgoing = n % 2 === 1;
+    var sender = outgoing ? 'You' : 'Nora';
+    rows.push(message(1500 + (50 - n), sender, 'Message #' + n, outgoing));
+  }
+  return rows;
+}
+
+function buildStressMessages() {
+  var rows = [];
+  var senders = ['Ari', 'Blair', 'Chen', 'Devon'];
+  var shortTexts = [
+    'Yep.',
+    'Tiny update.',
+    'On it.',
+    'This is a normal sized message for rhythm.',
+    'Quick reaction target.'
+  ];
+  var longTexts = [
+    'This long mock message is intentionally wordy so the bubble grows tall enough to stress scroll anchoring and truncation while older rows are being added above the selected item.',
+    'Another extended paragraph: replies, reactions, timestamps, and previews all need to coexist without making the timeline feel frozen or jumpy during loading.',
+    'A very long operational note with enough detail to wrap across several lines on Emery and Gabbro, useful for testing how the viewport keeps the selected bubble stable.'
+  ];
+  for (var i = 0; i < 96; i += 1) {
+    var id = 1200 + i;
+    var outgoing = i % 4 === 1 || i % 7 === 0;
+    var sender = outgoing ? 'You' : senders[i % senders.length];
+    var context = {};
+    var reactions = '';
+    var row;
+    var baseText = (i % 5 === 0) ? longTexts[(i / 5) % longTexts.length | 0] : shortTexts[i % shortTexts.length];
+    if (i % 9 === 0 && i > 3) {
+      context.reply_sender = rows[i - 3].sender;
+      context.reply_text = rows[i - 3].text;
+      context.reply_to = rows[i - 3].id;
+      baseText = 'Replying to something a few rows back while the stress chat keeps moving.';
+    }
+    if (i % 17 === 0 && i > 20) {
+      context.reply_sender = rows[2].sender;
+      context.reply_text = rows[2].text;
+      context.reply_to = rows[2].id;
+      baseText = 'Reply to a much older cached row. The quote viewer should still work.';
+    }
+    if (i % 13 === 0) {
+      context.forward_sender = 'Mock Channel ' + (i % 4 + 1);
+      context.forward_text = 'Forward source text #' + i + ' with enough content to exercise compact forward strips.';
+      baseText = 'Forwarded item with a compact details area.';
+    }
+    if (i % 6 === 0) {
+      reactions = i % 12 === 0 ? '\u2764' : '\ud83d\udc4d';
+    }
+    if (i % 23 === 5 || i % 30 === 4) {
+      row = stickerMessage(id, sender, outgoing);
+      row.reactions = reactions;
+    } else if (i % 29 === 8) {
+      row = imageMessage(id, sender, 'Photo buried in the stress timeline #' + i, outgoing, i % 2 ? 900 : 640, i % 2 ? 640 : 1100);
+      row.reactions = reactions;
+    } else {
+      row = message(id, sender, baseText, outgoing, null, reactions, context);
+    }
+    if (i % 11 === 4) {
+      row.meta = (8 + (i % 12)) + ':' + (i % 2 ? '05' : '42') + (outgoing ? (i % 3 ? '|1' : '|2') : '');
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function sortedChats() {
@@ -342,6 +425,21 @@ function getMessages(chatId, limit, beforeId) {
     }
   }
   return delayed(cloneRows(rows.slice(Math.max(0, end - (limit || 8)), end)), 160);
+}
+
+function getNewerMessages(chatId, limit, afterId) {
+  var rows = messages[String(chatId)] || [];
+  var start = rows.length;
+  var i;
+  if (afterId) {
+    for (i = 0; i < rows.length; i += 1) {
+      if (rows[i].id === String(afterId)) {
+        start = i + 1;
+        break;
+      }
+    }
+  }
+  return delayed(cloneRows(rows.slice(start, start + (limit || 8))), 160);
 }
 
 function sendMessage(chatId, text, replyTo) {
@@ -479,6 +577,7 @@ module.exports = {
       chats: getChats,
       messages: getMessages,
       olderMessages: getMessages,
+      newerMessages: getNewerMessages,
       sendMessage: sendMessage,
       editMessage: editMessage,
       sendReaction: sendReaction,

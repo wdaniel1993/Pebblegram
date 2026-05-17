@@ -120,6 +120,100 @@ quote strip adapted for the Pebble display.
   the full-message viewer so long quoted/forwarded text can be read without
   jumping away from the current chat position.
 
+
+## 2.6 Streaming and Sticker Stabilization Phase
+
+Move the latest 2.6 work onto testing/mock-backend first, then prove the UI
+against deterministic dummy data before carrying fixes back to the live Telegram
+branch.
+
+- Keep the testing branch in mock backend mode so emulator loops do not depend
+  on Telegram login or the phone network state.
+- [done] Add a deterministic mock sticker row and image payload so sticker
+  rendering can be tested without a live account. Emery visual verification is
+  still blocked by the local QEMU handshake hanging before install.
+- [done] Replace the initial/older fixed whole-window message load with a
+  streaming timeline protocol: open the chat view immediately, deliver the
+  newest row first, then prepend older rows without replacing the entire list.
+- [done] Tune the timeline as a bottom-anchored surface: latest bubbles should
+  appear at the bottom immediately, short chats should sit at the bottom rather
+  than the top, and the user should be able to scroll as soon as the first row
+  arrives.
+- [done] Add directional prefetch/eviction: keep a smaller resident watch
+  window of 12 bubbles, fetch larger 80-message phone/backend pages into a
+  600-row phone-side cache, warm media thumbnails ahead of time, and feed the
+  watch only the nearest rows it can render smoothly.
+- [done] Replace the watch-side older/newer prepend/append merge shim with a
+  phone-owned viewport replacement. The watch now treats older/newer fetches as
+  complete tiny windows and restores the selected bubble by id and pixel offset.
+- [done] Tighten the viewport to 8 resident messages with 6-row directional
+  windows, anchored on the selected message so loading is proactive but biased
+  toward the direction of travel.
+- [done] Add a deterministic Numbered Scroll Test chat with messages #1-#50
+  alternating sender direction so scroll paging can be visually audited without
+  guessing which row moved.
+- [done] Decouple media loading from selection movement: selecting or passing a
+  picture no longer cancels unrelated media work or prioritizes that row as a
+  cursor target. Image scheduling is visible-only, does not recalc/clamp the
+  chat layout, and will not start another image while the bitmap cache is full,
+  avoiding visible load/evict loops between adjacent media rows.
+- [done] Send both selected-anchor and window-boundary ids for older/newer
+  paging. The phone fetches beyond the current boundary but slices a contiguous
+  8-row window around the selected message, biased by travel direction.
+- [done] Start a directional load on every up/down message movement, not only at
+  the wall, and pause at the wall while the offscreen replacement window loads.
+- [done] Slow hold-to-scroll repeat timing to reduce accidental wall hits while
+  the phone is still delivering the next window.
+- [done] Stage replacement windows offscreen and swap them only at
+  messages_done, preventing empty/partial resident lists and avoiding the
+  temporary "No messages loaded" state while the phone is slow.
+- [done] Preserve the selected bubble's pixel position when image transfers
+  complete so offscreen media loading cannot pull the visible viewport around.
+- [done] Mirror older loading with newer-message paging so down scrolling does
+  not warp back to the newest message after a long upward scroll.
+- [done] Make silent prefetch actually silent on the phone side and watch side
+  so background loads do not show Loading Older/Newer or repaint every streamed
+  row while the user is scrolling.
+- [done] Tune scrolling for smooth but snappy movement: 4 animation steps with
+  shorter frame intervals, plus earlier prefetch at five rows from either edge.
+
+- [done] Add a long mock stress chat with mixed message lengths, reactions,
+  replies, forwards, stickers, photos, and older-message pages for scroll tests.
+- [done] Constrain sticker/photo preview drawing to the bubble text column so
+  large sticker images cannot clip out of the bubble or off screen.
+- [done] Apply the same streaming approach to chat list launch: load only enough
+  for the first selectable chat, then stream the rest downward.
+- [done] During older/newer loading, keep the originally selected edge bubble
+  pinned by pixel offset, avoid queued scroll intent, and move at most one
+  deliberate row after the incoming rows are selectable rather than teleporting.
+- [done] Add stale-request protection so queued rows from a previous chat
+  selection or a backed-out chat cannot reopen or corrupt the current view.
+- [done] Revisit the phone connection loop for sleep/off-phone conditions: keep
+  command retries conservative, reconnect cached Telegram clients when they go
+  stale, run a gentle keepalive while the JS side is active, avoid queue storms
+  while the phone is unavailable, and surface a clear status instead of looking
+  frozen.
+- [done] Remove the obsolete prepend/append merge staging, negative-scroll blank
+  spacer, queued edge-scroll counters, and non-started refresh replacement path;
+  keep only a simple offscreen replacement buffer for atomic viewport swaps.
+- [done] Text-only scrolling pass: background older/newer page commits now
+  preserve the currently selected row at its current pixel position, drop stale
+  staged windows that no longer contain that row, and stop moving the selection
+  when a load finishes.
+- [done] Directional edge anchoring for text-only scrolling: upward motion
+  pins the selected bubble to the top while older rows load beneath it; downward
+  motion pins the selected bubble to the bottom while newer rows load above it.
+- [done] Replace the temporary virtual-padding scroll workaround with balanced
+  phone-side message windows, keeping a small offscreen buffer in the scroll
+  direction while leaving enough real rows on-screen to avoid blank gaps and
+  misplaced compose/new-message UI.
+- [done] Smooth direction changes: normal selection steps no longer hard-snap
+  to the opposite edge, the first click after reversing direction suppresses
+  prefetch, and late page completions from the old direction are discarded.
+- [done] Preserve photo bitmap/request state across staged message-window swaps
+  and stop image scheduling from sweeping cached photos merely because messages
+  paged in; loaded photos are evicted only when making room for another photo.
+
 ## 2.6 Validation
 
 - In mock mode, confirm reply quote strips render for incoming and outgoing

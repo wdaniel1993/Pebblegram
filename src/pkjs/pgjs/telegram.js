@@ -1,5 +1,72 @@
 var auth = require('./auth');
 var gram = require('./gramjs.bundle');
+var readOutboxByChatId = {};
+var STRIPPED_JPEG_HEADER_HEX = 'ffd8ffe000104a46494600010100000100010000ffdb004300281c1e231e19282321232d2b28303c64413c37373c7b585d4964918099968f808c8aa0b4e6c3a0aadaad8a8cc8ffcbdaeef5ffffff9bc1fffffffaffe6fdfff8ffdb0043012b2d2d3c353c76414176f8a58ca5f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8ffc00011080000000003012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00';
+
+
+function toUint8Array(value) {
+  if (!value) {
+    return null;
+  }
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value.buffer) {
+    return new Uint8Array(value.buffer, value.byteOffset || 0, value.byteLength || value.length || 0);
+  }
+  if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  return null;
+}
+
+
+function hexToBytes(hex) {
+  var bytes = new Uint8Array(hex.length / 2);
+  for (var i = 0; i < bytes.length; i += 1) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+function concatBytes(parts) {
+  var total = 0;
+  var offset = 0;
+  parts.forEach(function(part) {
+    total += part.length;
+  });
+  var merged = new Uint8Array(total);
+  parts.forEach(function(part) {
+    merged.set(part, offset);
+    offset += part.length;
+  });
+  return merged;
+}
+
+function strippedPhotoToJpg(bytes) {
+  if (!bytes || bytes.length < 3 || bytes[0] !== 1) {
+    return bytes;
+  }
+  var header = hexToBytes(STRIPPED_JPEG_HEADER_HEX);
+  header[164] = bytes[1];
+  header[166] = bytes[2];
+  return concatBytes([header, bytes.slice(3), new Uint8Array([0xff, 0xd9])]);
+}
+
+function idPart(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value);
+}
+
+function peerId(value) {
+  if (!value) {
+    return '';
+  }
+  return idPart(value.userId || value.user_id || value.chatId || value.chat_id ||
+    value.channelId || value.channel_id || value.peerId || value.peer_id || value.id);
+}
 
 function idPart(value) {
   if (value === undefined || value === null) {
@@ -137,12 +204,22 @@ function hasDocumentAttribute(document, name) {
 function documentDimensions(message) {
   var document = messageDocument(message);
   var attrs = documentAttributes(document);
-  for (var i = 0; i < attrs.length; i += 1) {
+  var candidates = mediaPreviewCandidates(message);
+  var i;
+  for (i = 0; i < attrs.length; i += 1) {
     var attr = attrs[i];
     var width = attr && (attr.w || attr.width);
     var height = attr && (attr.h || attr.height);
     if (width && height) {
       return {width: width, height: height};
+    }
+  }
+  for (i = 0; i < candidates.length; i += 1) {
+    var candidate = candidates[i];
+    var candidateWidth = candidate && (candidate.w || candidate.width);
+    var candidateHeight = candidate && (candidate.h || candidate.height);
+    if (candidateWidth && candidateHeight) {
+      return {width: candidateWidth, height: candidateHeight};
     }
   }
   return null;
@@ -179,8 +256,13 @@ function isVideo(message) {
   return !!(file && (file.mimeType || '').indexOf('video/') === 0);
 }
 
+function isSticker(message) {
+  var document = messageDocument(message);
+  return !!(document && (hasDocumentAttribute(document, 'Sticker') || hasDocumentAttribute(document, 'CustomEmoji')));
+}
+
 function hasPreviewableStill(message) {
-  return isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message));
+  return isGif(message) || isVideo(message) || isSticker(message) || !!(messageWebpage(message) && messagePhoto(message));
 }
 
 function compactMediaLabel(label, detail) {
@@ -249,7 +331,7 @@ function mediaLabel(message) {
   mimeType = document.mimeType || '';
   audioAttr = hasDocumentAttribute(document, 'Audio');
 
-  if (hasDocumentAttribute(document, 'Sticker')) {
+  if (isSticker(message)) {
     return compactMediaLabel('Sticker');
   }
   if (hasDocumentAttribute(document, 'Animated') || mimeType === 'image/gif') {
@@ -335,6 +417,14 @@ function looksLikePhoto(candidate) {
   return !!(candidate && !candidate.type && (name.indexOf('Photo') !== -1 || candidate.sizes));
 }
 
+function candidateBytes(candidate) {
+  var bytes = toUint8Array(candidate && (candidate.bytes || candidate.data));
+  if (bytes && objectName(candidate).indexOf('PhotoStrippedSize') !== -1) {
+    return strippedPhotoToJpg(bytes);
+  }
+  return bytes;
+}
+
 function downloadImageBytes(client, target, options) {
   return client.downloadMedia(target, options || {}).then(function(bytes) {
     if (isPreviewImageBytes(bytes)) {
@@ -346,10 +436,17 @@ function downloadImageBytes(client, target, options) {
 
 function downloadMediaPreviewCandidate(client, message, candidate) {
   var media = message && message.media;
+  var document = messageDocument(message);
   var option = previewThumbOption(candidate);
+  var directBytes = candidateBytes(candidate);
   var attempts = [];
   var target = 0;
 
+  if (directBytes) {
+    attempts.push(function() {
+      return isPreviewImageBytes(directBytes) ? Promise.resolve(directBytes) : Promise.reject(new Error('preview candidate bytes were not an image'));
+    });
+  }
   if (looksLikePhoto(candidate)) {
     attempts.push(function() {
       return downloadImageBytes(client, candidate, {});
@@ -364,6 +461,11 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
         return downloadImageBytes(client, media, {thumb: option});
       });
     }
+    if (document) {
+      attempts.push(function() {
+        return downloadImageBytes(client, document, {thumb: option});
+      });
+    }
   }
   attempts.push(function() {
     return downloadImageBytes(client, message, {thumb: candidate});
@@ -371,6 +473,11 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
   if (media) {
     attempts.push(function() {
       return downloadImageBytes(client, media, {thumb: candidate});
+    });
+  }
+  if (document) {
+    attempts.push(function() {
+      return downloadImageBytes(client, document, {thumb: candidate});
     });
   }
 
@@ -402,6 +509,53 @@ function dialogUnreadMarked(dialog) {
     dialog.unread_mark ||
     (dialog.dialog && (dialog.dialog.unreadMark || dialog.dialog.unread_mark))
   );
+}
+
+function numericId(value) {
+  var raw = idPart(value);
+  var parsed = parseInt(raw || value || 0, 10);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+function dialogReadOutboxMaxId(dialog) {
+  return numericId(dialog && (dialog.readOutboxMaxId || dialog.read_outbox_max_id ||
+    (dialog.dialog && (dialog.dialog.readOutboxMaxId || dialog.dialog.read_outbox_max_id))));
+}
+
+function padMinute(value) {
+  return value < 10 ? '0' + value : String(value);
+}
+
+function messageTimestamp(message) {
+  var value = message && message.date;
+  var date;
+  if (!value) {
+    return '';
+  }
+  if (value instanceof Date) {
+    date = value;
+  } else if (typeof value === 'number') {
+    date = new Date(value < 1000000000000 ? value * 1000 : value);
+  } else {
+    date = new Date(value);
+  }
+  if (!date || isNaN(date.getTime())) {
+    return '';
+  }
+  return String(date.getHours()) + ':' + padMinute(date.getMinutes());
+}
+
+function messageReadReceipt(message, readOutboxMaxId) {
+  if (!message || !message.out) {
+    return 0;
+  }
+  return numericId(message.id) <= numericId(readOutboxMaxId) ? 2 : 1;
+}
+
+function messageMeta(message, readOutboxMaxId) {
+  var timestamp = messageTimestamp(message);
+  var receipt = messageReadReceipt(message, readOutboxMaxId);
+  return timestamp + (receipt ? '|' + receipt : '');
 }
 
 function senderName(message) {
@@ -549,8 +703,8 @@ function resolveForwardEntities(client, rows) {
   });
 }
 
-function normalizeMessageWithContext(message, replies, forwardEntities) {
-  var row = normalizeMessage(message);
+function normalizeMessageWithContext(message, replies, forwardEntities, readOutboxMaxId) {
+  var row = normalizeMessage(message, readOutboxMaxId);
   var replyId = replyMessageId(message);
   var reply = replyId && replies ? replies[replyId] : null;
   var forward = forwardContext(message, forwardEntities);
@@ -565,7 +719,7 @@ function normalizeMessageWithContext(message, replies, forwardEntities) {
   return row;
 }
 
-function normalizeMessageRows(client, chatId, rows) {
+function normalizeMessageRows(client, chatId, rows, readOutboxMaxId) {
   rows = rows || [];
   var byId = {};
   var replies = {};
@@ -588,7 +742,7 @@ function normalizeMessageRows(client, chatId, rows) {
   function finish() {
     return resolveForwardEntities(client, rows).then(function(forwardEntities) {
       return rows.map(function(row) {
-        return normalizeMessageWithContext(row, replies, forwardEntities);
+        return normalizeMessageWithContext(row, replies, forwardEntities, readOutboxMaxId);
       });
     });
   }
@@ -607,7 +761,7 @@ function normalizeMessageRows(client, chatId, rows) {
   });
 }
 
-function normalizeMessage(message) {
+function normalizeMessage(message, readOutboxMaxId) {
   var previewable = hasPreviewableStill(message);
   var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
   return {
@@ -615,6 +769,7 @@ function normalizeMessage(message) {
     sender: senderName(message),
     text: displayChatMessageText(message),
     reactions: reactionSummary(message),
+    meta: messageMeta(message, readOutboxMaxId),
     outgoing: !!message.out,
     image_token: (hasPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
@@ -629,6 +784,9 @@ function chats(limit) {
         var entity = dialog.entity || {};
         var id = entityId(entity);
         var preview = dialog.message ? displayMessageText(dialog.message) : '';
+        if (id) {
+          readOutboxByChatId[id] = dialogReadOutboxMaxId(dialog);
+        }
         return {
           id: id,
           title: displayName(entity),
@@ -655,7 +813,19 @@ function messages(chatId, limit, beforeId) {
       options.offsetId = parseInt(beforeId, 10) || 0;
     }
     return client.getMessages(chatId, options).then(function(rows) {
-      return normalizeMessageRows(client, chatId, rows.slice().reverse());
+      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);
+    });
+  });
+}
+
+function newerMessages(chatId, limit, afterId) {
+  return auth.getClient().then(function(client) {
+    var options = {limit: limit};
+    if (afterId) {
+      options.minId = parseInt(afterId, 10) || 0;
+    }
+    return client.getMessages(chatId, options).then(function(rows) {
+      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);
     });
   });
 }
@@ -839,6 +1009,7 @@ function downloadMedia(chatId, messageId) {
 module.exports = {
   chats: chats,
   messages: messages,
+  newerMessages: newerMessages,
   sendMessage: sendMessage,
   editMessage: editMessage,
   sendReaction: sendReaction,
