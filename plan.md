@@ -255,6 +255,13 @@ preparation layer.
 - [done] Add watch-side paging watchdogs and phone-side message fetch
   timeouts so older/newer loading cannot stay stuck forever after a backend
   stall or partial transfer.
+- [done] Prioritize selected-bubble media loads without moving the viewport:
+  selected media clears failed state, preempts non-selected active transfers, and
+  may evict an unselected loaded image when bitmap memory is full.
+- [done] Try Telegram thumb-name fallbacks earlier and faster for GIF/video and
+  sticker previews, with per-attempt logs for live Telegram diagnosis.
+- [done] Trim large-platform image staging slightly so selected-media priority
+  still packages cleanly while keeping thumbnail payloads generous.
 
 
 ## 2.6 Validation

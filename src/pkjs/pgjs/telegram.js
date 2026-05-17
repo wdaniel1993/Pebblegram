@@ -1,7 +1,7 @@
 var auth = require('./auth');
 var gram = require('./gramjs.bundle');
 var readOutboxByChatId = {};
-var MEDIA_DOWNLOAD_TIMEOUT_MS = 12000;
+var MEDIA_DOWNLOAD_TIMEOUT_MS = 4500;
 var FALLBACK_THUMB_TYPES = ['m', 'x', 'y', 's', 'a', 'b', 'c'];
 var STRIPPED_JPEG_HEADER_HEX = 'ffd8ffe000104a46494600010100000100010000ffdb004300281c1e231e19282321232d2b28303c64413c37373c7b585d4964918099968f808c8aa0b4e6c3a0aadaad8a8cc8ffcbdaeef5ffffff9bc1fffffffaffe6fdfff8ffdb0043012b2d2d3c353c76414176f8a58ca5f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8ffc00011080000000003012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00';
 
@@ -406,6 +406,9 @@ function pushMediaPreviewCandidate(candidates, candidate) {
 }
 
 function mediaPreviewArea(candidate) {
+  if (typeof candidate === 'string') {
+    return 100000000;
+  }
   var width = candidate && (candidate.w || candidate.width);
   var height = candidate && (candidate.h || candidate.height);
   return (width || 0) * (height || 0);
@@ -419,6 +422,9 @@ function mediaPreviewCandidates(message) {
   var extendedMedia = media && (media.extendedMedia || media.extended_media);
   var candidates = [];
 
+  if (hasPreviewableStill(message)) {
+    pushMediaPreviewCandidate(candidates, FALLBACK_THUMB_TYPES);
+  }
   pushMediaPreviewCandidate(candidates, media && (media.videoCover || media.video_cover));
   pushMediaPreviewCandidate(candidates, extendedMedia && (extendedMedia.thumb || extendedMedia.thumbs));
   pushMediaPreviewCandidate(candidates, document && (document.thumb || document.thumbnail));
@@ -427,9 +433,6 @@ function mediaPreviewCandidates(message) {
   pushMediaPreviewCandidate(candidates, file && (file.thumb || file.thumbnail || file.thumbs));
   pushMediaPreviewCandidate(candidates, webpage && webpage.photo && webpage.photo.sizes);
   pushMediaPreviewCandidate(candidates, media && media.photo && media.photo.sizes);
-  if (hasPreviewableStill(message)) {
-    pushMediaPreviewCandidate(candidates, FALLBACK_THUMB_TYPES);
-  }
   candidates.sort(function(a, b) {
     return mediaPreviewArea(b) - mediaPreviewArea(a);
   });
@@ -518,7 +521,11 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
     if (target >= attempts.length) {
       throw new Error('no usable media preview candidate');
     }
-    return attempts[target++]().catch(tryNext);
+    return attempts[target++]().catch(function(err) {
+      console.log('Media preview attempt failed ' + objectName(candidate) + '/' + String(option || '') + ': ' +
+                  (err && err.message ? err.message : err));
+      return tryNext();
+    });
   }
   return tryNext();
 }

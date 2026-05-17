@@ -14,12 +14,12 @@
 #define MAX_META 16
 #define MAX_CONTEXT_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 60, 60, 60, 56, 72, 72, 64)
 #define MAX_ID 24
-#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 20000, 20000, 20000)
+#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 19000, 19000, 19000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
 #define MAX_LOADED_IMAGES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 1, 1, 1, 1, 1, 2, 2)
 #define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 120, 96, 96, 96, 156, 156, 118)
 #define IMAGE_FRAME_EXTRA_W PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10, 8, 8, 6, 14, 14, 10)
-#define APP_INBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 2048, 2048, 2048, 2048, 4096, 4096, 4096)
+#define APP_INBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 2048, 2048, 2048, 2048, 3072, 3072, 3072)
 #define APP_OUTBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 512, 512, 512, 512, 1024, 1024, 1024)
 #define BW_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 1, 0, 0, 0)
 #define ROUND_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 0, 0, 1)
@@ -276,6 +276,7 @@ static void request_chats(void);
 static void request_messages(const char *chat_id);
 static void request_next_image(void);
 static void clear_active_image_request(void);
+static bool selected_message_needs_image(void);
 static void image_retry_timer_callback(void *data);
 static void request_older_messages(bool silent);
 static void request_newer_messages(bool silent);
@@ -750,7 +751,15 @@ static bool destroy_farthest_loaded_image(void) {
 }
 
 static void prepare_selected_image_request(void) {
-  // Cursor movement must stay independent from media transfer priority.
+  if (!selected_message_needs_image()) {
+    return;
+  }
+  Message *selected = &s_messages[s_selected_message];
+  selected->image_failed = false;
+
+  if (s_image_message_id[0] && strcmp(s_image_message_id, selected->image_token) != 0) {
+    clear_active_image_request();
+  }
 }
 
 static void clear_active_image_request(void) {
@@ -797,6 +806,33 @@ static void destroy_offscreen_message_images(void) {
 
 static bool message_is_at_or_below_selection(int index) {
   return s_selected_message < 0 || s_selected_message >= s_message_count || index >= s_selected_message;
+}
+
+static bool selected_message_needs_image(void) {
+  return s_selected_message >= 0 && s_selected_message < s_message_count &&
+         s_messages[s_selected_message].image_placeholder &&
+         s_messages[s_selected_message].image_token[0] &&
+         !s_messages[s_selected_message].image_bitmap;
+}
+
+static bool destroy_unselected_loaded_image(void) {
+  int farthest_index = -1;
+  int farthest_distance = -1;
+  for (int i = 0; i < s_message_count; i++) {
+    if (i == s_selected_message || !s_messages[i].image_bitmap) {
+      continue;
+    }
+    int distance = message_image_focus_distance(i);
+    if (distance > farthest_distance) {
+      farthest_distance = distance;
+      farthest_index = i;
+    }
+  }
+  if (farthest_index < 0) {
+    return false;
+  }
+  destroy_message_bitmap(&s_messages[farthest_index]);
+  return true;
 }
 
 static int find_best_image_candidate(bool visible_only, bool prefer_below_selection) {
@@ -2008,7 +2044,8 @@ static void request_next_image(void) {
   if (s_image_message_id[0]) {
     Message *active_message = find_message_by_image_token(s_image_message_id);
     int active_index = message_index_from_ptr(active_message);
-    if (!message_image_visible(active_index)) {
+    if (!message_image_visible(active_index) ||
+        (selected_message_needs_image() && active_index != s_selected_message)) {
       clear_active_image_request();
     } else {
       return;
@@ -2019,7 +2056,10 @@ static void request_next_image(void) {
     return;
   }
 
-  int image_index = find_best_image_candidate(true, true);
+  int image_index = selected_message_needs_image() ? s_selected_message : -1;
+  if (image_index < 0) {
+    image_index = find_best_image_candidate(true, true);
+  }
   if (image_index < 0) {
     image_index = find_best_image_candidate(true, false);
   }
@@ -2030,6 +2070,10 @@ static void request_next_image(void) {
 
   if (s_loaded_image_count >= MAX_LOADED_IMAGES) {
     if (destroy_farthest_loaded_image()) {
+      refresh_loaded_image_count();
+    }
+    if (s_loaded_image_count >= MAX_LOADED_IMAGES && image_index == s_selected_message &&
+        destroy_unselected_loaded_image()) {
       refresh_loaded_image_count();
     }
     if (s_loaded_image_count >= MAX_LOADED_IMAGES) {
