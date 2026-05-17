@@ -304,6 +304,10 @@ preparation layer.
 - [done] When an older/newer page completes after the user has reversed
   direction, discard the stale page and immediately start a silent load in the
   current direction when more rows exist.
+- [done] Tone down phone-side prefetch pressure after live testing: reduce
+  top-chat prefetch count, fetch smaller 80-row history pages into a 600-row
+  phone cache, and serialize capped media warming so background preview work
+  cannot compete heavily with selected-image transfers or keepalive.
 
 
 ## 2.6 Validation

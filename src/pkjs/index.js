@@ -7,8 +7,8 @@ var MAX_ROWS = 20;
 var INITIAL_MESSAGE_ROWS = 9;
 var OLDER_MESSAGE_ROWS = 7;
 var NEWER_MESSAGE_ROWS = 7;
-var MESSAGE_PAGE_FETCH_ROWS = 120;
-var PHONE_MESSAGE_CACHE_ROWS = 1000;
+var MESSAGE_PAGE_FETCH_ROWS = 80;
+var PHONE_MESSAGE_CACHE_ROWS = 600;
 var MAX_MESSAGE_ROWS = 9;
 var MESSAGE_EDGE_BUFFER_ROWS = 4;
 var MAX_MESSAGE_TEXT = 500;
@@ -24,7 +24,9 @@ var AVATAR_COLORS = 16;
 var AVATAR_MAX_BYTES = 3000;
 var AVATAR_CHUNK_SIZE = 500;
 var AVATAR_ROWS = MAX_ROWS;
-var PREFETCH_CHAT_COUNT = 4;
+var PREFETCH_CHAT_COUNT = 2;
+var MEDIA_WARM_MAX_PER_BATCH = 6;
+var MEDIA_WARM_INTERVAL_MS = 700;
 var sendQueue = [];
 var sending = false;
 var messageStore = {};
@@ -33,6 +35,9 @@ var oldestComplete = {};
 var newestComplete = {};
 var prefetching = {};
 var mediaWarming = {};
+var mediaWarmQueue = [];
+var mediaWarmActive = false;
+var mediaWarmTimer = null;
 var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
@@ -666,30 +671,61 @@ function sendNewerWindow(chatId, anchorId, afterId, silent) {
   return rows.length;
 }
 
+function scheduleMediaWarmPump(delay) {
+  if (mediaWarmTimer) {
+    return;
+  }
+  mediaWarmTimer = setTimeout(function() {
+    mediaWarmTimer = null;
+    pumpMediaWarmQueue();
+  }, delay);
+}
+
+function pumpMediaWarmQueue() {
+  var item;
+  if (mediaWarmActive || !mediaWarmQueue.length) {
+    return;
+  }
+  if (imageTransferActive) {
+    scheduleMediaWarmPump(1000);
+    return;
+  }
+  item = mediaWarmQueue.shift();
+  mediaWarmActive = true;
+  withTimeout(activePgjs().imageBytes(item.chatId, item.token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
+              'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function() {
+    mediaWarming[item.key] = 'ready';
+  }).catch(function(err) {
+    delete mediaWarming[item.key];
+    console.log('Media warm failed ' + item.key + ': ' + (err && err.message ? err.message : err));
+  }).then(function() {
+    mediaWarmActive = false;
+    scheduleMediaWarmPump(MEDIA_WARM_INTERVAL_MS);
+  });
+}
+
 function warmMessageMedia(chatId, messages) {
   var rows = messages || [];
-  var delay = 0;
-  rows.forEach(function(message) {
+  var warmed = 0;
+  for (var i = rows.length - 1; i >= 0 && warmed < MEDIA_WARM_MAX_PER_BATCH; i -= 1) {
+    var message = rows[i];
     var key;
     if (!message || !message.image_token) {
-      return;
+      continue;
     }
     key = String(chatId) + ':' + String(message.image_token);
     if (mediaWarming[key]) {
-      return;
+      continue;
     }
-    mediaWarming[key] = 'warming';
-    setTimeout(function() {
-      withTimeout(activePgjs().imageBytes(chatId, message.image_token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
-                  'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function() {
-        mediaWarming[key] = 'ready';
-      }).catch(function(err) {
-        delete mediaWarming[key];
-        console.log('Media warm failed ' + key + ': ' + (err && err.message ? err.message : err));
-      });
-    }, delay);
-    delay += 350;
-  });
+    mediaWarming[key] = 'queued';
+    mediaWarmQueue.push({
+      chatId: chatId,
+      token: message.image_token,
+      key: key
+    });
+    warmed += 1;
+  }
+  pumpMediaWarmQueue();
 }
 
 function warmChatHistory(chatId) {
@@ -905,11 +941,15 @@ function startConnectionKeepalive() {
     return;
   }
   connectionKeepaliveTimer = setInterval(function() {
-    var keepalive = activePgjs().keepalive || activePgjs().ready;
+    var keepalive;
+    if (imageTransferActive || mediaWarmActive) {
+      return;
+    }
+    keepalive = activePgjs().keepalive || activePgjs().ready;
     withTimeout(keepalive(), 'keepalive timed out', 10000).catch(function(err) {
       console.log('Keepalive reconnect failed: ' + (err && err.message ? err.message : err));
     });
-  }, 30000);
+  }, 45000);
 }
 
 function startTelegramUpdates() {
