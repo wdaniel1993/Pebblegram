@@ -4,6 +4,8 @@ var pgjsBackend = require('./pgjs/backend');
 var USE_MOCK_BACKEND = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
+var MAX_SEND_QUEUE = 80;
+var MAX_CACHED_CHATS = 12;
 var INITIAL_MESSAGE_ROWS = 9;
 var OLDER_MESSAGE_ROWS = 7;
 var NEWER_MESSAGE_ROWS = 7;
@@ -38,6 +40,8 @@ var mediaWarming = {};
 var mediaWarmQueue = [];
 var mediaWarmActive = false;
 var mediaWarmTimer = null;
+var mediaWarmSeq = 0;
+var chatCacheOrder = [];
 var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
@@ -164,23 +168,57 @@ function withTimeout(promise, label, timeoutMs) {
 
 // AppMessage delivery is serialized. Older phones can drop messages if image
 // chunks and rows are pushed in parallel.
+function payloadType(payload) {
+  return payload && payload[MessageKeys.Type];
+}
+
+function isLowPriorityPayload(payload) {
+  var type = payloadType(payload);
+  return type === 'status' || isAvatarTransferPayload(payload);
+}
+
+function trimSendQueueFor(payload) {
+  var start = sending ? 1 : 0;
+  var index;
+  while (sendQueue.length >= MAX_SEND_QUEUE) {
+    index = -1;
+    for (var i = start; i < sendQueue.length; i += 1) {
+      if (isObsoleteQueuedPayload(sendQueue[i]) || isLowPriorityPayload(sendQueue[i].payload)) {
+        index = i;
+        break;
+      }
+    }
+    if (index >= 0) {
+      sendQueue.splice(index, 1);
+    } else if (isLowPriorityPayload(payload)) {
+      return false;
+    } else {
+      return true;
+    }
+  }
+  return true;
+}
+
 function sendToWatch(payload) {
+  if (!trimSendQueueFor(payload)) {
+    return;
+  }
   sendQueue.push({payload: payload, queuedAt: Date.now()});
   flushQueue();
 }
 
 function isAvatarTransferPayload(payload) {
-  var type = payload && payload[MessageKeys.Type];
+  var type = payloadType(payload);
   return type === 'avatar_start' || type === 'avatar' || type === 'avatar_done';
 }
 
 function isImageTransferPayload(payload) {
-  var type = payload && payload[MessageKeys.Type];
+  var type = payloadType(payload);
   return type === 'image_start' || type === 'image' || type === 'image_done' || type === 'image_error';
 }
 
 function isMessageTransferPayload(payload) {
-  var type = payload && payload[MessageKeys.Type];
+  var type = payloadType(payload);
   return type === 'messages_start' || type === 'message' || type === 'message_prepend' || type === 'message_append' || type === 'messages_done';
 }
 
@@ -572,6 +610,60 @@ function compareMessageIds(a, b) {
   return av < bv ? -1 : (av > bv ? 1 : 0);
 }
 
+function clearMediaWarmStateForChat(chatId) {
+  var prefix = String(chatId) + ':';
+  mediaWarmQueue = mediaWarmQueue.filter(function(item) {
+    return String(item.chatId) !== String(chatId);
+  });
+  Object.keys(mediaWarming).forEach(function(key) {
+    if (key.indexOf(prefix) === 0) {
+      delete mediaWarming[key];
+    }
+  });
+}
+
+function removeChatCache(chatId) {
+  var id = String(chatId || '');
+  if (!id) {
+    return;
+  }
+  delete messageStore[id];
+  delete messageHistoryStore[id];
+  delete oldestComplete[id];
+  delete newestComplete[id];
+  delete prefetching[id];
+  clearMediaWarmStateForChat(id);
+  chatCacheOrder = chatCacheOrder.filter(function(item) {
+    return item !== id;
+  });
+}
+
+function touchChatCache(chatId) {
+  var id = String(chatId || '');
+  if (!id) {
+    return;
+  }
+  chatCacheOrder = chatCacheOrder.filter(function(item) {
+    return item !== id;
+  });
+  chatCacheOrder.push(id);
+}
+
+function trimChatCaches(protectedChatId) {
+  var protectedId = String(protectedChatId || '');
+  var attempts = 0;
+  while (chatCacheOrder.length > MAX_CACHED_CHATS && attempts <= chatCacheOrder.length) {
+    var id = chatCacheOrder.shift();
+    if (id === protectedId) {
+      chatCacheOrder.push(id);
+      attempts += 1;
+      continue;
+    }
+    removeChatCache(id);
+    attempts = 0;
+  }
+}
+
 function mergeHistoryMessages(chatId, rows) {
   var existing = messageHistoryStore[chatId] || [];
   var byId = {};
@@ -587,6 +679,8 @@ function mergeHistoryMessages(chatId, rows) {
     merged = merged.slice(merged.length - PHONE_MESSAGE_CACHE_ROWS);
   }
   messageHistoryStore[chatId] = merged;
+  touchChatCache(chatId);
+  trimChatCaches(currentChatId || chatId);
   return merged;
 }
 
@@ -681,6 +775,24 @@ function scheduleMediaWarmPump(delay) {
   }, delay);
 }
 
+function cancelMediaWarmQueue(chatId) {
+  mediaWarmSeq += 1;
+  if (mediaWarmTimer) {
+    clearTimeout(mediaWarmTimer);
+    mediaWarmTimer = null;
+  }
+  mediaWarmActive = false;
+  if (chatId) {
+    clearMediaWarmStateForChat(chatId);
+  } else {
+    mediaWarmQueue = [];
+    mediaWarming = {};
+  }
+  if (mediaWarmQueue.length) {
+    scheduleMediaWarmPump(MEDIA_WARM_INTERVAL_MS);
+  }
+}
+
 function pumpMediaWarmQueue() {
   var item;
   if (mediaWarmActive || !mediaWarmQueue.length) {
@@ -691,14 +803,23 @@ function pumpMediaWarmQueue() {
     return;
   }
   item = mediaWarmQueue.shift();
+  item.seq = mediaWarmSeq;
   mediaWarmActive = true;
   withTimeout(activePgjs().imageBytes(item.chatId, item.token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
               'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function() {
-    mediaWarming[item.key] = 'ready';
+    if (item.seq === mediaWarmSeq) {
+      mediaWarming[item.key] = 'ready';
+    }
   }).catch(function(err) {
+    if (item.seq !== mediaWarmSeq) {
+      return;
+    }
     delete mediaWarming[item.key];
     console.log('Media warm failed ' + item.key + ': ' + (err && err.message ? err.message : err));
   }).then(function() {
+    if (item.seq !== mediaWarmSeq) {
+      return;
+    }
     mediaWarmActive = false;
     scheduleMediaWarmPump(MEDIA_WARM_INTERVAL_MS);
   });
@@ -732,6 +853,7 @@ function warmChatHistory(chatId) {
   if (!chatId || prefetching[chatId]) {
     return;
   }
+  touchChatCache(chatId);
   prefetching[chatId] = true;
   timed('warm history ' + chatId, activePgjs().messages(chatId, MESSAGE_PAGE_FETCH_ROWS)).then(function(messages) {
     delete prefetching[chatId];
@@ -819,6 +941,7 @@ function sendStoredMessages(chatId) {
     return false;
   }
   currentChatSignature = messageSignature(messages);
+  touchChatCache(chatId);
   markRead(chatId);
   sendMessageRows(messages, chatId, 'initial');
   return true;
@@ -994,8 +1117,12 @@ function getChats(silent) {
 }
 
 function getMessages(chatId) {
+  if (currentChatId !== chatId) {
+    cancelMediaWarmQueue();
+  }
   currentChatId = chatId;
   currentChatSignature = '';
+  touchChatCache(chatId);
   cancelUpdateRefresh();
   cancelQueuedMessageTransfers();
   cancelQueuedAvatarTransfers();
@@ -1054,6 +1181,7 @@ function leaveChat(chatId) {
   if (!chatId || currentChatId === chatId) {
     currentChatId = null;
     currentChatSignature = '';
+    cancelMediaWarmQueue(chatId);
     cancelQueuedMessageTransfers();
     cancelQueuedImageTransfers();
     scheduleChatAvatars(300);
@@ -1142,10 +1270,7 @@ function getNewerMessages(chatId, anchorId, afterId, silent) {
 function sendMessage(chatId, text, replyTo) {
   timed('send message ' + chatId, activePgjs().sendMessage(chatId, text, replyTo)).then(function() {
     var payload = {};
-    delete messageStore[chatId];
-    delete messageHistoryStore[chatId];
-    delete oldestComplete[chatId];
-    delete newestComplete[chatId];
+    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'sent';
     sendToWatch(payload);
   }).catch(function(err) {
@@ -1156,10 +1281,7 @@ function sendMessage(chatId, text, replyTo) {
 function deleteMessage(chatId, messageId) {
   timed('delete message ' + chatId, activePgjs().deleteMessage(chatId, messageId)).then(function() {
     var payload = {};
-    delete messageStore[chatId];
-    delete messageHistoryStore[chatId];
-    delete oldestComplete[chatId];
-    delete newestComplete[chatId];
+    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'deleted';
     sendToWatch(payload);
   }).catch(function(err) {
@@ -1170,10 +1292,7 @@ function deleteMessage(chatId, messageId) {
 function editMessage(chatId, messageId, text) {
   timed('edit message ' + chatId, activePgjs().editMessage(chatId, messageId, text)).then(function() {
     var payload = {};
-    delete messageStore[chatId];
-    delete messageHistoryStore[chatId];
-    delete oldestComplete[chatId];
-    delete newestComplete[chatId];
+    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'edited';
     sendToWatch(payload);
   }).catch(function(err) {
@@ -1200,10 +1319,7 @@ function chatAction(kind, chatId) {
   }
   timed(kind + ' ' + chatId, action(chatId)).then(function() {
     var payload = {};
-    delete messageStore[chatId];
-    delete messageHistoryStore[chatId];
-    delete oldestComplete[chatId];
-    delete newestComplete[chatId];
+    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'chat_action_done';
     payload[MessageKeys.ChatId] = String(chatId || '');
     payload[MessageKeys.Text] = kind;

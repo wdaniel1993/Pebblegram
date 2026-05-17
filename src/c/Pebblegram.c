@@ -45,7 +45,6 @@
 #define CHAT_SCROLL_FRAME_MS 2
 #define CHAT_SCROLL_DELTA 30
 #define REPEAT_SCROLL_MS 140
-#define MESSAGE_PREFETCH_MARGIN 6
 #define MESSAGE_MODE_INITIAL 0
 #define MESSAGE_MODE_OLDER 1
 #define MESSAGE_MODE_NEWER 2
@@ -263,8 +262,6 @@ static bool s_at_oldest;
 static bool s_message_stream_silent;
 static int s_older_anchor_y;
 static int s_newer_anchor_y;
-static int s_older_anchor_scroll_offset;
-static int s_newer_anchor_scroll_offset;
 static char s_older_anchor_id[MAX_ID];
 static char s_newer_anchor_id[MAX_ID];
 static AppTimer *s_chat_scroll_timer;
@@ -313,7 +310,7 @@ static void scroll_to_bottom(bool animated);
 static void set_chat_scroll_offset(int target, bool animated);
 static void set_chat_scroll_offset_quiet(int target);
 static void scroll_selected_message_into_view(bool animated);
-static void select_message_with_alignment(int index, bool align_bottom, bool animated);
+static void select_message_with_alignment(int index, bool align_top, bool animated);
 static void chat_scroll_timer_callback(void *data);
 static void messages_root_update_proc(Layer *layer, GContext *ctx);
 
@@ -1369,7 +1366,7 @@ static void commit_message_stage(int count) {
 
 static bool message_transfer_matches(DictionaryIterator *iter) {
   int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
-  return transfer_id == 0 || s_message_transfer_id == 0 || transfer_id == s_message_transfer_id;
+  return transfer_id == 0 || (s_message_transfer_id != 0 && transfer_id == s_message_transfer_id);
 }
 
 static void populate_message_from_tuple(Message *message, DictionaryIterator *iter) {
@@ -2188,11 +2185,9 @@ static void request_older_messages(bool silent) {
   if (s_selected_message >= 0 && s_selected_message < s_message_count) {
     copy_cstr(s_older_anchor_id, sizeof(s_older_anchor_id), s_messages[s_selected_message].id);
     s_older_anchor_y = s_message_y[s_selected_message];
-    s_older_anchor_scroll_offset = s_chat_scroll_offset;
   } else {
     s_older_anchor_id[0] = '\0';
     s_older_anchor_y = 0;
-    s_older_anchor_scroll_offset = s_chat_scroll_offset;
   }
   s_loading_older_messages = true;
   if (!silent) {
@@ -2230,11 +2225,9 @@ static void request_newer_messages(bool silent) {
   if (s_selected_message >= 0 && s_selected_message < s_message_count) {
     copy_cstr(s_newer_anchor_id, sizeof(s_newer_anchor_id), s_messages[s_selected_message].id);
     s_newer_anchor_y = s_message_y[s_selected_message];
-    s_newer_anchor_scroll_offset = s_chat_scroll_offset;
   } else {
     s_newer_anchor_id[0] = '\0';
     s_newer_anchor_y = 0;
-    s_newer_anchor_scroll_offset = s_chat_scroll_offset;
   }
   s_loading_newer_messages = true;
   if (!silent) {
@@ -2263,8 +2256,6 @@ static void request_messages(const char *chat_id) {
   s_newer_anchor_id[0] = '\0';
   s_older_anchor_y = 0;
   s_newer_anchor_y = 0;
-  s_older_anchor_scroll_offset = 0;
-  s_newer_anchor_scroll_offset = 0;
   s_at_newest = true;
   s_at_oldest = false;
   s_message_scroll_direction = 0;

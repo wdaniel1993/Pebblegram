@@ -308,6 +308,11 @@ preparation layer.
   top-chat prefetch count, fetch smaller 80-row history pages into a 600-row
   phone cache, and serialize capped media warming so background preview work
   cannot compete heavily with selected-image transfers or keepalive.
+- [done] Major optimization pass: bound the JS AppMessage queue by dropping
+  obsolete/low-priority status and avatar payloads first, cap retained chat
+  caches with LRU eviction, cancel stale media-warm generations on chat switch,
+  reject stale watch message chunks after transfer reset, cap opportunistic
+  reply/forward/media preview probes, and make phone image caching true LRU.
 
 
 ## 2.6 Validation

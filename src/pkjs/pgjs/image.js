@@ -297,10 +297,15 @@ function cacheKey(chatId, messageId, width, height, colors, maxBytes) {
   return [IMAGE_CACHE_VERSION, chatId, messageId, width, height, colors, maxBytes].join(':');
 }
 
+function noteImageCacheUse(key) {
+  imageCacheOrder = imageCacheOrder.filter(function(item) {
+    return item !== key;
+  });
+  imageCacheOrder.push(key);
+}
+
 function cacheSet(key, bytes) {
-  if (!imageCache[key]) {
-    imageCacheOrder.push(key);
-  }
+  noteImageCacheUse(key);
   imageCache[key] = bytes;
   while (imageCacheOrder.length > MAX_IMAGE_CACHE_ITEMS) {
     delete imageCache[imageCacheOrder.shift()];
@@ -328,9 +333,7 @@ function persistentCacheGet(key) {
 }
 
 function cacheSetMemoryOnly(key, bytes) {
-  if (!imageCache[key]) {
-    imageCacheOrder.push(key);
-  }
+  noteImageCacheUse(key);
   imageCache[key] = bytes;
   while (imageCacheOrder.length > MAX_IMAGE_CACHE_ITEMS) {
     delete imageCache[imageCacheOrder.shift()];
@@ -370,6 +373,7 @@ function persistentCacheSet(key, bytes) {
 
 function cachedBytes(key, label, downloader, width, height, colors, maxBytes, maskCircle) {
   if (imageCache[key]) {
+    noteImageCacheUse(key);
     console.log('image cache hit ' + label);
     return Promise.resolve(imageCache[key]);
   }

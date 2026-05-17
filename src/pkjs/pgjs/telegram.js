@@ -5,6 +5,10 @@ var MEDIA_DOWNLOAD_TIMEOUT_MS = 3000;
 var FULL_MEDIA_DOWNLOAD_TIMEOUT_MS = 18000;
 var FALLBACK_THUMB_TYPES = ['x', 'm', 's'];
 var MAX_SAFE_CHANNEL_PARTICIPANTS = 2000;
+var MAX_MEDIA_PREVIEW_CANDIDATES = 8;
+var MAX_MEDIA_PREVIEW_ATTEMPTS = 12;
+var MAX_REPLY_CONTEXT_FETCHES = 12;
+var MAX_FORWARD_ENTITY_FETCHES = 12;
 var STRIPPED_JPEG_HEADER_HEX = 'ffd8ffe000104a46494600010100000100010000ffdb004300281c1e231e19282321232d2b28303c64413c37373c7b585d4964918099968f808c8aa0b4e6c3a0aadaad8a8cc8ffcbdaeef5ffffff9bc1fffffffaffe6fdfff8ffdb0043012b2d2d3c353c76414176f8a58ca5f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8ffc00011080000000003012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00';
 
 
@@ -529,7 +533,7 @@ function mediaPreviewCandidates(message) {
   candidates.sort(function(a, b) {
     return mediaPreviewArea(b) - mediaPreviewArea(a);
   });
-  return candidates;
+  return candidates.slice(0, MAX_MEDIA_PREVIEW_CANDIDATES);
 }
 
 function previewThumbOption(candidate) {
@@ -584,7 +588,9 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
   var errors = [];
 
   function pushAttempt(label, fn) {
-    attempts.push({label: label, run: fn});
+    if (attempts.length < MAX_MEDIA_PREVIEW_ATTEMPTS) {
+      attempts.push({label: label, run: fn});
+    }
   }
 
   if (directBytes && !isStrippedPreviewCandidate(candidate)) {
@@ -865,6 +871,9 @@ function resolveForwardEntities(client, rows) {
       return;
     }
     byKey[key] = null;
+    if (pending.length >= MAX_FORWARD_ENTITY_FETCHES) {
+      return;
+    }
     try {
       pending.push(Promise.resolve(client.getEntity(peer)).then(function(entity) {
         byKey[key] = entity;
@@ -911,7 +920,9 @@ function normalizeMessageRows(client, chatId, rows, readOutboxMaxId) {
     if (byId[replyId]) {
       replies[replyId] = replyContext(byId[replyId]);
     } else if (!replies[replyId]) {
-      missing.push(parseInt(replyId, 10) || replyId);
+      if (missing.length < MAX_REPLY_CONTEXT_FETCHES) {
+        missing.push(parseInt(replyId, 10) || replyId);
+      }
       replies[replyId] = {sender: 'Reply', text: 'Message not loaded'};
     }
   });
