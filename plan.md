@@ -298,6 +298,12 @@ preparation layer.
   staging slightly, invalidate stale prepared-image cache entries, and evict
   persistent image cache entries before writing new ones so localStorage limits
   are less likely to make caching silently disappear.
+- [done] Fix tall-bubble page completion so older/newer background loads
+  preserve the exact visible slice of a viewport-tall selected bubble instead
+  of snapping it to the opposite edge after the initial selection movement.
+- [done] When an older/newer page completes after the user has reversed
+  direction, discard the stale page and immediately start a silent load in the
+  current direction when more rows exist.
 
 
 ## 2.6 Validation

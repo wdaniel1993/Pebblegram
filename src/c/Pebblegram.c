@@ -2617,11 +2617,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     char fallback_id[MAX_ID];
     bool staged_load = loading_older || loading_newer;
     bool live_anchor = false;
+    int live_anchor_y = 0;
+    int live_anchor_scroll_offset = s_chat_scroll_offset;
     fallback_id[0] = '\0';
 
     if (chat_visible && staged_load && has_selected_message()) {
       recalc_message_layout();
       copy_cstr(selected_id, sizeof(selected_id), s_messages[s_selected_message].id);
+      live_anchor_y = s_message_y[s_selected_message];
+      live_anchor_scroll_offset = s_chat_scroll_offset;
       live_anchor = true;
     }
 
@@ -2640,6 +2644,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
                          ((loading_older && s_message_scroll_direction > 0) ||
                           (loading_newer && s_message_scroll_direction < 0));
     if (reversed_load) {
+      int current_direction = s_message_scroll_direction;
       s_loading_older_messages = false;
       s_loading_newer_messages = false;
       s_older_anchor_id[0] = '\0';
@@ -2649,6 +2654,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       if (chat_visible) {
         show_status(s_current_chat_title);
         layer_mark_dirty(s_messages_root);
+      }
+      if (current_direction > 0 && !s_at_newest) {
+        request_newer_messages(true);
+      } else if (current_direction < 0 && !s_at_oldest) {
+        request_older_messages(true);
       }
       return;
     }
@@ -2711,11 +2721,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       if (staged_load && preserved_index >= 0) {
         GRect bounds = layer_get_bounds(s_messages_root);
         int margin = 6;
+        bool selected_is_tall = s_message_h[preserved_index] > bounds.size.h - (margin * 2);
         bool anchor_top = s_message_scroll_direction < 0 ||
                           (s_message_scroll_direction == 0 && loading_older);
-        int target = anchor_top ?
-                     s_message_y[preserved_index] - margin :
-                     s_message_y[preserved_index] + s_message_h[preserved_index] + margin - bounds.size.h;
+        int target = (selected_is_tall && live_anchor) ?
+                     live_anchor_scroll_offset + (s_message_y[preserved_index] - live_anchor_y) :
+                     (anchor_top ?
+                      s_message_y[preserved_index] - margin :
+                      s_message_y[preserved_index] + s_message_h[preserved_index] + margin - bounds.size.h);
         set_chat_scroll_offset(target, false);
       }
       if (has_selected_message()) {
