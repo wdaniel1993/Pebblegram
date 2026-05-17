@@ -272,6 +272,8 @@ preparation layer.
   fetch clears in-flight state and reports failure back to the watch.
 - [done] Add diagnostic GIF/media preview errors that report candidate type,
   thumb path, byte signature, and final failure detail to logs and selected watch status.
+- [done] Validate JPEG/PNG preview candidates before encoding so malformed
+  Telegram JPEG-ish GIF thumbnails are skipped in favor of later candidates.
 - [done] Sanitize emoji-heavy chat/message text on the phone and trim incomplete
   UTF-8 on the watch before drawing to reduce OS crashes in large chats.
 - [done] Add flattened Telegram folder support by fetching Archive/custom folder

@@ -256,6 +256,38 @@ function isPreviewImageBytes(bytes) {
   return isPngBytes(bytes) || isJpegBytes(bytes);
 }
 
+function arrayBufferFromBytes(bytes) {
+  return bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength);
+}
+
+function previewDecodeError(bytes) {
+  try {
+    if (isJpegBytes(bytes) && gram.JPEG && gram.JPEG.decode) {
+      gram.JPEG.decode(bytes, {useTArray: true});
+      return null;
+    }
+    if (isPngBytes(bytes) && gram.UPNG && gram.UPNG.decode) {
+      gram.UPNG.decode(arrayBufferFromBytes(bytes));
+      return null;
+    }
+  } catch (err) {
+    return err && err.message ? err.message : String(err || 'decode failed');
+  }
+  return null;
+}
+
+function validatedPreviewBytes(bytes) {
+  bytes = toUint8Array(bytes);
+  if (!isPreviewImageBytes(bytes)) {
+    throw new Error('media preview was not jpeg/png: ' + byteSignature(bytes));
+  }
+  var decodeError = previewDecodeError(bytes);
+  if (decodeError) {
+    throw new Error('media preview decode failed: ' + decodeError + '; ' + byteSignature(bytes));
+  }
+  return bytes;
+}
+
 function hexByte(value) {
   var text = (value || 0).toString(16);
   return text.length < 2 ? '0' + text : text;
@@ -514,13 +546,7 @@ function candidateBytes(candidate) {
 function downloadImageBytes(client, target, options) {
   return withTimeout(Promise.resolve().then(function() {
     return client.downloadMedia(target, options || {});
-  }), 'media preview download timed out', MEDIA_DOWNLOAD_TIMEOUT_MS).then(function(bytes) {
-    bytes = toUint8Array(bytes);
-    if (isPreviewImageBytes(bytes)) {
-      return bytes;
-    }
-    throw new Error('media preview was not jpeg/png: ' + byteSignature(bytes));
-  });
+  }), 'media preview download timed out', MEDIA_DOWNLOAD_TIMEOUT_MS).then(validatedPreviewBytes);
 }
 
 function attemptLabel(prefix, candidate, option) {
@@ -544,8 +570,11 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
 
   if (directBytes) {
     pushAttempt(attemptLabel('direct', candidate, option), function() {
-      return isPreviewImageBytes(directBytes) ? Promise.resolve(directBytes) :
-        Promise.reject(new Error('preview candidate bytes were not jpeg/png: ' + byteSignature(directBytes)));
+      try {
+        return Promise.resolve(validatedPreviewBytes(directBytes));
+      } catch (err) {
+        return Promise.reject(err);
+      }
     });
   }
   if (looksLikePhoto(candidate)) {
