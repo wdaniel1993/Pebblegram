@@ -4,9 +4,9 @@ var imageCache = {};
 var imageCacheOrder = [];
 var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
-var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 16;
+var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 32;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
-var IMAGE_CACHE_VERSION = 'v12';
+var IMAGE_CACHE_VERSION = 'v13';
 var MEDIA_PIPELINE_TIMEOUT_MS = 22000;
 
 function withTimeout(promise, label, timeoutMs) {
@@ -345,14 +345,23 @@ function persistentCacheSet(key, bytes) {
     order = order.filter(function(item) {
       return item !== key;
     });
-    order.push(key);
+    while (order.length >= MAX_PERSISTENT_IMAGE_CACHE_ITEMS) {
+      localStorage.removeItem('pgjs.imageCache.' + order.shift());
+    }
     for (var i = 0; i < bytes.length; i += 1) {
       encoded += String.fromCharCode(bytes[i]);
     }
-    localStorage.setItem('pgjs.imageCache.' + key, encoded);
-    while (order.length > MAX_PERSISTENT_IMAGE_CACHE_ITEMS) {
-      localStorage.removeItem('pgjs.imageCache.' + order.shift());
+    try {
+      localStorage.setItem('pgjs.imageCache.' + key, encoded);
+    } catch (writeErr) {
+      if (order.length > 0) {
+        localStorage.removeItem('pgjs.imageCache.' + order.shift());
+        localStorage.setItem('pgjs.imageCache.' + key, encoded);
+      } else {
+        throw writeErr;
+      }
     }
+    order.push(key);
     localStorage.setItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY, JSON.stringify(order));
   } catch (e) {
     console.log('Persistent image cache skipped: ' + (e && e.message ? e.message : e));

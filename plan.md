@@ -288,6 +288,16 @@ preparation layer.
   UTF-8 on the watch before drawing to reduce OS crashes in large chats.
 - [done] Add flattened Telegram folder support by fetching Archive/custom folder
   dialogs and labeling folder-origin previews in the chat list.
+- [done] Mirror the long-bubble entry fix upward: scrolling up into a
+  viewport-tall bubble now lands near its lower edge instead of jumping to the
+  sender/caption at the top.
+- [done] Start older/newer prefetch on the first movement in a direction while
+  still suppressing only true direction reversals, so initial upward scrolling
+  can warm the next page earlier.
+- [done] Make phone-side media warming retryable after failures, speed up warm
+  staging slightly, invalidate stale prepared-image cache entries, and evict
+  persistent image cache entries before writing new ones so localStorage limits
+  are less likely to make caching silently disappear.
 
 
 ## 2.6 Validation

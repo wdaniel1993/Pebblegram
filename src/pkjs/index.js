@@ -678,14 +678,17 @@ function warmMessageMedia(chatId, messages) {
     if (mediaWarming[key]) {
       return;
     }
-    mediaWarming[key] = true;
+    mediaWarming[key] = 'warming';
     setTimeout(function() {
       withTimeout(activePgjs().imageBytes(chatId, message.image_token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
-                  'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).catch(function(err) {
+                  'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function() {
+        mediaWarming[key] = 'ready';
+      }).catch(function(err) {
+        delete mediaWarming[key];
         console.log('Media warm failed ' + key + ': ' + (err && err.message ? err.message : err));
       });
     }, delay);
-    delay += 500;
+    delay += 350;
   });
 }
 

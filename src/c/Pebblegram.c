@@ -3783,7 +3783,7 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
     return;
   }
   s_user_scrolled_messages = true;
-  bool direction_changed = s_message_scroll_direction != -1;
+  bool reversed_direction = s_message_scroll_direction == 1;
   s_message_scroll_direction = -1;
   recalc_message_layout();
   if (repeating) {
@@ -3792,7 +3792,7 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
 
   if (compose_target_is_selected() || s_selected_message < 0) {
     select_message_with_alignment(s_message_count - 1, true, !repeating);
-    if (!direction_changed) {
+    if (!reversed_direction) {
       maybe_prefetch_older_messages();
     }
     return;
@@ -3804,14 +3804,16 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
   if (!repeating && s_message_h[s_selected_message] > bounds.size.h - (margin * 2) &&
       s_chat_scroll_offset > top) {
     set_chat_scroll_offset(PG_MAX(top, s_chat_scroll_offset - LONG_MESSAGE_SCROLL_DELTA), true);
-    if (!direction_changed) {
+    if (!reversed_direction) {
       maybe_prefetch_older_messages();
     }
     return;
   }
   if (s_selected_message > 0) {
-    select_message_with_alignment(s_selected_message - 1, true, !repeating);
-    if (!direction_changed) {
+    int prev_index = s_selected_message - 1;
+    bool prev_is_tall = s_message_h[prev_index] > bounds.size.h - (margin * 2);
+    select_message_with_alignment(prev_index, !prev_is_tall, !repeating);
+    if (!reversed_direction) {
       maybe_prefetch_older_messages();
     }
   } else {
@@ -3837,7 +3839,7 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
     return;
   }
   s_user_scrolled_messages = true;
-  bool direction_changed = s_message_scroll_direction != 1;
+  bool reversed_direction = s_message_scroll_direction == -1;
   s_message_scroll_direction = 1;
   recalc_message_layout();
   if (repeating) {
@@ -3849,7 +3851,7 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
       scroll_to_bottom(!repeating);
     } else if (s_message_count > 0) {
       select_message_with_alignment(s_message_count - 1, false, !repeating);
-      if (!direction_changed) {
+      if (!reversed_direction) {
         maybe_prefetch_newer_messages();
       }
     }
@@ -3862,7 +3864,7 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
   if (!repeating && s_message_h[s_selected_message] > bounds.size.h - (margin * 2) &&
       s_chat_scroll_offset + bounds.size.h < bottom) {
     set_chat_scroll_offset(PG_MIN(bottom - bounds.size.h, s_chat_scroll_offset + LONG_MESSAGE_SCROLL_DELTA), true);
-    if (!direction_changed) {
+    if (!reversed_direction) {
       maybe_prefetch_newer_messages();
     }
     return;
@@ -3871,7 +3873,7 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
     int next_index = s_selected_message + 1;
     bool next_is_tall = s_message_h[next_index] > bounds.size.h - (margin * 2);
     select_message_with_alignment(next_index, next_is_tall, !repeating);
-    if (!direction_changed) {
+    if (!reversed_direction) {
       maybe_prefetch_newer_messages();
     }
   } else if (s_loading_newer_messages) {
