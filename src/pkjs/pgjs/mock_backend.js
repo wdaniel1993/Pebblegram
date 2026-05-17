@@ -120,8 +120,8 @@ var messages = {
     message(303, 'Sam', '[Audio] voice-note.ogg', false),
     message(304, 'Sam', '[File] schedule.pdf', false),
     message(305, 'You', 'Reactions should show as emoji when supported.', true, null, '\u2764'),
-    stickerMessage(306, 'Sam', false),
-    stickerMessage(307, 'You', true)
+    message(306, 'Sam', '[Sticker] not shown', false),
+    message(307, 'You', '[Sticker] not shown', true)
   ],
   '1004': [
     message(400, 'Jordan', 'This chat is marked unread with a dot only.', false),
@@ -226,13 +226,6 @@ function imageMessage(id, sender, text, outgoing, width, height) {
   return row;
 }
 
-function stickerMessage(id, sender, outgoing) {
-  var row = message(id, sender, '[Sticker]', outgoing, 'sticker:' + id, '');
-  row.image_width = 512;
-  row.image_height = 512;
-  return row;
-}
-
 function buildNumberedMessages() {
   var rows = [];
   for (var n = 50; n >= 1; n -= 1) {
@@ -287,8 +280,7 @@ function buildStressMessages() {
       reactions = i % 12 === 0 ? '\u2764' : '\ud83d\udc4d';
     }
     if (i % 23 === 5 || i % 30 === 4) {
-      row = stickerMessage(id, sender, outgoing);
-      row.reactions = reactions;
+      row = message(id, sender, '[Sticker] not shown', outgoing, null, reactions, context);
     } else if (i % 29 === 8) {
       row = imageMessage(id, sender, 'Photo buried in the stress timeline #' + i, outgoing, i % 2 ? 900 : 640, i % 2 ? 640 : 1100);
       row.reactions = reactions;

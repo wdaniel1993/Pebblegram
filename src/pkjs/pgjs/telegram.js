@@ -257,6 +257,9 @@ function isPreviewImageBytes(bytes) {
 }
 
 function isGif(message) {
+  if (isSticker(message)) {
+    return false;
+  }
   var document = messageDocument(message);
   var file = message && message.file;
   if (document) {
@@ -279,8 +282,17 @@ function isSticker(message) {
   return !!(document && (hasDocumentAttribute(document, 'Sticker') || hasDocumentAttribute(document, 'CustomEmoji')));
 }
 
+function stickerLabel(message) {
+  var attr = hasDocumentAttribute(messageDocument(message), 'Sticker') ||
+             hasDocumentAttribute(messageDocument(message), 'CustomEmoji');
+  var alt = attr && (attr.alt || attr.emoticon || attr.emoji);
+  var text = messageText(message);
+  return compactMediaLabel('Sticker', alt || text || 'not shown');
+}
+
 function hasPreviewableStill(message) {
-  return isGif(message) || isVideo(message) || isSticker(message) || !!(messageWebpage(message) && messagePhoto(message));
+  return !isSticker(message) &&
+         (isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message)));
 }
 
 function compactMediaLabel(label, detail) {
@@ -350,7 +362,7 @@ function mediaLabel(message) {
   audioAttr = hasDocumentAttribute(document, 'Audio');
 
   if (isSticker(message)) {
-    return compactMediaLabel('Sticker');
+    return stickerLabel(message);
   }
   if (hasDocumentAttribute(document, 'Animated') || mimeType === 'image/gif') {
     return compactMediaLabel('GIF', fileName);
@@ -386,8 +398,7 @@ function displayChatMessageText(message) {
     return videoText ? compactMediaLabel('Video preview') + ' ' + videoText : compactMediaLabel('Video preview');
   }
   if (isSticker(message)) {
-    var stickerText = messageText(message);
-    return stickerText ? compactMediaLabel('Sticker') + ' ' + stickerText : compactMediaLabel('Sticker');
+    return stickerLabel(message);
   }
   return displayMessageText(message);
 }
@@ -407,7 +418,7 @@ function pushMediaPreviewCandidate(candidates, candidate) {
 
 function mediaPreviewArea(candidate) {
   if (typeof candidate === 'string') {
-    return 100000000;
+    return -1;
   }
   var width = candidate && (candidate.w || candidate.width);
   var height = candidate && (candidate.h || candidate.height);
@@ -536,9 +547,6 @@ function downloadStillPreview(client, message) {
 
   function tryNext() {
     if (index >= candidates.length) {
-      if (isSticker(message)) {
-        return downloadImageBytes(client, message, {});
-      }
       throw new Error('media has no usable still preview');
     }
     return downloadMediaPreviewCandidate(client, message, candidates[index++]).catch(tryNext);

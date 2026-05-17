@@ -96,7 +96,7 @@ function configureForPlatform() {
     MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
-    IMAGE_MAX_BYTES = 20000;
+    IMAGE_MAX_BYTES = 19000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 9;
@@ -108,7 +108,7 @@ function configureForPlatform() {
     MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
-    IMAGE_MAX_BYTES = 20000;
+    IMAGE_MAX_BYTES = 19000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'diorite') {
     IMAGE_SIZE = 96;

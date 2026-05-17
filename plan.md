@@ -243,13 +243,13 @@ preparation layer.
 - [done] Extend the image transfer stall timeout and drop obsolete queued media
   or message-transfer payloads so a canceled/failed chunk cannot wedge the
   bridge.
-- [done] Add image preparation/download timeouts so GIF/video/sticker previews
-  fail and retry cleanly instead of sitting at 0 percent forever.
+- [done] Add image preparation/download timeouts so GIF/video previews fail
+  and retry cleanly instead of sitting at 0 percent forever.
 - [done] Deduplicate in-flight phone-side image encoding so warm-cache work and
   watch requests share the same prepared PNG instead of racing each other.
-- [done] Broaden Telegram preview candidates for stickers, GIFs, videos, and
-  webpage media, including document thumbnails, file thumbnails, photo sizes,
-  and Telegram thumb-type fallbacks.
+- [done] Broaden Telegram preview candidates for GIFs, videos, and webpage
+  media, including document thumbnails, file thumbnails, photo sizes, and
+  Telegram thumb-type fallbacks.
 - [done] Replace the passive client-object keepalive with a small Telegram
   network keepalive so stale locked-phone connections are exercised regularly.
 - [done] Add watch-side paging watchdogs and phone-side message fetch
@@ -258,10 +258,14 @@ preparation layer.
 - [done] Prioritize selected-bubble media loads without moving the viewport:
   selected media clears failed state, preempts non-selected active transfers, and
   may evict an unselected loaded image when bitmap memory is full.
-- [done] Try Telegram thumb-name fallbacks earlier and faster for GIF/video and
-  sticker previews, with per-attempt logs for live Telegram diagnosis.
+- [done] Try concrete Telegram thumbnails before thumb-name fallbacks for
+  GIF/video previews, with faster per-attempt logs for live diagnosis.
 - [done] Trim large-platform image staging slightly so selected-media priority
   still packages cleanly while keeping thumbnail payloads generous.
+- [done] Remove sticker media loading entirely; stickers now render as text-only
+  labels with Telegram alt text where available.
+- [done] Keep downward selection into viewport-tall bubbles aligned to the top
+  so sender/caption text remains visible before paging through the bubble.
 
 
 ## 2.6 Validation

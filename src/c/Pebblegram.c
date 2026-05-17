@@ -726,10 +726,6 @@ static bool message_is_gif(const Message *message) {
   return message && strncmp(message->text, "[GIF", 4) == 0;
 }
 
-static bool message_is_sticker(const Message *message) {
-  return message && strncmp(message->text, "[Sticker", 8) == 0;
-}
-
 static bool destroy_farthest_loaded_image(void) {
   int farthest_index = -1;
   int farthest_distance = -1;
@@ -1786,9 +1782,8 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
           image_percent = progress_percent(s_image_received, s_image_size);
         }
         bool gif = message_is_gif(message);
-        bool sticker = message_is_sticker(message);
-        const char *media_name = sticker ? "Sticker" : (gif ? "GIF" : "Photo");
-        const char *label = message->image_failed ? (sticker ? "Sticker failed" : (gif ? "GIF failed" : "Photo failed")) :
+        const char *media_name = gif ? "GIF" : "Photo";
+        const char *label = message->image_failed ? (gif ? "GIF failed" : "Photo failed") :
                             (message->image_requested ?
                              (message->image_decode_retries > 0 ? "Retrying image..." : "Loading Image...") :
                              media_name);
@@ -3796,7 +3791,9 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
     return;
   }
   if (s_selected_message < s_message_count - 1) {
-    select_message_with_alignment(s_selected_message + 1, false, !repeating);
+    int next_index = s_selected_message + 1;
+    bool next_is_tall = s_message_h[next_index] > bounds.size.h - (margin * 2);
+    select_message_with_alignment(next_index, next_is_tall, !repeating);
     if (!direction_changed) {
       maybe_prefetch_newer_messages();
     }
