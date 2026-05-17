@@ -214,6 +214,22 @@ branch.
   and stop image scheduling from sweeping cached photos merely because messages
   paged in; loaded photos are evicted only when making room for another photo.
 
+
+## 2.7 Longer Message Text Phase
+
+Increase message text capacity after the 2.6 streaming/paging work reduced the
+resident watch window to eight bubbles. Keep timeline bubbles capped to roughly
+one screen of text per platform, while allowing the full-message and quote
+viewer paths to fetch substantially longer text.
+
+- [done] Bump app version to 2.7.0.
+- [done] Raise watch-side stored message text from 300 to 500 characters.
+- [done] Raise full-message/context viewer text from 700 to 1200 characters.
+- [done] Keep chat bubble previews bounded by platform-sized screenful caps: 132
+  chars on smaller rectangular platforms and 220 chars on larger displays.
+- [done] Raise the JS message window budget to match the larger per-row text
+  buffers without abandoning the dynamic 8-row resident window.
+
 ## 2.6 Validation
 
 - In mock mode, confirm reply quote strips render for incoming and outgoing
