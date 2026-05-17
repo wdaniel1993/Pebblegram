@@ -270,6 +270,8 @@ preparation layer.
   failed selected media now settles until the user leaves and reselects it.
 - [done] Add phone-side media pipeline timeout cleanup so a hung GIF thumbnail
   fetch clears in-flight state and reports failure back to the watch.
+- [done] Add diagnostic GIF/media preview errors that report candidate type,
+  thumb path, byte signature, and final failure detail to logs and selected watch status.
 - [done] Sanitize emoji-heavy chat/message text on the phone and trim incomplete
   UTF-8 on the watch before drawing to reduce OS crashes in large chats.
 - [done] Add flattened Telegram folder support by fetching Archive/custom folder

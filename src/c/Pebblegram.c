@@ -3033,6 +3033,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (strcmp(type, "image_error") == 0) {
     char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *detail = tuple_cstring(iter, MESSAGE_KEY_Error);
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, s_image_transfer_id);
     Message *message = find_message_by_image_token(message_id);
     int image_index = message_index_from_ptr(message);
@@ -3041,6 +3042,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (message && is_active_image) {
       message->image_requested = false;
       message->image_failed = message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN);
+      if (image_index == s_selected_message && detail && detail[0]) {
+        char status[64];
+        copy_cstr(status, sizeof(status), detail);
+        show_status(status);
+      }
     }
     if (is_active_image) {
       if (s_image_retry_timer) {

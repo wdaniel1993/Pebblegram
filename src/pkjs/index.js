@@ -338,6 +338,13 @@ function watchText(value, maxLength) {
   return clampUtf8Bytes(value, maxLength);
 }
 
+function diagnosticText(value, maxLength) {
+  return clampUtf8Bytes(normalizeWatchString(value)
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim(), maxLength);
+}
+
 function utf8ByteLengthAt(value, index) {
   var code = value.charCodeAt(index);
   if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
@@ -1180,11 +1187,13 @@ function sendImage(chatId, messageId) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
       return;
     }
-    console.log('Image failed: ' + (err && err.message ? err.message : err));
+    var detail = err && err.message ? err.message : String(err || 'unknown image error');
+    console.log('Image failed for ' + messageId + ': ' + detail);
     imageTransferActive = false;
     var failed = {};
     failed[MessageKeys.Type] = 'image_error';
     failed[MessageKeys.MessageId] = String(messageId || '');
+    failed[MessageKeys.Error] = diagnosticText(detail, 95);
     sendToWatch(failed);
   });
 }

@@ -256,6 +256,47 @@ function isPreviewImageBytes(bytes) {
   return isPngBytes(bytes) || isJpegBytes(bytes);
 }
 
+function hexByte(value) {
+  var text = (value || 0).toString(16);
+  return text.length < 2 ? '0' + text : text;
+}
+
+function imageByteKind(bytes) {
+  if (!bytes || !bytes.length) {
+    return 'empty';
+  }
+  if (isPngBytes(bytes)) {
+    return 'png';
+  }
+  if (isJpegBytes(bytes)) {
+    return 'jpeg';
+  }
+  if (bytes.length > 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return 'webp';
+  }
+  if (bytes.length > 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return 'gif';
+  }
+  if (bytes.length > 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
+    return 'mp4';
+  }
+  return 'unknown';
+}
+
+function byteSignature(bytes) {
+  bytes = toUint8Array(bytes);
+  if (!bytes || !bytes.length) {
+    return 'empty';
+  }
+  var limit = Math.min(bytes.length, 12);
+  var parts = [];
+  for (var i = 0; i < limit; i += 1) {
+    parts.push(hexByte(bytes[i]));
+  }
+  return imageByteKind(bytes) + ' len ' + bytes.length + ' sig ' + parts.join('');
+}
+
 function isGif(message) {
   if (isSticker(message)) {
     return false;
@@ -474,11 +515,18 @@ function downloadImageBytes(client, target, options) {
   return withTimeout(Promise.resolve().then(function() {
     return client.downloadMedia(target, options || {});
   }), 'media preview download timed out', MEDIA_DOWNLOAD_TIMEOUT_MS).then(function(bytes) {
+    bytes = toUint8Array(bytes);
     if (isPreviewImageBytes(bytes)) {
       return bytes;
     }
-    throw new Error('media preview was not an image');
+    throw new Error('media preview was not jpeg/png: ' + byteSignature(bytes));
   });
+}
+
+function attemptLabel(prefix, candidate, option) {
+  var candidateName = objectName(candidate) || String(candidate || 'candidate');
+  var optionText = option ? '/' + String(option) : '';
+  return prefix + ':' + candidateName + optionText;
 }
 
 function downloadMediaPreviewCandidate(client, message, candidate) {
@@ -488,68 +536,86 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
   var directBytes = candidateBytes(candidate);
   var attempts = [];
   var target = 0;
+  var errors = [];
+
+  function pushAttempt(label, fn) {
+    attempts.push({label: label, run: fn});
+  }
 
   if (directBytes) {
-    attempts.push(function() {
-      return isPreviewImageBytes(directBytes) ? Promise.resolve(directBytes) : Promise.reject(new Error('preview candidate bytes were not an image'));
+    pushAttempt(attemptLabel('direct', candidate, option), function() {
+      return isPreviewImageBytes(directBytes) ? Promise.resolve(directBytes) :
+        Promise.reject(new Error('preview candidate bytes were not jpeg/png: ' + byteSignature(directBytes)));
     });
   }
   if (looksLikePhoto(candidate)) {
-    attempts.push(function() {
+    pushAttempt(attemptLabel('photo', candidate, option), function() {
       return downloadImageBytes(client, candidate, {});
     });
   }
   if (option) {
-    attempts.push(function() {
+    pushAttempt(attemptLabel('message-thumb', candidate, option), function() {
       return downloadImageBytes(client, message, {thumb: option});
     });
     if (media) {
-      attempts.push(function() {
+      pushAttempt(attemptLabel('media-thumb', candidate, option), function() {
         return downloadImageBytes(client, media, {thumb: option});
       });
     }
     if (document) {
-      attempts.push(function() {
+      pushAttempt(attemptLabel('document-thumb', candidate, option), function() {
         return downloadImageBytes(client, document, {thumb: option});
       });
     }
   }
-  attempts.push(function() {
+  pushAttempt(attemptLabel('message-candidate', candidate, option), function() {
     return downloadImageBytes(client, message, {thumb: candidate});
   });
   if (media) {
-    attempts.push(function() {
+    pushAttempt(attemptLabel('media-candidate', candidate, option), function() {
       return downloadImageBytes(client, media, {thumb: candidate});
     });
   }
   if (document) {
-    attempts.push(function() {
+    pushAttempt(attemptLabel('document-candidate', candidate, option), function() {
       return downloadImageBytes(client, document, {thumb: candidate});
     });
   }
 
   function tryNext() {
+    var attempt;
     if (target >= attempts.length) {
-      throw new Error('no usable media preview candidate');
+      throw new Error(errors.slice(-4).join(' | ') || 'no usable media preview candidate');
     }
-    return attempts[target++]().catch(function(err) {
-      console.log('Media preview attempt failed ' + objectName(candidate) + '/' + String(option || '') + ': ' +
-                  (err && err.message ? err.message : err));
+    attempt = attempts[target++];
+    return attempt.run().catch(function(err) {
+      var detail = attempt.label + ': ' + (err && err.message ? err.message : err);
+      errors.push(detail);
+      console.log('Media preview attempt failed ' + detail);
       return tryNext();
     });
   }
   return tryNext();
 }
 
+function candidateDebugName(candidate) {
+  return objectName(candidate) || String(candidate || 'candidate');
+}
+
 function downloadStillPreview(client, message) {
   var candidates = mediaPreviewCandidates(message);
   var index = 0;
+  var errors = [];
 
   function tryNext() {
     if (index >= candidates.length) {
-      throw new Error('media has no usable still preview');
+      throw new Error(errors.slice(-6).join(' | ') || 'media has no usable still preview; candidates=' + candidates.length);
     }
-    return downloadMediaPreviewCandidate(client, message, candidates[index++]).catch(tryNext);
+    var candidate = candidates[index++];
+    return downloadMediaPreviewCandidate(client, message, candidate).catch(function(err) {
+      errors.push(candidateDebugName(candidate) + ': ' + (err && err.message ? err.message : err));
+      return tryNext();
+    });
   }
   return tryNext();
 }
