@@ -274,6 +274,8 @@ preparation layer.
   thumb path, byte signature, and final failure detail to logs and selected watch status.
 - [done] Validate JPEG/PNG preview candidates before encoding so malformed
   Telegram JPEG-ish GIF thumbnails are skipped in favor of later candidates.
+- [done] Prefer larger Telegram GIF thumb names and demote stripped embedded
+  previews so successful GIF previews are not the lowest-resolution fallback first.
 - [done] Sanitize emoji-heavy chat/message text on the phone and trim incomplete
   UTF-8 on the watch before drawing to reduce OS crashes in large chats.
 - [done] Add flattened Telegram folder support by fetching Archive/custom folder
