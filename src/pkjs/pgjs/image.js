@@ -2,8 +2,8 @@ var telegram = require('./telegram');
 var codecs = require('./gramjs.bundle');
 var imageCache = {};
 var imageCacheOrder = [];
-var MAX_IMAGE_CACHE_ITEMS = 8;
-var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 4;
+var MAX_IMAGE_CACHE_ITEMS = 64;
+var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 16;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
 var IMAGE_CACHE_VERSION = 'v11';
 

@@ -38,6 +38,7 @@ function create(options) {
     olderMessages: function(chatId, limit, beforeId) {
       return telegram.messages(chatId, limit, beforeId);
     },
+    newerMessages: telegram.newerMessages,
     sendMessage: telegram.sendMessage,
     editMessage: telegram.editMessage,
     sendReaction: telegram.sendReaction,
