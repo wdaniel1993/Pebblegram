@@ -326,6 +326,7 @@ function persistentCacheGet(key) {
       bytes[i] = raw.charCodeAt(i) & 255;
     }
     cacheSetMemoryOnly(key, bytes);
+    persistentCacheNoteUse(key);
     return bytes;
   } catch (e) {
     return null;
@@ -338,6 +339,18 @@ function cacheSetMemoryOnly(key, bytes) {
   while (imageCacheOrder.length > MAX_IMAGE_CACHE_ITEMS) {
     delete imageCache[imageCacheOrder.shift()];
   }
+}
+
+function persistentCacheNoteUse(key) {
+  var order;
+  try {
+    order = JSON.parse(localStorage.getItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY) || '[]');
+    order = order.filter(function(item) {
+      return item !== key;
+    });
+    order.push(key);
+    localStorage.setItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY, JSON.stringify(order));
+  } catch (e) {}
 }
 
 function persistentCacheSet(key, bytes) {
