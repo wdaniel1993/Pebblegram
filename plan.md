@@ -338,6 +338,69 @@ preparation layer.
 - 2.7: Notification launch/deep-link behavior, if the Pebble app and phone
   notification stack expose enough control.
 
+## Recovery Handoff - 2026-05-19
+
+Current branch/workspace:
+
+- Branch is `experiment/pgjs` in `/home/thomas/pebble/Pebblegram`.
+- Working files are writable, but this Codex session has `.git` mounted
+  read-only. Normal file edits work; `git fetch`, `git commit`, and `git push`
+  fail with `.git/FETCH_HEAD: Read-only file system`.
+- `findmnt` showed the repo root mounted `rw`, but `.git` mounted separately
+  as `ro`. To push normally, reopen/fix the Codex workspace so `.git` is `rw`,
+  or use an external terminal where Git metadata is writable.
+- Local status when this note was written:
+  - `src/pkjs/index.js` modified.
+  - `src/pkjs/pgjs/auth.js` modified.
+  - `src/pkjs/pgjs/image.js` modified.
+  - Untracked recovery/build artifacts also exist: `.lock-waf_linux_build`,
+    `build - Copy/`, `data - Copy/`, `pebble_paper_plane_icon_assets.zip`,
+    `replyemoji.png`.
+- Local branch tracking still reports `ahead 50` because the earlier remote
+  push succeeded but local `.git` could not update its refs. Remote
+  `origin/experiment/pgjs` already contains the 2.7 recovery push plus commit
+  `9eb9967 Refresh persistent image cache LRU on hits`.
+
+Changes that must be preserved and pushed:
+
+- `src/pkjs/pgjs/image.js`: persistent image cache hits now call
+  `persistentCacheNoteUse(key)` so the persistent LRU order is refreshed on
+  cache reads. This was already saved remotely as commit `9eb9967`, but the
+  local working tree still shows it modified because local Git refs could not
+  update.
+- `src/pkjs/pgjs/auth.js`: fix the repeated login/logout loop around Telegram
+  `AUTH_KEY_DUPLICATED` from `invokeWithLayer`.
+  - Track the active GramJS client with `currentClient`.
+  - Treat `AUTH_KEY_DUPLICATED`, `AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`,
+    `USER_DEACTIVATED`, and `USER_DEACTIVATED_BAN` as fatal session errors.
+  - On fatal connect/reconnect/sign-in failures, disconnect the client, clear
+    the poisoned saved session, and return a user-facing sign-in message.
+  - `reset()` now disconnects the active client before clearing session state.
+  - Temporary sign-in clients are disconnected on password-needed and error
+    paths so they do not linger while settings waits for more input.
+- `src/pkjs/index.js`: removed the redundant launch-time warm
+  `activePgjs().ready()` call. Startup still begins keepalive, update listener,
+  and chat loading; this avoids an unnecessary extra auth/connect attempt.
+
+Validation already run and passed:
+
+- JS syntax check over `src/pkjs` and `tools`.
+- `npm run build:pgjs-gramjs`.
+- Full Pebble SDK build through direct `waf configure build`, producing
+  `build/Pebblegram.pbw`.
+
+Recommended next-chat actions:
+
+- First make `.git` writable or use a terminal/session where Git works.
+- Fetch `origin/experiment/pgjs` so local refs see remote commit `9eb9967`.
+- Preserve the working tree edits in `src/pkjs/pgjs/auth.js` and
+  `src/pkjs/index.js`; do not reset them away.
+- Commit/push the auth duplicate-key fix on `experiment/pgjs`. Include
+  `src/pkjs/pgjs/image.js` only if local Git still needs to reconcile the
+  already-remote LRU commit.
+- Do not include the untracked recovery/build artifacts unless intentionally
+  needed.
+
 ## Earmarked for v3.0
 
 - Reply quote warp/navigation remains v3.0 scope; 2.6 uses an in-place full

@@ -1473,9 +1473,6 @@ Pebble.addEventListener('ready', function() {
   configureForPlatform();
   console.log('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
   sendSettings();
-  activePgjs().ready().catch(function(err) {
-    console.log('Warm connect failed: ' + (err && err.message ? err.message : err));
-  });
   startConnectionKeepalive();
   startTelegramUpdates();
   getChats(false);

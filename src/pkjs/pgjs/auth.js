@@ -1,6 +1,7 @@
 var cache = require('./cache');
 
 var clientPromise = null;
+var currentClient = null;
 var AUTH_TIMEOUT_MS = 30000;
 var CODE_TIMEOUT_MS = 90000;
 var AUTH_DC = {
@@ -58,6 +59,12 @@ function telegramErrorCode(err) {
 function authErrorMessage(err) {
   var code = telegramErrorCode(err);
   var waitMatch;
+  if (isAuthKeyDuplicated(err)) {
+    return 'Telegram invalidated this login because another Pebblegram copy was already using it. Open Pebblegram settings and sign in again.';
+  }
+  if (code === 'AUTH_KEY_UNREGISTERED' || code === 'SESSION_REVOKED') {
+    return 'Telegram session expired. Open Pebblegram settings and sign in again.';
+  }
   if (code === 'PHONE_CODE_INVALID') {
     return 'Bad login code. Open Pebblegram settings on your phone, enter the new Telegram code, then tap Save.';
   }
@@ -88,6 +95,20 @@ function shouldClearCodeRequest(err) {
          code === 'PHONE_CODE_HASH_INVALID';
 }
 
+function isAuthKeyDuplicated(err) {
+  var text = err && (err.errorMessage || err.message) ? (err.errorMessage || err.message) : String(err || '');
+  return telegramErrorCode(err) === 'AUTH_KEY_DUPLICATED' || text.indexOf('AUTH_KEY_DUPLICATED') !== -1;
+}
+
+function isFatalSessionError(err) {
+  var code = telegramErrorCode(err);
+  return isAuthKeyDuplicated(err) ||
+         code === 'AUTH_KEY_UNREGISTERED' ||
+         code === 'SESSION_REVOKED' ||
+         code === 'USER_DEACTIVATED' ||
+         code === 'USER_DEACTIVATED_BAN';
+}
+
 function timeout(promise, message, timeoutMs) {
   var timer = null;
   var duration = timeoutMs || AUTH_TIMEOUT_MS;
@@ -106,10 +127,25 @@ function timeout(promise, message, timeoutMs) {
 }
 
 function closeClient(client) {
+  if (client && client === currentClient) {
+    currentClient = null;
+  }
   if (client && typeof client.disconnect === 'function') {
-    return client.disconnect().catch(function() {});
+    try {
+      return Promise.resolve(client.disconnect()).catch(function() {});
+    } catch (err) {
+      return Promise.resolve();
+    }
   }
   return Promise.resolve();
+}
+
+function discardClient(client, clearSession) {
+  clientPromise = null;
+  if (clearSession) {
+    cache.clearSession();
+  }
+  return closeClient(client);
 }
 
 function ensureConnected(client) {
@@ -121,8 +157,9 @@ function ensureConnected(client) {
     return timeout(Promise.resolve(client.connect()).then(function() {
       return client;
     }), 'Telegram reconnect timed out.', 15000).catch(function(err) {
-      clientPromise = null;
-      throw err;
+      return discardClient(client, isFatalSessionError(err)).then(function() {
+        throw new Error(authErrorMessage(err));
+      });
     });
   }
   return Promise.resolve(client);
@@ -189,6 +226,19 @@ function requestCode(gram, config, creds) {
 
 function signInWithCode(gram, config, creds) {
   var client = createClient(gram, config, creds.pendingSession || '');
+
+  function failSignIn(err) {
+    if (shouldClearCodeRequest(err)) {
+      cache.clearCodeRequest();
+    }
+    if (isFatalSessionError(err)) {
+      cache.clearSession();
+    }
+    return closeClient(client).then(function() {
+      throw new Error(authErrorMessage(err));
+    });
+  }
+
   pinAuthDc(client, config);
   return timeout(
     Promise.resolve().then(function() {
@@ -227,15 +277,14 @@ function signInWithCode(gram, config, creds) {
           }).then(function() {
             cache.setSession(client.session.save());
             return client;
-          });
+          }).catch(failSignIn);
         }
         cache.set('authStage', 'password');
-        throw new Error('Open Pebblegram settings on your phone, enter your Telegram two-step password, then tap Save.');
+        return closeClient(client).then(function() {
+          throw new Error('Open Pebblegram settings on your phone, enter your Telegram two-step password, then tap Save.');
+        });
       }
-      if (shouldClearCodeRequest(err)) {
-        cache.clearCodeRequest();
-      }
-      throw new Error(authErrorMessage(err));
+      return failSignIn(err);
     }),
     'Telegram sign-in timed out.'
   );
@@ -253,8 +302,11 @@ function authState() {
 }
 
 function reset() {
+  var client = currentClient;
+  currentClient = null;
   clientPromise = null;
   cache.clearSession();
+  return closeClient(client);
 }
 
 function getClient() {
@@ -284,7 +336,10 @@ function getClient() {
     }
 
     if (!creds.session && creds.code) {
-      signInWithCode(gram, config, creds).then(resolve).catch(function(err) {
+      signInWithCode(gram, config, creds).then(function(client) {
+        currentClient = client;
+        resolve(client);
+      }).catch(function(err) {
         clientPromise = null;
         reject(err);
       });
@@ -298,10 +353,15 @@ function getClient() {
     }).then(function() {
       return ensureConnected(client);
     }).then(function(connectedClient) {
+      currentClient = connectedClient;
+      if (connectedClient.session && typeof connectedClient.session.save === 'function') {
+        cache.setSession(connectedClient.session.save());
+      }
       resolve(connectedClient);
     }), 'Telegram connect timed out.').catch(function(err) {
-      clientPromise = null;
-      reject(err);
+      discardClient(client, isFatalSessionError(err)).then(function() {
+        reject(new Error(authErrorMessage(err)));
+      });
     });
   });
 
