@@ -6,8 +6,11 @@ var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 32;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
-var IMAGE_CACHE_VERSION = 'v13';
+var IMAGE_CACHE_VERSION = 'v16';
 var MEDIA_PIPELINE_TIMEOUT_MS = 22000;
+var TALL_IMAGE_ASPECT = 1.85;
+var TALL_IMAGE_WATCH_MAX_BYTES = 9000;
+var foregroundImageGeneration = 0;
 
 function withTimeout(promise, label, timeoutMs) {
   var timer = null;
@@ -50,25 +53,56 @@ function isJpeg(bytes) {
   return bytes && bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8;
 }
 
+function byteKind(bytes) {
+  if (!bytes || !bytes.length) {
+    return 'empty';
+  }
+  if (isPng(bytes)) {
+    return 'png';
+  }
+  if (isJpeg(bytes)) {
+    return 'jpeg';
+  }
+  return 'unknown';
+}
+
+function byteSummary(bytes) {
+  var summary = byteKind(bytes) + ' ' + (bytes && bytes.length ? bytes.length : 0) + 'b';
+  var limit = bytes && bytes.length ? Math.min(bytes.length, 8) : 0;
+  var sig = [];
+  for (var i = 0; i < limit; i += 1) {
+    sig.push((bytes[i] < 16 ? '0' : '') + bytes[i].toString(16));
+  }
+  return sig.length ? summary + ' sig ' + sig.join('') : summary;
+}
+
 function rgbaBuffer(bytes) {
   var decoded;
   if (isJpeg(bytes)) {
-    decoded = codecs.JPEG.decode(bytes, {useTArray: true});
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: new Uint8Array(decoded.data.buffer, decoded.data.byteOffset || 0, decoded.data.byteLength || decoded.data.length || 0)
-    };
+    try {
+      decoded = codecs.JPEG.decode(bytes, {useTArray: true});
+      return {
+        width: decoded.width,
+        height: decoded.height,
+        data: new Uint8Array(decoded.data.buffer, decoded.data.byteOffset || 0, decoded.data.byteLength || decoded.data.length || 0)
+      };
+    } catch (err) {
+      throw new Error('phone jpeg decode failed: ' + (err && err.message ? err.message : err) + '; ' + byteSummary(bytes));
+    }
   }
   if (isPng(bytes)) {
-    decoded = codecs.UPNG.decode(bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength));
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: new Uint8Array(codecs.UPNG.toRGBA8(decoded)[0])
-    };
+    try {
+      decoded = codecs.UPNG.decode(bytes.buffer.slice(bytes.byteOffset || 0, (bytes.byteOffset || 0) + bytes.byteLength));
+      return {
+        width: decoded.width,
+        height: decoded.height,
+        data: new Uint8Array(codecs.UPNG.toRGBA8(decoded)[0])
+      };
+    } catch (err) {
+      throw new Error('phone png decode failed: ' + (err && err.message ? err.message : err) + '; ' + byteSummary(bytes));
+    }
   }
-  throw new Error('Unsupported image format.');
+  throw new Error('phone image format unsupported: ' + byteSummary(bytes));
 }
 
 function liftChannel(value) {
@@ -231,26 +265,48 @@ function logDuration(label, startedAt) {
   console.log(label + ' took ' + (Date.now() - startedAt) + 'ms');
 }
 
+function nextTurn() {
+  return new Promise(function(resolve) {
+    setTimeout(resolve, 0);
+  });
+}
+
+function throwIfCancelled(options) {
+  if (options && options.isCancelled && options.isCancelled()) {
+    throw new Error('image request superseded');
+  }
+}
+
+function imageStatus(options, text) {
+  if (options && typeof options.status === 'function') {
+    options.status(text);
+  }
+}
+
 function compactPng(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode) {
   var colorSteps = [colors, 32, 16, 8, 4, 2];
   scaleSteps = scaleSteps || [1, 0.9, 0.8, 0.7, 0.6];
   var best = null;
+  var bestDetail = '';
   var step;
   var colorIndex;
   var nextWidth;
   var nextHeight;
+  var nextColors;
   var encoded;
 
   for (step = 0; step < scaleSteps.length; step += 1) {
     nextWidth = Math.max(32, Math.floor(width * scaleSteps[step]));
     nextHeight = Math.max(32, Math.floor(height * scaleSteps[step]));
     for (colorIndex = 0; colorIndex < colorSteps.length; colorIndex += 1) {
-      if (colorSteps[colorIndex] > colors) {
+      nextColors = colorSteps[colorIndex];
+      if (nextColors > colors) {
         continue;
       }
-      encoded = encodePng(source, nextWidth, nextHeight, colorSteps[colorIndex], maskCircle, liftColors, fitMode);
+      encoded = encodePng(source, nextWidth, nextHeight, nextColors, maskCircle, liftColors, fitMode);
       if (!best || encoded.length < best.length) {
         best = encoded;
+        bestDetail = nextWidth + 'x' + nextHeight + '/' + nextColors + 'c';
       }
       if (!maxBytes || encoded.length <= maxBytes) {
         return encoded;
@@ -260,7 +316,59 @@ function compactPng(source, width, height, colors, maxBytes, maskCircle, liftCol
   if (best && (!maxBytes || best.length <= maxBytes)) {
     return best;
   }
-  throw new Error('Photo too large after resize.');
+  throw new Error('phone png encode over budget: best ' + (best ? best.length : 0) +
+                  'b at ' + bestDetail + ' > ' + maxBytes + 'b from ' +
+                  source.width + 'x' + source.height);
+}
+
+function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode, options) {
+  var colorSteps = [colors, 32, 16, 8, 4, 2];
+  var best = null;
+  var bestDetail = '';
+  scaleSteps = scaleSteps || [1, 0.9, 0.8, 0.7, 0.6];
+
+  function failOverBudget() {
+    throw new Error('phone png encode over budget: best ' + (best ? best.length : 0) +
+                    'b at ' + bestDetail + ' > ' + maxBytes + 'b from ' +
+                    source.width + 'x' + source.height);
+  }
+
+  function attempt(step, colorIndex) {
+    var nextWidth;
+    var nextHeight;
+    var nextColors;
+    if (step >= scaleSteps.length) {
+      if (best && (!maxBytes || best.length <= maxBytes)) {
+        return Promise.resolve(best);
+      }
+      return Promise.resolve().then(failOverBudget);
+    }
+    if (colorIndex >= colorSteps.length) {
+      return attempt(step + 1, 0);
+    }
+    nextColors = colorSteps[colorIndex];
+    if (nextColors > colors) {
+      return attempt(step, colorIndex + 1);
+    }
+    nextWidth = Math.max(32, Math.floor(width * scaleSteps[step]));
+    nextHeight = Math.max(32, Math.floor(height * scaleSteps[step]));
+    return nextTurn().then(function() {
+      var encoded;
+      throwIfCancelled(options);
+      encoded = encodePng(source, nextWidth, nextHeight, nextColors, maskCircle, liftColors, fitMode);
+      throwIfCancelled(options);
+      if (!best || encoded.length < best.length) {
+        best = encoded;
+        bestDetail = nextWidth + 'x' + nextHeight + '/' + nextColors + 'c';
+      }
+      if (!maxBytes || encoded.length <= maxBytes) {
+        return encoded;
+      }
+      return attempt(step, colorIndex + 1);
+    });
+  }
+
+  return attempt(0, 0);
 }
 
 function safeCompactPng(source, width, height, colors, maxBytes, maskCircle) {
@@ -297,6 +405,64 @@ function cacheKey(chatId, messageId, width, height, colors, maxBytes) {
   return [IMAGE_CACHE_VERSION, chatId, messageId, width, height, colors, maxBytes].join(':');
 }
 
+function isTallSource(source) {
+  return source && source.width > 0 && source.height / source.width >= TALL_IMAGE_ASPECT;
+}
+
+function compactMessagePng(source, width, height, colors, maxBytes) {
+  var tall = isTallSource(source);
+  var watchSafeMaxBytes = tall ? Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES) : maxBytes;
+  if (tall && watchSafeMaxBytes < maxBytes) {
+    console.log('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
+    try {
+      return compactPng(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
+                        [1, 0.85, 0.7, 0.56, 0.45, 0.36, 0.32], 'contain');
+    } catch (tallErr) {
+      console.log('tall image compact path: ' + (tallErr && tallErr.message ? tallErr.message : tallErr));
+      return compactPng(source, width, height, 16, watchSafeMaxBytes, false, true,
+                        [0.5, 0.42, 0.35, 0.3, 0.26], 'contain');
+    }
+  }
+  try {
+    return compactPng(source, width, height, colors, watchSafeMaxBytes, false, true,
+                      [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.42], 'contain');
+  } catch (err) {
+    if (!tall) {
+      throw err;
+    }
+    console.log('tall image encode fallback: ' + (err && err.message ? err.message : err));
+    return compactPng(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
+                      [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.32],
+                      'contain');
+  }
+}
+
+function compactMessagePngAsync(source, width, height, colors, maxBytes, options) {
+  var tall = isTallSource(source);
+  var watchSafeMaxBytes = tall ? Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES) : maxBytes;
+  if (tall && watchSafeMaxBytes < maxBytes) {
+    console.log('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
+    return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
+                           [1, 0.85, 0.7, 0.56, 0.45, 0.36, 0.32], 'contain', options).catch(function(tallErr) {
+      console.log('tall image compact path: ' + (tallErr && tallErr.message ? tallErr.message : tallErr));
+      throwIfCancelled(options);
+      return compactPngAsync(source, width, height, 16, watchSafeMaxBytes, false, true,
+                             [0.5, 0.42, 0.35, 0.3, 0.26], 'contain', options);
+    });
+  }
+  return compactPngAsync(source, width, height, colors, watchSafeMaxBytes, false, true,
+                         [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.42], 'contain', options).catch(function(err) {
+    if (!tall) {
+      throw err;
+    }
+    console.log('tall image encode fallback: ' + (err && err.message ? err.message : err));
+    throwIfCancelled(options);
+    return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
+                           [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.32],
+                           'contain', options);
+  });
+}
+
 function noteImageCacheUse(key) {
   imageCacheOrder = imageCacheOrder.filter(function(item) {
     return item !== key;
@@ -326,6 +492,7 @@ function persistentCacheGet(key) {
       bytes[i] = raw.charCodeAt(i) & 255;
     }
     cacheSetMemoryOnly(key, bytes);
+    persistentCacheNoteUse(key);
     return bytes;
   } catch (e) {
     return null;
@@ -338,6 +505,18 @@ function cacheSetMemoryOnly(key, bytes) {
   while (imageCacheOrder.length > MAX_IMAGE_CACHE_ITEMS) {
     delete imageCache[imageCacheOrder.shift()];
   }
+}
+
+function persistentCacheNoteUse(key) {
+  var order;
+  try {
+    order = JSON.parse(localStorage.getItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY) || '[]');
+    order = order.filter(function(item) {
+      return item !== key;
+    });
+    order.push(key);
+    localStorage.setItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY, JSON.stringify(order));
+  } catch (e) {}
 }
 
 function persistentCacheSet(key, bytes) {
@@ -371,50 +550,74 @@ function persistentCacheSet(key, bytes) {
   }
 }
 
-function cachedBytes(key, label, downloader, width, height, colors, maxBytes, maskCircle) {
+function cachedBytes(key, label, downloader, width, height, colors, maxBytes, maskCircle, options) {
+  var pipeline;
+  var wrapped;
+  options = options || {};
   if (imageCache[key]) {
     noteImageCacheUse(key);
     console.log('image cache hit ' + label);
+    imageStatus(options, 'Cache hit');
     return Promise.resolve(imageCache[key]);
   }
   var cached = persistentCacheGet(key);
   if (cached) {
     console.log('persistent image cache hit ' + label);
+    imageStatus(options, 'Storage cache hit');
     return Promise.resolve(cached);
   }
-  if (imageInflight[key]) {
+  if (imageInflight[key] && !options.noInflightReuse) {
     console.log('image inflight hit ' + label);
     return imageInflight[key];
   }
+  if (imageInflight[key]) {
+    console.log('image inflight bypass ' + label);
+  }
   var downloadStartedAt = Date.now();
-  imageInflight[key] = withTimeout(Promise.resolve().then(downloader), 'image pipeline timed out', MEDIA_PIPELINE_TIMEOUT_MS).then(function(raw) {
+  pipeline = withTimeout(Promise.resolve().then(downloader), 'image pipeline timed out', MEDIA_PIPELINE_TIMEOUT_MS).then(function(raw) {
     logDuration('image download ' + label, downloadStartedAt);
     var encodeStartedAt = Date.now();
     var bytes = toUint8Array(raw);
     var source;
-    var encoded;
     if (!bytes || !bytes.length) {
       throw new Error('empty image');
     }
+    throwIfCancelled(options);
+    imageStatus(options, 'Decoding');
     source = rgbaBuffer(bytes);
-    encoded = maskCircle ?
-      safeCompactPng(source, width, height, colors, maxBytes, true) :
-      compactPng(source, width, height, colors, maxBytes, false, true, [1, 0.9, 0.8, 0.7, 0.6], 'contain');
-    logDuration('image encode ' + label, encodeStartedAt);
-    cacheSet(key, encoded);
-    return encoded;
-  }).then(function(bytes) {
-    delete imageInflight[key];
+    throwIfCancelled(options);
+    imageStatus(options, 'Encoding');
+    return (maskCircle ?
+      Promise.resolve(safeCompactPng(source, width, height, colors, maxBytes, true)) :
+      compactMessagePngAsync(source, width, height, colors, maxBytes, options)).then(function(encoded) {
+      throwIfCancelled(options);
+      logDuration('image encode ' + label, encodeStartedAt);
+      imageStatus(options, 'Caching');
+      cacheSet(key, encoded);
+      return encoded;
+    });
+  });
+  wrapped = pipeline.then(function(bytes) {
+    if (imageInflight[key] === wrapped) {
+      delete imageInflight[key];
+    }
     return bytes;
   }, function(err) {
-    delete imageInflight[key];
+    if (imageInflight[key] === wrapped) {
+      delete imageInflight[key];
+    }
     throw err;
   });
-  return imageInflight[key];
+  imageInflight[key] = wrapped;
+  return wrapped;
 }
 
-function imageBytes(chatId, messageId, width, height, colors, maxBytes) {
+function imageBytes(chatId, messageId, width, height, colors, maxBytes, status) {
   var key;
+  var generation = ++foregroundImageGeneration;
+  function isCancelled() {
+    return generation !== foregroundImageGeneration;
+  }
   width = width || 120;
   height = height || 120;
   colors = colors || 64;
@@ -422,8 +625,15 @@ function imageBytes(chatId, messageId, width, height, colors, maxBytes) {
   height = height * 2;
   key = cacheKey(chatId, messageId, width, height, colors, maxBytes);
   return cachedBytes(key, messageId, function() {
-    return telegram.downloadMedia(chatId, messageId);
-  }, width, height, colors, maxBytes, false);
+    if (status) {
+      status('Downloading');
+    }
+    return telegram.downloadMedia(chatId, messageId, {
+      targetWidth: width,
+      targetHeight: height,
+      cancelled: isCancelled
+    });
+  }, width, height, colors, maxBytes, false, {noInflightReuse: true, isCancelled: isCancelled, status: status});
 }
 
 function avatarBytes(chatId, width, height, colors, maxBytes) {
@@ -437,7 +647,12 @@ function avatarBytes(chatId, width, height, colors, maxBytes) {
   }, width, height, colors, maxBytes, true);
 }
 
+function cancelImageRequests() {
+  foregroundImageGeneration += 1;
+}
+
 module.exports = {
   imageBytes: imageBytes,
-  avatarBytes: avatarBytes
+  avatarBytes: avatarBytes,
+  cancelImageRequests: cancelImageRequests
 };

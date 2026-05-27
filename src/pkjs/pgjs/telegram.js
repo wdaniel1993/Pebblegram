@@ -191,6 +191,22 @@ function photoDimensions(message) {
   return null;
 }
 
+function isTallDimensions(dimensions) {
+  return dimensions && dimensions.width > 0 && dimensions.height / dimensions.width >= 1.85;
+}
+
+function validMediaBytes(bytes) {
+  bytes = toUint8Array(bytes);
+  if (!isPreviewImageBytes(bytes)) {
+    throw new Error('media download was not jpeg/png: ' + byteSignature(bytes));
+  }
+  return bytes;
+}
+
+function errorText(err) {
+  return err && err.message ? err.message : String(err || 'unknown');
+}
+
 function messageDocument(message) {
   var media = message && message.media;
   return (message && message.document) || (media && media.document) || null;
@@ -371,11 +387,17 @@ function stickerLabel(message) {
 
 function hasPreviewableStill(message) {
   return !isSticker(message) &&
-         (isGif(message) || isVideo(message) || !!(messageWebpage(message) && messagePhoto(message)));
+         (isGif(message) || isVideo(message));
 }
 
 function compactMediaLabel(label, detail) {
   return detail ? '[' + label + '] ' + detail : '[' + label + ']';
+}
+
+function webpageHost(webpage) {
+  var url = webpage && (webpage.url || webpage.displayUrl || webpage.display_url);
+  var match = String(url || '').match(/^(?:https?:\/\/)?(?:www\.)?([^\/?#\s]+)/i);
+  return match && match[1] ? match[1] : '';
 }
 
 function mediaLabel(message) {
@@ -412,7 +434,7 @@ function mediaLabel(message) {
     }
     if (webpage || mediaName.indexOf('WebPage') !== -1) {
       webpage = webpage || {};
-      return compactMediaLabel('Link', webpage.title || webpage.url);
+      return compactMediaLabel('Link', webpageHost(webpage));
     }
   }
   if (!document) {
@@ -458,6 +480,9 @@ function mediaLabel(message) {
 function displayMessageText(message) {
   var text = messageText(message);
   var label = mediaLabel(message);
+  if (messageWebpage(message)) {
+    return label || compactMediaLabel('Link');
+  }
   if (label && text) {
     return label + ' ' + text;
   }
@@ -528,7 +553,6 @@ function mediaPreviewCandidates(message) {
   pushMediaPreviewCandidate(candidates, document && document.thumbs);
   pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
   pushMediaPreviewCandidate(candidates, file && (file.thumb || file.thumbnail || file.thumbs));
-  pushMediaPreviewCandidate(candidates, webpage && webpage.photo && webpage.photo.sizes);
   pushMediaPreviewCandidate(candidates, media && media.photo && media.photo.sizes);
   candidates.sort(function(a, b) {
     return mediaPreviewArea(b) - mediaPreviewArea(a);
@@ -560,16 +584,117 @@ function candidateBytes(candidate) {
   return bytes;
 }
 
+function imageRequestCancelled(options) {
+  return options && typeof options.cancelled === 'function' && options.cancelled();
+}
+
+function throwIfImageRequestCancelled(options) {
+  if (imageRequestCancelled(options)) {
+    throw new Error('image request superseded');
+  }
+}
+
+function gramDownloadOptions(options) {
+  var output = {};
+  var previousProgress = options && options.progressCallback;
+  if (options && options.outputFile) {
+    output.outputFile = options.outputFile;
+  }
+  if (options && options.thumb) {
+    output.thumb = options.thumb;
+  }
+  output.progressCallback = function(downloaded, total) {
+    throwIfImageRequestCancelled(options);
+    if (previousProgress) {
+      return previousProgress(downloaded, total);
+    }
+    return null;
+  };
+  return output;
+}
+
 function downloadImageBytes(client, target, options) {
   return withTimeout(Promise.resolve().then(function() {
-    return client.downloadMedia(target, options || {});
-  }), 'media preview download timed out', MEDIA_DOWNLOAD_TIMEOUT_MS).then(validatedPreviewBytes);
+    throwIfImageRequestCancelled(options);
+    return client.downloadMedia(target, gramDownloadOptions(options));
+  }), 'media preview download timed out', MEDIA_DOWNLOAD_TIMEOUT_MS).then(function(bytes) {
+    throwIfImageRequestCancelled(options);
+    return validatedPreviewBytes(bytes);
+  });
 }
 
 function downloadFullMediaBytes(client, target, options) {
   return withTimeout(Promise.resolve().then(function() {
-    return client.downloadMedia(target, options || {});
-  }), 'media download timed out', FULL_MEDIA_DOWNLOAD_TIMEOUT_MS);
+    throwIfImageRequestCancelled(options);
+    return client.downloadMedia(target, gramDownloadOptions(options));
+  }), 'media download timed out', FULL_MEDIA_DOWNLOAD_TIMEOUT_MS).then(function(bytes) {
+    throwIfImageRequestCancelled(options);
+    return validMediaBytes(bytes);
+  });
+}
+
+function photoSizeDimensions(size) {
+  var width = size && (size.w || size.width);
+  var height = size && (size.h || size.height);
+  if (!width || !height) {
+    return null;
+  }
+  return {width: width, height: height};
+}
+
+function selectTallPhotoCandidate(photo, targetWidth, targetHeight) {
+  var sizes = (photo && photo.sizes) || [];
+  var targetArea = Math.max(1, (targetWidth || 120) * (targetHeight || 240));
+  var minimumHeight = Math.max(96, targetHeight || 240);
+  var best = null;
+  var bestScore = 0;
+  var fallback = null;
+  var fallbackArea = 0;
+  for (var i = 0; i < sizes.length; i += 1) {
+    var size = sizes[i];
+    var dimensions = photoSizeDimensions(size);
+    var area;
+    var score;
+    if (!dimensions) {
+      continue;
+    }
+    area = dimensions.width * dimensions.height;
+    if (area > fallbackArea) {
+      fallback = size;
+      fallbackArea = area;
+    }
+    if (dimensions.height < minimumHeight) {
+      continue;
+    }
+    score = Math.abs(area - targetArea);
+    if (!best || score < bestScore) {
+      best = size;
+      bestScore = score;
+    }
+  }
+  return best || fallback;
+}
+
+function downloadTallPhotoBytes(client, message, photo, options) {
+  var dimensions = photoDimensions(message);
+  var candidate;
+  var option;
+  if (!isTallDimensions(dimensions)) {
+    return null;
+  }
+  candidate = selectTallPhotoCandidate(photo, options && options.targetWidth, options && options.targetHeight);
+  option = previewThumbOption(candidate);
+  if (!candidate || !option) {
+    return null;
+  }
+  console.log('Tall photo using Telegram size ' + option + ' for ' + dimensions.width + 'x' + dimensions.height);
+  return downloadImageBytes(client, message, {thumb: option, cancelled: options && options.cancelled}).catch(function(messageErr) {
+    throwIfImageRequestCancelled(options);
+    return downloadImageBytes(client, photo, {thumb: option, cancelled: options && options.cancelled}).catch(function(photoErr) {
+      throw new Error('tall photo size ' + option + ' failed: message=' + errorText(messageErr) +
+                      '; photo=' + errorText(photoErr));
+    });
+  });
 }
 
 function attemptLabel(prefix, candidate, option) {
@@ -950,7 +1075,8 @@ function normalizeMessageRows(client, chatId, rows, readOutboxMaxId) {
 
 function normalizeMessage(message, readOutboxMaxId) {
   var previewable = hasPreviewableStill(message);
-  var imageDimensions = photoDimensions(message) || (previewable ? documentDimensions(message) : null);
+  var imageDimensions = hasDirectPhoto(message) ? photoDimensions(message) :
+                        (previewable ? documentDimensions(message) : null);
   return {
     id: String(message.id),
     sender: senderName(message),
@@ -958,7 +1084,7 @@ function normalizeMessage(message, readOutboxMaxId) {
     reactions: reactionSummary(message),
     meta: messageMeta(message, readOutboxMaxId),
     outgoing: !!message.out,
-    image_token: (hasPhoto(message) || previewable) ? String(message.id) : null,
+    image_token: (hasDirectPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
     image_height: imageDimensions ? imageDimensions.height : 0
   };
@@ -1069,9 +1195,13 @@ function mergeDialogRows(groups) {
   });
 }
 
-function chats(limit) {
+function chats(limit, options) {
+  options = options || {};
   return auth.getClient().then(function(client) {
     return client.getDialogs({limit: limit, folder: 0}).then(function(mainDialogs) {
+      if (options.fast) {
+        return mergeDialogRows([dialogRows(mainDialogs, '', 0)]);
+      }
       return dialogFilters(client).then(function(filters) {
         var groups = [dialogRows(mainDialogs, '', 0)];
         var requests = [];
@@ -1161,6 +1291,11 @@ function reactionEmoticon(token) {
       return '\ud83d\ude22';
     case 'angry':
       return '\ud83d\ude21';
+    case 'smile_open':
+    case 'smile_eyes':
+      return '\ud83d\ude01';
+    case 'cry_loud':
+      return '\ud83d\ude2d';
     case 'fire':
       return '\ud83d\udd25';
     case 'party':
@@ -1175,10 +1310,28 @@ function reactionEmoticon(token) {
       return '\ud83d\udc40';
     case 'love':
       return '\ud83d\ude0d';
+    case 'kiss':
+      return '\ud83d\ude18';
+    case 'blush':
+      return '\ud83d\ude33';
+    case 'grimace':
+      return '\ud83d\ude2c';
+    case 'neutral':
+      return '\ud83d\ude10';
+    case 'angel':
+      return '\ud83d\ude07';
+    case 'devil':
+      return '\ud83d\ude08';
     case 'pray':
       return '\ud83d\ude4f';
     case 'dislike':
       return '\ud83d\udc4e';
+    case 'ok':
+      return '\ud83d\udc4c';
+    case 'broken_heart':
+      return '\ud83d\udc94';
+    case 'kiss_mark':
+      return '\ud83d\udc8b';
     case 'poop':
       return '\ud83d\udca9';
     case 'sick':
@@ -1189,8 +1342,28 @@ function reactionEmoticon(token) {
       return '\ud83d\ude0e';
     case 'bolt':
       return '\u26a1';
+    case '\ud83d\ude02':
+      return '\ud83e\udd23';
+    case '\ud83d\ude00':
+    case '\ud83d\ude04':
+      return '\ud83d\ude01';
+    case '\ud83d\ude2d':
+      return '\ud83d\ude2d';
+    case '\ud83d\ude33':
+      return '\ud83d\ude31';
+    case '\ud83d\ude2c':
+      return '\ud83d\ude10';
     default:
-      if (token && /[^\x00-\x7f]/.test(token)) {
+      if (token && [
+        '\ud83d\udc4d', '\u2764', '\ud83e\udd23', '\ud83d\ude31',
+        '\ud83d\ude22', '\ud83d\ude21', '\ud83d\ude00', '\ud83d\ude04',
+        '\ud83d\ude2d', '\ud83d\udd25', '\ud83c\udf89', '\ud83d\udc4f',
+        '\ud83d\ude01', '\ud83e\udd14', '\ud83d\udc40', '\ud83d\ude0d',
+        '\ud83d\ude18', '\ud83d\ude33', '\ud83d\ude10', '\ud83d\ude07',
+        '\ud83d\ude08', '\ud83d\ude4f', '\ud83d\udc4e', '\ud83d\udc4c',
+        '\ud83d\udc94', '\ud83d\udc8b', '\ud83d\udca9', '\ud83e\udd2e',
+        '\ud83d\ude34', '\ud83d\ude0e', '\u26a1'
+      ].indexOf(token) !== -1) {
         return token;
       }
       return '';
@@ -1213,6 +1386,16 @@ function sendReaction(chatId, messageId, token) {
         request.reaction = [new gram.Api.ReactionEmoji({emoticon: emoticon})];
       }
       return client.invoke(new gram.Api.messages.SendReaction(request));
+    });
+  });
+}
+
+function message(chatId, messageId) {
+  return auth.getClient().then(function(client) {
+    return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
+      return normalizeMessageRows(client, chatId, rows || [], readOutboxByChatId[chatId] || 0).then(function(normalized) {
+        return normalized && normalized[0] ? normalized[0] : null;
+      });
     });
   });
 }
@@ -1291,19 +1474,37 @@ function downloadProfilePhoto(chatId) {
   });
 }
 
-function downloadMedia(chatId, messageId) {
+function downloadMedia(chatId, messageId, options) {
   return auth.getClient().then(function(client) {
     return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
       var message = rows && rows[0];
-      var photo = messagePhoto(message);
-      if (!message || (!hasPhoto(message) && !hasPreviewableStill(message))) {
+      var photo = hasDirectPhoto(message) ? messagePhoto(message) : null;
+      var tallDownload;
+      if (!message || (!photo && !hasPreviewableStill(message))) {
         throw new Error('message has no previewable media');
       }
       if (hasPreviewableStill(message) && !photo) {
         return downloadStillPreview(client, message);
       }
-      return downloadFullMediaBytes(client, message, {}).catch(function() {
-        return downloadFullMediaBytes(client, photo || message.media, {});
+      tallDownload = downloadTallPhotoBytes(client, message, photo, options || {});
+      if (tallDownload) {
+        return tallDownload.catch(function(tallErr) {
+          throwIfImageRequestCancelled(options);
+          return downloadFullMediaBytes(client, message, {cancelled: options && options.cancelled}).catch(function(fullErr) {
+            throwIfImageRequestCancelled(options);
+            return downloadFullMediaBytes(client, photo || message.media, {cancelled: options && options.cancelled}).catch(function(photoErr) {
+              throw new Error('tall/full media failed: tall=' + errorText(tallErr) +
+                              '; message=' + errorText(fullErr) + '; photo=' + errorText(photoErr));
+            });
+          });
+        });
+      }
+      return downloadFullMediaBytes(client, message, {cancelled: options && options.cancelled}).catch(function(fullErr) {
+        throwIfImageRequestCancelled(options);
+        return downloadFullMediaBytes(client, photo || message.media, {cancelled: options && options.cancelled}).catch(function(photoErr) {
+          throw new Error('media download failed: message=' + errorText(fullErr) +
+                          '; photo=' + errorText(photoErr));
+        });
       });
     });
   });
@@ -1317,6 +1518,7 @@ module.exports = {
   sendMessage: sendMessage,
   editMessage: editMessage,
   sendReaction: sendReaction,
+  message: message,
   deleteMessage: deleteMessage,
   markRead: markRead,
   archiveChat: archiveChat,

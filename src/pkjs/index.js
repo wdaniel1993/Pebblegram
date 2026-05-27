@@ -13,7 +13,7 @@ var MESSAGE_PAGE_FETCH_ROWS = 80;
 var PHONE_MESSAGE_CACHE_ROWS = 600;
 var MAX_MESSAGE_ROWS = 9;
 var MESSAGE_EDGE_BUFFER_ROWS = 4;
-var MAX_MESSAGE_TEXT = 500;
+var MAX_MESSAGE_TEXT = 460;
 var MAX_CONTEXT_VIEW_TEXT = 1200;
 var MESSAGE_WINDOW_BUDGET = 5400;
 var IMAGE_SIZE = 120;
@@ -26,25 +26,23 @@ var AVATAR_COLORS = 16;
 var AVATAR_MAX_BYTES = 3000;
 var AVATAR_CHUNK_SIZE = 500;
 var AVATAR_ROWS = MAX_ROWS;
-var PREFETCH_CHAT_COUNT = 2;
-var MEDIA_WARM_MAX_PER_BATCH = 6;
-var MEDIA_WARM_INTERVAL_MS = 700;
+var PREFETCH_CHAT_COUNT = 4;
 var sendQueue = [];
 var sending = false;
 var messageStore = {};
+var messageStoreNewest = {};
 var messageHistoryStore = {};
 var oldestComplete = {};
 var newestComplete = {};
 var prefetching = {};
-var mediaWarming = {};
-var mediaWarmQueue = [];
-var mediaWarmActive = false;
-var mediaWarmTimer = null;
-var mediaWarmSeq = 0;
+var pagePrefetching = {};
 var chatCacheOrder = [];
 var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
+var chatLoadPromise = null;
+var messageLoadPromises = {};
+var newerLoadPromises = {};
 var updateRefreshTimer = null;
 var updatesStarted = false;
 var connectionKeepaliveTimer = null;
@@ -52,17 +50,19 @@ var chatListStale = false;
 var avatarChats = [];
 var avatarIndex = 0;
 var avatarTimer = null;
-var knownAvatarChats = {};
 var imageTransferSeq = 0;
 var avatarTransferSeq = 0;
 var imageRequestSeq = 0;
 var imageTransferActive = false;
 var messageStreamSeq = 0;
 var messageStreamTimer = null;
+var topPrefetchSeq = 0;
 var sendFailureDelay = 250;
 var cancelledImageTransferSeq = 0;
 var IMAGE_PREPARE_TIMEOUT_MS = 25000;
 var MESSAGE_FETCH_TIMEOUT_MS = 25000;
+var MESSAGE_CACHE_ORDER_KEY = 'pebblegram.messageCache.v4.order';
+var MESSAGE_CACHE_PREFIX = 'pebblegram.messageCache.v4.';
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
@@ -88,6 +88,12 @@ function activePgjs() {
   return pgjs;
 }
 
+function wakePhoneBackend() {
+  withTimeout(activePgjs().ready(), 'wake timed out', 10000).catch(function(err) {
+    console.log('Phone wake failed: ' + (err && err.message ? err.message : err));
+  });
+}
+
 function configureForPlatform() {
   var info = null;
   try {
@@ -100,24 +106,24 @@ function configureForPlatform() {
     OLDER_MESSAGE_ROWS = 7;
     NEWER_MESSAGE_ROWS = 7;
     MAX_MESSAGE_ROWS = 9;
-    MAX_MESSAGE_TEXT = 500;
+    MAX_MESSAGE_TEXT = 460;
     MAX_CONTEXT_VIEW_TEXT = 1200;
     MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 156;
     IMAGE_WIDTH = 170;
-    IMAGE_MAX_BYTES = 19000;
+    IMAGE_MAX_BYTES = 15000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 9;
     OLDER_MESSAGE_ROWS = 7;
     NEWER_MESSAGE_ROWS = 7;
     MAX_MESSAGE_ROWS = 9;
-    MAX_MESSAGE_TEXT = 500;
+    MAX_MESSAGE_TEXT = 460;
     MAX_CONTEXT_VIEW_TEXT = 1200;
     MESSAGE_WINDOW_BUDGET = 5400;
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
-    IMAGE_MAX_BYTES = 19000;
+    IMAGE_MAX_BYTES = 15000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'diorite') {
     IMAGE_SIZE = 96;
@@ -214,7 +220,8 @@ function isAvatarTransferPayload(payload) {
 
 function isImageTransferPayload(payload) {
   var type = payloadType(payload);
-  return type === 'image_start' || type === 'image' || type === 'image_done' || type === 'image_error';
+  return type === 'image_start' || type === 'image' || type === 'image_done' ||
+    type === 'image_error' || type === 'image_status';
 }
 
 function isMessageTransferPayload(payload) {
@@ -237,6 +244,9 @@ function cancelQueuedImageTransfers() {
   imageRequestSeq += 1;
   cancelledImageTransferSeq = imageTransferSeq;
   imageTransferActive = false;
+  if (pgjs && typeof pgjs.cancelImageRequests === 'function') {
+    pgjs.cancelImageRequests();
+  }
   sendQueue = sendQueue.filter(function(entry, index) {
     return index === 0 && sending ? true : !isImageTransferPayload(entry.payload);
   });
@@ -371,6 +381,7 @@ function shortenToken(token) {
 function watchText(value, maxLength) {
   value = normalizeWatchString(value)
     .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\b([A-Za-z0-9_.-]{2,})\/([A-Za-z0-9_.-]{2,})\b/g, '$1 / $2')
     .replace(/\s+/g, ' ')
     .replace(/(https?:\/\/|www\.)[^\s]+/ig, function(url) {
       var match = url.match(/^(?:https?:\/\/)?(?:www\.)?([^\/?#]+)/i);
@@ -449,20 +460,13 @@ function chatPayload(chat, index, total) {
 
 function sendChatRows(chats, silent) {
   var rows = (chats || []).slice(0, MAX_ROWS);
-  var index = 0;
   if (!silent) {
-    status('Loading first chat...');
+    status('Sending chats...');
   }
-  function pump() {
-    if (index >= rows.length) {
-      done('chats_done', rows.length);
-      return;
-    }
+  for (var index = 0; index < rows.length; index += 1) {
     sendToWatch(chatPayload(rows[index], index, rows.length));
-    index += 1;
-    setTimeout(pump, index === 1 ? 10 : 24);
   }
-  pump();
+  done('chats_done', rows.length);
 }
 
 function messageRowCost(message) {
@@ -493,6 +497,70 @@ function limitMessageWindow(messages, preferNewest) {
     selected.push(rows[i]);
   }
   return selected;
+}
+
+function persistentMessageCacheKey(chatId) {
+  return MESSAGE_CACHE_PREFIX + String(chatId || '');
+}
+
+function persistentMessageCacheOrder() {
+  try {
+    return JSON.parse(localStorage.getItem(MESSAGE_CACHE_ORDER_KEY) || '[]');
+  } catch (e) {
+    return [];
+  }
+}
+
+function savePersistentMessages(chatId, messages) {
+  var id = String(chatId || '');
+  if (!id) {
+    return;
+  }
+  try {
+    var rows = limitMessageWindow(messages || [], true);
+    if (!rows.length) {
+      return;
+    }
+    localStorage.setItem(persistentMessageCacheKey(id), JSON.stringify(rows));
+    var order = persistentMessageCacheOrder().filter(function(item) {
+      return item !== id;
+    });
+    order.push(id);
+    while (order.length > MAX_CACHED_CHATS) {
+      localStorage.removeItem(persistentMessageCacheKey(order.shift()));
+    }
+    localStorage.setItem(MESSAGE_CACHE_ORDER_KEY, JSON.stringify(order));
+  } catch (e) {
+    console.log('Message cache save skipped: ' + (e && e.message ? e.message : e));
+  }
+}
+
+function loadPersistentMessages(chatId) {
+  var id = String(chatId || '');
+  if (!id) {
+    return [];
+  }
+  try {
+    var rows = JSON.parse(localStorage.getItem(persistentMessageCacheKey(id)) || '[]');
+    return Array.isArray(rows) ? limitMessageWindow(rows, true) : [];
+  } catch (e) {
+    localStorage.removeItem(persistentMessageCacheKey(id));
+    return [];
+  }
+}
+
+function removePersistentMessages(chatId) {
+  var id = String(chatId || '');
+  if (!id) {
+    return;
+  }
+  localStorage.removeItem(persistentMessageCacheKey(id));
+  try {
+    var order = persistentMessageCacheOrder().filter(function(item) {
+      return item !== id;
+    });
+    localStorage.setItem(MESSAGE_CACHE_ORDER_KEY, JSON.stringify(order));
+  } catch (e) {}
 }
 
 function messagePayload(message, type, index, count, transferId) {
@@ -571,7 +639,12 @@ function streamMessageRows(chatId, messages, mode, finalCount) {
 }
 
 function sendMessageRows(messages, chatId, mode, finalCount) {
-  streamMessageRows(chatId || currentChatId, messages, mode || 'initial', finalCount);
+  mode = mode || 'initial';
+  if (mode === 'initial') {
+    sendMessageWindow(chatId || currentChatId, messages, mode, false, finalCount);
+    return;
+  }
+  streamMessageRows(chatId || currentChatId, messages, mode, finalCount);
 }
 
 function sendMessageWindow(chatId, messages, mode, silent, finalCount) {
@@ -594,6 +667,13 @@ function sendMessageWindow(chatId, messages, mode, silent, finalCount) {
   done('messages_done', doneCount, transferId);
 }
 
+function sendMessagePatches(chatId, messages) {
+  var count = (messageStore[chatId] || []).length;
+  (messages || []).forEach(function(message) {
+    sendToWatch(messagePayload(message, 'message_update', 0, count, 0));
+  });
+}
+
 function messageSortValue(id) {
   var parsed = parseInt(id, 10);
   return isNaN(parsed) ? String(id || '') : parsed;
@@ -610,32 +690,28 @@ function compareMessageIds(a, b) {
   return av < bv ? -1 : (av > bv ? 1 : 0);
 }
 
-function clearMediaWarmStateForChat(chatId) {
-  var prefix = String(chatId) + ':';
-  mediaWarmQueue = mediaWarmQueue.filter(function(item) {
-    return String(item.chatId) !== String(chatId);
-  });
-  Object.keys(mediaWarming).forEach(function(key) {
-    if (key.indexOf(prefix) === 0) {
-      delete mediaWarming[key];
-    }
-  });
-}
-
-function removeChatCache(chatId) {
+function removeChatCache(chatId, clearPersistent) {
   var id = String(chatId || '');
   if (!id) {
     return;
   }
   delete messageStore[id];
+  delete messageStoreNewest[id];
   delete messageHistoryStore[id];
   delete oldestComplete[id];
   delete newestComplete[id];
   delete prefetching[id];
-  clearMediaWarmStateForChat(id);
+  Object.keys(pagePrefetching).forEach(function(key) {
+    if (key.indexOf(id + ':') === 0) {
+      delete pagePrefetching[key];
+    }
+  });
   chatCacheOrder = chatCacheOrder.filter(function(item) {
     return item !== id;
   });
+  if (clearPersistent !== false) {
+    removePersistentMessages(id);
+  }
 }
 
 function touchChatCache(chatId) {
@@ -659,7 +735,7 @@ function trimChatCaches(protectedChatId) {
       attempts += 1;
       continue;
     }
-    removeChatCache(id);
+    removeChatCache(id, false);
     attempts = 0;
   }
 }
@@ -746,6 +822,7 @@ function sendOlderWindow(chatId, anchorId, beforeId, silent) {
   }
   merged = mergeHistoryMessages(chatId, rows.concat(current));
   messageStore[chatId] = messageWindowAroundAnchor(merged, anchorId, MESSAGE_EDGE_BUFFER_ROWS);
+  messageStoreNewest[chatId] = false;
   sendMessageWindow(chatId, messageStore[chatId], 'older', silent, messageStore[chatId].length);
   return rows.length;
 }
@@ -761,92 +838,9 @@ function sendNewerWindow(chatId, anchorId, afterId, silent) {
   merged = mergeHistoryMessages(chatId, current.concat(rows));
   messageStore[chatId] = messageWindowAroundAnchor(merged, anchorId,
                                                      MAX_MESSAGE_ROWS - MESSAGE_EDGE_BUFFER_ROWS - 1);
+  messageStoreNewest[chatId] = false;
   sendMessageWindow(chatId, messageStore[chatId], 'newer', silent, messageStore[chatId].length);
   return rows.length;
-}
-
-function scheduleMediaWarmPump(delay) {
-  if (mediaWarmTimer) {
-    return;
-  }
-  mediaWarmTimer = setTimeout(function() {
-    mediaWarmTimer = null;
-    pumpMediaWarmQueue();
-  }, delay);
-}
-
-function cancelMediaWarmQueue(chatId) {
-  mediaWarmSeq += 1;
-  if (mediaWarmTimer) {
-    clearTimeout(mediaWarmTimer);
-    mediaWarmTimer = null;
-  }
-  mediaWarmActive = false;
-  if (chatId) {
-    clearMediaWarmStateForChat(chatId);
-  } else {
-    mediaWarmQueue = [];
-    mediaWarming = {};
-  }
-  if (mediaWarmQueue.length) {
-    scheduleMediaWarmPump(MEDIA_WARM_INTERVAL_MS);
-  }
-}
-
-function pumpMediaWarmQueue() {
-  var item;
-  if (mediaWarmActive || !mediaWarmQueue.length) {
-    return;
-  }
-  if (imageTransferActive) {
-    scheduleMediaWarmPump(1000);
-    return;
-  }
-  item = mediaWarmQueue.shift();
-  item.seq = mediaWarmSeq;
-  mediaWarmActive = true;
-  withTimeout(activePgjs().imageBytes(item.chatId, item.token, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
-              'media warm timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function() {
-    if (item.seq === mediaWarmSeq) {
-      mediaWarming[item.key] = 'ready';
-    }
-  }).catch(function(err) {
-    if (item.seq !== mediaWarmSeq) {
-      return;
-    }
-    delete mediaWarming[item.key];
-    console.log('Media warm failed ' + item.key + ': ' + (err && err.message ? err.message : err));
-  }).then(function() {
-    if (item.seq !== mediaWarmSeq) {
-      return;
-    }
-    mediaWarmActive = false;
-    scheduleMediaWarmPump(MEDIA_WARM_INTERVAL_MS);
-  });
-}
-
-function warmMessageMedia(chatId, messages) {
-  var rows = messages || [];
-  var warmed = 0;
-  for (var i = rows.length - 1; i >= 0 && warmed < MEDIA_WARM_MAX_PER_BATCH; i -= 1) {
-    var message = rows[i];
-    var key;
-    if (!message || !message.image_token) {
-      continue;
-    }
-    key = String(chatId) + ':' + String(message.image_token);
-    if (mediaWarming[key]) {
-      continue;
-    }
-    mediaWarming[key] = 'queued';
-    mediaWarmQueue.push({
-      chatId: chatId,
-      token: message.image_token,
-      key: key
-    });
-    warmed += 1;
-  }
-  pumpMediaWarmQueue();
 }
 
 function warmChatHistory(chatId) {
@@ -861,8 +855,9 @@ function warmChatHistory(chatId) {
     mergeHistoryMessages(chatId, messages);
     if (!messageStore[chatId]) {
       messageStore[chatId] = limitMessageWindow(messages, true);
+      messageStoreNewest[chatId] = true;
+      savePersistentMessages(chatId, messageStore[chatId]);
     }
-    warmMessageMedia(chatId, messages);
   }).catch(function(err) {
     delete prefetching[chatId];
     console.log('History warm failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
@@ -873,7 +868,8 @@ function rememberMessages(chatId, messages) {
   messages = messages || [];
   mergeHistoryMessages(chatId, messages);
   messageStore[chatId] = limitMessageWindow(messages, true);
-  warmMessageMedia(chatId, messages);
+  messageStoreNewest[chatId] = true;
+  savePersistentMessages(chatId, messageStore[chatId]);
 }
 
 function mergeMessages(existing, incoming, allowAppend, trimNewest) {
@@ -937,6 +933,16 @@ function storedWindowTouchesNewestTail(existing, latest) {
 
 function sendStoredMessages(chatId) {
   var messages = messageStore[chatId];
+  if ((!messages || messages.length === 0) && chatId && messageStoreNewest[chatId] === true) {
+    messages = loadPersistentMessages(chatId);
+    if (messages.length > 0) {
+      messageStore[chatId] = messages;
+      mergeHistoryMessages(chatId, messages);
+    }
+  }
+  if (messageStoreNewest[chatId] !== true) {
+    return false;
+  }
   if (!messages || messages.length === 0) {
     return false;
   }
@@ -993,9 +999,27 @@ function prefetchMessages(chatId) {
 }
 
 function prefetchTopChats(chats) {
-  chats.slice(0, PREFETCH_CHAT_COUNT).forEach(function(chat) {
-    prefetchMessages(chat.id);
-  });
+  var rows = (chats || []).slice(0, PREFETCH_CHAT_COUNT);
+  var seq = ++topPrefetchSeq;
+
+  function prefetchAt(index) {
+    if (seq !== topPrefetchSeq || index >= rows.length) {
+      return;
+    }
+    setTimeout(function() {
+      if (seq !== topPrefetchSeq) {
+        return;
+      }
+      if (currentChatId || avatarTimer || avatarIndex < avatarChats.length) {
+        prefetchAt(index);
+        return;
+      }
+      prefetchMessages(rows[index].id);
+      prefetchAt(index + 1);
+    }, index === 0 ? 2500 : 900);
+  }
+
+  prefetchAt(0);
 }
 
 function scheduleUpdateRefresh(delay) {
@@ -1065,7 +1089,7 @@ function startConnectionKeepalive() {
   }
   connectionKeepaliveTimer = setInterval(function() {
     var keepalive;
-    if (imageTransferActive || mediaWarmActive) {
+    if (imageTransferActive) {
       return;
     }
     keepalive = activePgjs().keepalive || activePgjs().ready;
@@ -1094,10 +1118,16 @@ function startTelegramUpdates() {
 }
 
 function getChats(silent) {
+  if (chatLoadPromise) {
+    if (!silent) {
+      status('Connecting...');
+    }
+    return chatLoadPromise;
+  }
   if (!silent) {
     status('Connecting...');
   }
-  timed('telegram connect', activePgjs().ready()).then(function() {
+  chatLoadPromise = timed('telegram connect', activePgjs().ready()).then(function() {
     if (!silent) {
       status('Fetching chats...');
     }
@@ -1105,7 +1135,7 @@ function getChats(silent) {
   }).then(function(chats) {
     chats = chats || [];
     sendChatRows(chats, silent);
-    queueChatAvatars(chats, silent);
+    queueChatAvatars(chats);
     prefetchTopChats(chats);
   }).catch(function(err) {
     if (silent) {
@@ -1113,14 +1143,20 @@ function getChats(silent) {
     } else {
       promiseError('Chats failed', err);
     }
+  }).then(function(value) {
+    chatLoadPromise = null;
+    return value;
+  }, function(err) {
+    chatLoadPromise = null;
+    throw err;
   });
+  return chatLoadPromise;
 }
 
 function getMessages(chatId) {
-  if (currentChatId !== chatId) {
-    cancelMediaWarmQueue();
-  }
+  var key = String(chatId || '');
   currentChatId = chatId;
+  topPrefetchSeq += 1;
   currentChatSignature = '';
   touchChatCache(chatId);
   cancelUpdateRefresh();
@@ -1130,15 +1166,21 @@ function getMessages(chatId) {
   if (sendStoredMessages(chatId)) {
     return;
   }
+  if (messageLoadPromises[key]) {
+    status('Loading messages...');
+    return;
+  }
   status('Loading messages...');
-  timed('messages load ' + chatId, withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
+  messageLoadPromises[key] = timed('messages load ' + chatId, withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
                                       'messages load timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(messages) {
+    delete messageLoadPromises[key];
     rememberMessages(chatId, messages || []);
     currentChatSignature = messageSignature(messages || []);
     markRead(chatId);
     sendMessageRows(messages || [], chatId, 'initial');
     warmChatHistory(chatId);
   }).catch(function(err) {
+    delete messageLoadPromises[key];
     promiseError('Messages failed', err);
   });
 }
@@ -1162,28 +1204,102 @@ function refreshOpenChat() {
     currentChatSignature = signature;
     var existing = messageStore[chatId] || [];
     var attachedToNewest = storedWindowTouchesNewestTail(existing, messages);
+    var previousById = {};
+    var appended = [];
+    var patches = [];
+    existing.forEach(function(message) {
+      previousById[message.id] = message;
+    });
     mergeHistoryMessages(chatId, messages);
-    warmMessageMedia(chatId, messages);
-    var merged = mergeMessages(existing, messages, attachedToNewest, attachedToNewest);
     if (attachedToNewest) {
+      messages.forEach(function(message) {
+        if (!previousById[message.id]) {
+          appended.push(message);
+        }
+      });
+    }
+    var merged = mergeMessages(existing, messages, attachedToNewest, attachedToNewest);
+    if (merged.changed) {
       messageStore[chatId] = merged.messages;
-      markRead(chatId);
-      sendMessageWindow(chatId, messageStore[chatId], 'initial', false);
-    } else if (merged.changed) {
-      messageStore[chatId] = merged.messages;
+      messageStoreNewest[chatId] = attachedToNewest;
+      if (attachedToNewest) {
+        savePersistentMessages(chatId, messageStore[chatId]);
+      }
+      merged.messages.forEach(function(message) {
+        var previous = previousById[message.id];
+        if (previous && messageSignature([previous]) !== messageSignature([message])) {
+          patches.push(message);
+        }
+      });
+      if (patches.length) {
+        sendMessagePatches(chatId, patches);
+      }
+      if (appended.length) {
+        sendMessageRows(appended, chatId, 'newer', messageStore[chatId].length);
+      }
+      if (attachedToNewest) {
+        markRead(chatId);
+      }
     }
   }).catch(function(err) {
     console.log('Open chat refresh failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
   });
 }
 
+function verifyReaction(chatId, messageId, token) {
+  if (typeof activePgjs().message !== 'function') {
+    return Promise.resolve(false);
+  }
+  return withTimeout(activePgjs().message(chatId, messageId),
+                     'reaction verify timed out', MESSAGE_FETCH_TIMEOUT_MS).then(function(message) {
+    var existing;
+    var merged;
+    if (!message) {
+      return false;
+    }
+    mergeHistoryMessages(chatId, [message]);
+    existing = messageStore[chatId] || [];
+    merged = mergeMessages(existing, [message], false, false);
+    if (merged.changed) {
+      messageStore[chatId] = merged.messages;
+      savePersistentMessages(chatId, messageStore[chatId]);
+      sendMessagePatches(chatId, [message]);
+    }
+    return reactionApplied(message, token);
+  }).catch(function(err) {
+    console.log('Reaction verify failed: ' + (err && err.message ? err.message : err));
+    return false;
+  });
+}
+
+function retryReactionAfterError(chatId, messageId, token, originalError) {
+  setTimeout(function() {
+    activePgjs().sendReaction(chatId, messageId, token).then(function() {
+      var payload = {};
+      payload[MessageKeys.Type] = 'reacted';
+      sendToWatch(payload);
+      refreshOpenChat();
+    }).catch(function(retryErr) {
+      verifyReaction(chatId, messageId, token).then(function(applied) {
+        var payload = {};
+        if (applied) {
+          payload[MessageKeys.Type] = 'reacted';
+          sendToWatch(payload);
+        } else {
+          promiseError('Reaction failed', retryErr || originalError);
+        }
+      });
+    });
+  }, 700);
+}
+
 function leaveChat(chatId) {
   if (!chatId || currentChatId === chatId) {
     currentChatId = null;
     currentChatSignature = '';
-    cancelMediaWarmQueue(chatId);
     cancelQueuedMessageTransfers();
     cancelQueuedImageTransfers();
+    avatarIndex = 0;
     scheduleChatAvatars(300);
     if (chatListStale) {
       chatListStale = false;
@@ -1209,6 +1325,96 @@ function messageSignature(messages) {
   }).join('~');
 }
 
+function reactionGlyph(token) {
+  switch (token) {
+    case 'like':
+      return '\ud83d\udc4d';
+    case 'heart':
+      return '\u2764';
+    case 'laugh':
+      return '\ud83e\udd23';
+    case 'wow':
+      return '\ud83d\ude31';
+    case 'sad':
+      return '\ud83d\ude22';
+    case 'angry':
+      return '\ud83d\ude21';
+    case 'smile_open':
+    case 'smile_eyes':
+      return '\ud83d\ude01';
+    case 'cry_loud':
+      return '\ud83d\ude2d';
+    case 'fire':
+      return '\ud83d\udd25';
+    case 'party':
+      return '\ud83c\udf89';
+    case 'clap':
+      return '\ud83d\udc4f';
+    case 'grin':
+      return '\ud83d\ude01';
+    case 'think':
+      return '\ud83e\udd14';
+    case 'eyes':
+      return '\ud83d\udc40';
+    case 'love':
+      return '\ud83d\ude0d';
+    case 'kiss':
+      return '\ud83d\ude18';
+    case 'blush':
+      return '\ud83d\ude33';
+    case 'grimace':
+      return '\ud83d\ude2c';
+    case 'neutral':
+      return '\ud83d\ude10';
+    case 'angel':
+      return '\ud83d\ude07';
+    case 'devil':
+      return '\ud83d\ude08';
+    case 'pray':
+      return '\ud83d\ude4f';
+    case 'dislike':
+      return '\ud83d\udc4e';
+    case 'ok':
+      return '\ud83d\udc4c';
+    case 'broken_heart':
+      return '\ud83d\udc94';
+    case 'kiss_mark':
+      return '\ud83d\udc8b';
+    case 'poop':
+      return '\ud83d\udca9';
+    case 'sick':
+      return '\ud83e\udd2e';
+    case 'sleep':
+      return '\ud83d\ude34';
+    case 'cool':
+      return '\ud83d\ude0e';
+    case 'bolt':
+      return '\u26a1';
+    case '\ud83d\ude02':
+      return '\ud83e\udd23';
+    case '\ud83d\ude00':
+    case '\ud83d\ude04':
+      return '\ud83d\ude01';
+    case '\ud83d\ude2d':
+      return '\ud83d\ude2d';
+    case '\ud83d\ude33':
+      return '\ud83d\ude31';
+    case '\ud83d\ude2c':
+      return '\ud83d\ude10';
+    default:
+      return token && /[^\x00-\x7f]/.test(token) ? token : '';
+  }
+}
+
+function reactionApplied(message, token) {
+  var reactions = (message && message.reactions) || '';
+  var glyph = reactionGlyph(token);
+  if (token === 'remove') {
+    return reactions === '';
+  }
+  return !!(glyph && reactions.indexOf(glyph) !== -1);
+}
+
 function markRead(chatId) {
   activePgjs().markRead(chatId).catch(function(err) {
     console.log('Mark read failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
@@ -1218,7 +1424,11 @@ function markRead(chatId) {
 function getOlderMessages(chatId, anchorId, beforeId, silent) {
   beforeId = beforeId || anchorId;
   if (!beforeId) {
+    done('messages_done', 0, 0, silent ? 'silent' : null);
     return;
+  }
+  if (!silent) {
+    cancelQueuedImageTransfers();
   }
   if (cachedOlderRows(chatId, beforeId, OLDER_MESSAGE_ROWS).length >= OLDER_MESSAGE_ROWS || oldestComplete[chatId]) {
     sendOlderWindow(chatId, anchorId, beforeId, silent);
@@ -1234,17 +1444,22 @@ function getOlderMessages(chatId, anchorId, beforeId, silent) {
       oldestComplete[chatId] = true;
     }
     mergeHistoryMessages(chatId, older);
-    warmMessageMedia(chatId, older);
     sendOlderWindow(chatId, anchorId, beforeId, silent);
   }).catch(function(err) {
+    done('messages_done', 0, 0, silent ? 'silent' : null);
     promiseError('Older failed', err);
   });
 }
 
 function getNewerMessages(chatId, anchorId, afterId, silent) {
   afterId = afterId || anchorId;
+  var key = String(chatId || '') + ':' + String(afterId || '');
   if (!afterId) {
+    done('messages_done', 0, 0, silent ? 'silent' : null);
     return;
+  }
+  if (!silent) {
+    cancelQueuedImageTransfers();
   }
   if (cachedNewerRows(chatId, afterId, NEWER_MESSAGE_ROWS).length >= NEWER_MESSAGE_ROWS || newestComplete[chatId]) {
     sendNewerWindow(chatId, anchorId, afterId, silent);
@@ -1253,17 +1468,70 @@ function getNewerMessages(chatId, anchorId, afterId, silent) {
   if (!silent) {
     status('Loading newer...');
   }
-  timed('newer messages load ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId),
+  if (newerLoadPromises[key]) {
+    return;
+  }
+  newerLoadPromises[key] = timed('newer messages load ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId),
                                             'newer messages timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(newer) {
+    delete newerLoadPromises[key];
     newer = newer || [];
     if (newer.length === 0) {
       newestComplete[chatId] = true;
     }
     mergeHistoryMessages(chatId, newer);
-    warmMessageMedia(chatId, newer);
     sendNewerWindow(chatId, anchorId, afterId, silent);
   }).catch(function(err) {
+    delete newerLoadPromises[key];
+    done('messages_done', 0, 0, silent ? 'silent' : null);
     promiseError('Newer failed', err);
+  });
+}
+
+function prefetchOlderMessages(chatId, beforeId) {
+  beforeId = beforeId || '';
+  var key = String(chatId || '') + ':older:' + beforeId;
+  if (!chatId || !beforeId || cachedOlderRows(chatId, beforeId, OLDER_MESSAGE_ROWS).length >= OLDER_MESSAGE_ROWS || oldestComplete[chatId]) {
+    return;
+  }
+  if (pagePrefetching[key]) {
+    return;
+  }
+  pagePrefetching[key] = true;
+  timed('older prefetch ' + chatId, withTimeout(activePgjs().olderMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, beforeId),
+                                      'older prefetch timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(older) {
+    delete pagePrefetching[key];
+    older = older || [];
+    if (older.length === 0) {
+      oldestComplete[chatId] = true;
+    }
+    mergeHistoryMessages(chatId, older);
+  }).catch(function(err) {
+    delete pagePrefetching[key];
+    console.log('Older prefetch failed: ' + (err && err.message ? err.message : err));
+  });
+}
+
+function prefetchNewerMessages(chatId, afterId) {
+  afterId = afterId || '';
+  var key = String(chatId || '') + ':newer:' + afterId;
+  if (!chatId || !afterId || cachedNewerRows(chatId, afterId, NEWER_MESSAGE_ROWS).length >= NEWER_MESSAGE_ROWS || newestComplete[chatId]) {
+    return;
+  }
+  if (pagePrefetching[key]) {
+    return;
+  }
+  pagePrefetching[key] = true;
+  timed('newer prefetch ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId),
+                                      'newer prefetch timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(newer) {
+    delete pagePrefetching[key];
+    newer = newer || [];
+    if (newer.length === 0) {
+      newestComplete[chatId] = true;
+    }
+    mergeHistoryMessages(chatId, newer);
+  }).catch(function(err) {
+    delete pagePrefetching[key];
+    console.log('Newer prefetch failed: ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1307,7 +1575,15 @@ function sendReaction(chatId, messageId, token) {
     sendToWatch(payload);
     refreshOpenChat();
   }).catch(function(err) {
-    promiseError('Reaction failed', err);
+    verifyReaction(chatId, messageId, token).then(function(applied) {
+      var payload = {};
+      if (applied) {
+        payload[MessageKeys.Type] = 'reacted';
+        sendToWatch(payload);
+      } else {
+        retryReactionAfterError(chatId, messageId, token, err);
+      }
+    });
   });
 }
 
@@ -1335,12 +1611,18 @@ function sendImage(chatId, messageId) {
   cancelQueuedImageTransfers();
   imageTransferActive = true;
   var requestSeq = imageRequestSeq;
-  withTimeout(activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES),
+  sendImageStatus(messageId, 'Preparing');
+  withTimeout(activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES, function(text) {
+                if (requestSeq === imageRequestSeq && currentChatId === chatId) {
+                  sendImageStatus(messageId, text);
+                }
+              }),
               'image prepare timed out', IMAGE_PREPARE_TIMEOUT_MS).then(function(bytes) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
       return;
     }
     logDuration('image prepare ' + messageId, startedAt);
+    sendImageStatus(messageId, 'Sending');
     sendImageBytes(messageId, bytes);
   }).catch(function(err) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
@@ -1355,6 +1637,14 @@ function sendImage(chatId, messageId) {
     failed[MessageKeys.Error] = diagnosticText(detail, 95);
     sendToWatch(failed);
   });
+}
+
+function sendImageStatus(messageId, text) {
+  var payload = {};
+  payload[MessageKeys.Type] = 'image_status';
+  payload[MessageKeys.MessageId] = String(messageId || '');
+  payload[MessageKeys.Error] = diagnosticText(text || 'Preparing', 40);
+  sendToWatch(payload);
 }
 
 function sendImageBytes(messageId, bytes) {
@@ -1421,9 +1711,9 @@ function sendAvatar(chatId, bytes) {
   sendToWatch(donePayload);
 }
 
-function queueChatAvatars(chats, onlyMissing) {
+function queueChatAvatars(chats) {
   avatarChats = (chats || []).slice(0, Math.min(MAX_ROWS, AVATAR_ROWS)).filter(function(chat) {
-    return chat && chat.id && (!onlyMissing || !knownAvatarChats[chat.id]);
+    return chat && chat.id;
   });
   avatarIndex = 0;
   scheduleChatAvatars(350);
@@ -1458,7 +1748,6 @@ function sendChatAvatars() {
     if (currentChatId) {
       return;
     }
-    knownAvatarChats[chat.id] = true;
     sendAvatar(chat.id, bytes);
     avatarIndex++;
     scheduleChatAvatars(80);
@@ -1473,12 +1762,9 @@ Pebble.addEventListener('ready', function() {
   configureForPlatform();
   console.log('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
   sendSettings();
-  activePgjs().ready().catch(function(err) {
-    console.log('Warm connect failed: ' + (err && err.message ? err.message : err));
-  });
   startConnectionKeepalive();
-  startTelegramUpdates();
   getChats(false);
+  startTelegramUpdates();
 });
 
 Pebble.addEventListener('appmessage', function(event) {
@@ -1489,7 +1775,9 @@ Pebble.addEventListener('appmessage', function(event) {
   var messageId = payloadValue(event.payload, 'MessageId');
   var editMessageId = payloadValue(event.payload, 'EditMessageId');
 
-  if (command === 'get_chats') {
+  if (command === 'wake') {
+    wakePhoneBackend();
+  } else if (command === 'get_chats') {
     getChats(false);
   } else if (command === 'get_messages') {
     getMessages(chatId);
@@ -1497,6 +1785,10 @@ Pebble.addEventListener('appmessage', function(event) {
     getOlderMessages(chatId, messageId, replyTo, text === 'silent');
   } else if (command === 'get_newer_messages') {
     getNewerMessages(chatId, messageId, replyTo, text === 'silent');
+  } else if (command === 'prefetch_older_messages') {
+    prefetchOlderMessages(chatId, messageId);
+  } else if (command === 'prefetch_newer_messages') {
+    prefetchNewerMessages(chatId, messageId);
   } else if (command === 'get_context') {
     sendMessageContext(chatId, messageId);
   } else if (command === 'get_message_text') {
@@ -1521,6 +1813,8 @@ Pebble.addEventListener('appmessage', function(event) {
     chatAction('markUnread', chatId);
   } else if (command === 'get_image') {
     sendImage(chatId, messageId);
+  } else if (command === 'cancel_image') {
+    cancelQueuedImageTransfers();
   } else {
     error('Command failed');
   }

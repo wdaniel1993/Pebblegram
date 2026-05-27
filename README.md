@@ -14,15 +14,34 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 ## What It Does
 
 - Shows recent Telegram chats with unread state and message previews
-- Opens one-on-one chats and regular groups
+- Opens one-on-one chats, regular groups, and pinned/foldered chat lists
 - Displays incoming and outgoing chat bubbles
-- Loads inline photo previews
+- Loads inline photo previews, GIF/video still previews, and text link previews
 - Sends replies with Pebble dictation
 - Sends configurable canned replies
+- Sends emoji replies
+- Sends, updates, and removes Telegram reactions
+- Replies to, forwards, edits, and deletes messages from the watch
 - Loads older messages on demand
+- Keeps open chats and the chat list refreshed while the app is running
 - Supports Basalt, Diorite, Emery, and Gabbro builds
 - Includes a black-and-white optimized Diorite image path
 - Includes round-screen layout handling for Gabbro
+
+## Changes Since 2.3
+
+Pebblegram 2.7 is the current live Telegram build.
+
+- Added message actions for replies, forwards, edits, deletes, full-text viewing, quote/context viewing, and Go to Bottom navigation.
+- Added Telegram reactions with a Pebble-safe reaction picker, separate emoji-reply picker, and reaction refresh/verification after Telegram send errors.
+- Improved live refresh so chat-list previews and unread state update while open chats preserve selection, scroll position, and resident message rows.
+- Reworked older/newer paging so foreground page loads preempt background work, recover cleanly from stalls, and no longer leave the watch stuck on Loading Older.
+- Hardened photo loading for photo-heavy chats, including foreground-only message photo preparation, cancellation of obsolete phone-side image work, per-image loading status, persistent image-cache LRU refresh, and one decoded message photo resident on the watch.
+- Fixed tall-photo handling on Emery/Gabbro without tiling or excessive padding by using tall-specific Telegram photo candidates and compact watch-safe encoding.
+- Treated webpage/link previews as text rows on the watch so repo/share links do not enter the image preview path.
+- Improved auth/session recovery for duplicated or revoked Telegram auth keys and removed redundant startup connection attempts.
+- Added a mock backend stress timeline for emulator testing of media, reactions, paging, replies, and long mixed histories.
+- Updated the app menu icon and bundled release PBW for 2.7.
 
 ## Quick Start
 
@@ -70,4 +89,4 @@ For local testing with embedded API credentials, keep them in an ignored environ
 
 ## Status
 
-Pebblegram 2.0 is the first direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.
+Pebblegram 2.7 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.

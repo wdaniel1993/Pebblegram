@@ -11,6 +11,9 @@ var reactionGlyphs = {
   wow: '\ud83d\ude31',
   sad: '\ud83d\ude22',
   angry: '\ud83d\ude21',
+  smile_open: '\ud83d\ude01',
+  smile_eyes: '\ud83d\ude01',
+  cry_loud: '\ud83d\ude2d',
   fire: '\ud83d\udd25',
   party: '\ud83c\udf89',
   clap: '\ud83d\udc4f',
@@ -18,8 +21,17 @@ var reactionGlyphs = {
   think: '\ud83e\udd14',
   eyes: '\ud83d\udc40',
   love: '\ud83d\ude0d',
+  kiss: '\ud83d\ude18',
+  blush: '\ud83d\ude33',
+  grimace: '\ud83d\ude2c',
+  neutral: '\ud83d\ude10',
+  angel: '\ud83d\ude07',
+  devil: '\ud83d\ude08',
   pray: '\ud83d\ude4f',
   dislike: '\ud83d\udc4e',
+  ok: '\ud83d\udc4c',
+  broken_heart: '\ud83d\udc94',
+  kiss_mark: '\ud83d\udc8b',
   poop: '\ud83d\udca9',
   sick: '\ud83e\udd2e',
   sleep: '\ud83d\ude34',
@@ -111,17 +123,23 @@ var messages = {
     imageMessage(202, 'Riley', 'Wide landscape preview', false, 1600, 720),
     imageMessage(203, 'Riley', 'Square crop preview', false, 1200, 1200),
     imageMessage(204, 'Riley', 'Second nearby image should still load reliably.', false, 900, 1400),
-    message(205, 'You', 'Fast scrolling should pass image bubbles cleanly.', true)
+    mediaMessage(205, 'Riley', 'Album item 1/3 with shared grouped-photo shape.', false, 'album:205', 1280, 960),
+    mediaMessage(206, 'Riley', 'Album item 2/3 with a tall crop.', false, 'album:206', 720, 1500),
+    mediaMessage(207, 'Riley', 'Album item 3/3 repeated nearby image cache test.', false, 'repeat:207', 1280, 960),
+    mediaMessage(208, 'Riley', 'Broken photo candidate should fail once and settle.', false, 'broken:208', 1024, 768),
+    mediaMessage(209, 'Riley', 'Large source photo should resize without a retry loop.', false, 'large:209', 4000, 3000),
+    message(210, 'You', 'Fast scrolling should pass image bubbles cleanly.', true)
   ],
   '1003': [
-    message(300, 'Sam', '[Link] youtube.com Test link preview title', false, 'link:300'),
-    message(301, 'Sam', '[GIF preview] wave.gif', false, 'gif:301'),
-    message(302, 'Sam', '[Video preview] short_clip.mp4', false, 'video:302'),
+    mediaMessage(300, 'Sam', '[Link] youtube.com Test link preview title', false, 'link:300', 1200, 675),
+    mediaMessage(301, 'Sam', '[GIF preview] wave.gif', false, 'gif:301', 480, 360),
+    mediaMessage(302, 'Sam', '[Video preview] short_clip.mp4', false, 'video:302', 1280, 720),
     message(303, 'Sam', '[Audio] voice-note.ogg', false),
-    message(304, 'Sam', '[File] schedule.pdf', false),
+    mediaMessage(304, 'Sam', '[File preview] schedule.pdf', false, 'doc:304', 800, 1000),
     message(305, 'You', 'Reactions should show as emoji when supported.', true, null, '\u2764'),
     message(306, 'Sam', '[Sticker] not shown', false),
-    message(307, 'You', '[Sticker] not shown', true)
+    message(307, 'You', '[Sticker] not shown', true),
+    mediaMessage(308, 'Sam', '[Link] article with missing first preview candidate', false, 'link-broken-first:308', 900, 600)
   ],
   '1004': [
     message(400, 'Jordan', 'This chat is marked unread with a dot only.', false),
@@ -220,7 +238,11 @@ function message(id, sender, text, outgoing, imageToken, reactions, context) {
 }
 
 function imageMessage(id, sender, text, outgoing, width, height) {
-  var row = message(id, sender, text, outgoing, 'image:' + id, '');
+  return mediaMessage(id, sender, text, outgoing, 'image:' + id, width, height);
+}
+
+function mediaMessage(id, sender, text, outgoing, imageToken, width, height) {
+  var row = message(id, sender, text, outgoing, imageToken, '');
   row.image_width = width;
   row.image_height = height;
   return row;
@@ -281,8 +303,26 @@ function buildStressMessages() {
     }
     if (i % 23 === 5 || i % 30 === 4) {
       row = message(id, sender, '[Sticker] not shown', outgoing, null, reactions, context);
+    } else if (i % 41 === 12) {
+      row = mediaMessage(id, sender, '[GIF preview] stress animation #' + i, outgoing, 'gif:' + id, 480, 320);
+      row.reactions = reactions;
+    } else if (i % 37 === 16) {
+      row = mediaMessage(id, sender, '[Video preview] stress clip #' + i, outgoing, 'video:' + id, 1280, 720);
+      row.reactions = reactions;
+    } else if (i % 31 === 18) {
+      row = mediaMessage(id, sender, '[Link] stress article preview #' + i, outgoing, 'link:' + id, 900, 600);
+      row.reactions = reactions;
+    } else if (i % 43 === 20) {
+      row = mediaMessage(id, sender, '[File preview] stress document #' + i, outgoing, 'doc:' + id, 800, 1000);
+      row.reactions = reactions;
+    } else if (i % 47 === 22) {
+      row = mediaMessage(id, sender, 'Broken stress photo should settle after one failure #' + i, outgoing, 'broken:' + id, 1024, 768);
+      row.reactions = reactions;
     } else if (i % 29 === 8) {
-      row = imageMessage(id, sender, 'Photo buried in the stress timeline #' + i, outgoing, i % 2 ? 900 : 640, i % 2 ? 640 : 1100);
+      row = mediaMessage(id, sender, 'Photo buried in the stress timeline #' + i, outgoing, 'image:' + id, i % 2 ? 900 : 640, i % 2 ? 640 : 1100);
+      row.reactions = reactions;
+    } else if (i % 19 === 7) {
+      row = mediaMessage(id, sender, 'Repeated-image cache stress #' + i, outgoing, 'repeat:shared', 1280, 960);
       row.reactions = reactions;
     } else {
       row = message(id, sender, baseText, outgoing, null, reactions, context);
@@ -496,6 +536,17 @@ function sendReaction(chatId, messageId, token) {
   return delayed(true, 100);
 }
 
+function messageById(chatId, messageId) {
+  var rows = messages[String(chatId)] || [];
+  var id = String(messageId || '');
+  for (var i = 0; i < rows.length; i += 1) {
+    if (rows[i].id === id) {
+      return delayed(cloneMessages([rows[i]])[0], 60);
+    }
+  }
+  return delayed(null, 60);
+}
+
 function markRead(chatId) {
   var chat = chatById(chatId);
   if (chat) {
@@ -547,6 +598,14 @@ function mockAvatarBytes() {
 }
 
 function imageBytes(chatId, messageId, width, height, colors, maxBytes) {
+  var token = String(messageId || '');
+  if (token.indexOf('broken:') === 0) {
+    return new Promise(function(resolve, reject) {
+      setTimeout(function() {
+        reject(new Error('mock broken photo candidate'));
+      }, 180);
+    });
+  }
   return delayed(mockPngBytes(), 240);
 }
 
@@ -573,6 +632,7 @@ module.exports = {
       sendMessage: sendMessage,
       editMessage: editMessage,
       sendReaction: sendReaction,
+      message: messageById,
       deleteMessage: deleteMessage,
       markRead: markRead,
       archiveChat: archiveChat,

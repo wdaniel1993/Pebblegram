@@ -43,6 +43,7 @@ function create(options) {
     sendMessage: telegram.sendMessage,
     editMessage: telegram.editMessage,
     sendReaction: telegram.sendReaction,
+    message: telegram.message,
     deleteMessage: telegram.deleteMessage,
     markRead: telegram.markRead,
     archiveChat: telegram.archiveChat,
@@ -50,7 +51,8 @@ function create(options) {
     muteChat: telegram.muteChat,
     markUnread: telegram.markUnread,
     imageBytes: image.imageBytes,
-    avatarBytes: image.avatarBytes
+    avatarBytes: image.avatarBytes,
+    cancelImageRequests: image.cancelImageRequests
   };
 }
 

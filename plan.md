@@ -333,10 +333,352 @@ preparation layer.
 - Build on all configured platforms and keep Gabbro under the app footprint
   limit.
 
+## 2.7.5 Stability Pass
+
+Use the fake/mock testing backend again for autonomous emulator testing, then
+carry proven fixes back to the live Telegram path.
+
+- Expand the media stress test with the Telegram-style media Pebblegram should
+  support: normal photos, albums/grouped photos, GIF previews, video still
+  previews, webpage/link previews, document thumbnails, missing/broken preview
+  candidates, large images, repeated images, captions, replies/forwards with
+  media, and long mixed scroll histories.
+- Rework photo loading so retries happen only when the next attempt is
+  meaningfully different, such as a different candidate, size, source, or
+  encoding path. Plain repeated retries of the same failing photo path should
+  stop and report the real failure.
+- Keep GIF, video, and link-preview fallback behavior, where retry attempts are
+  allowed only because they probe a different preview candidate or processing
+  path.
+- Investigate the root cause of older/newer streaming hangs where Loading Older
+  or Loading Newer stalls until the phone is unlocked or the watch app is
+  relaunched. Prove or rule out phone sleep, Telegram/GramJS reconnect state,
+  AppMessage backpressure, stale page requests, and phone-side fetch timeouts
+  before changing the UI behavior.
+- Fix selected photo bubbles that can land completely off screen by finding the
+  layout or anchor-state cause, not by adding a surface workaround.
+- Remove the Refresh action from action menus and replace it with Go to Bottom.
+  Go to Bottom should snap the user to the newest/bottom chat position and
+  clear stale paging state cleanly.
+- After the 2.7.5 mock-backend fixes are complete, switch back to the live
+  Telegram service, build with live Telegram functionality enabled, and then
+  pause for Thomas to test before moving on.
+- Treat Emery as the primary target for implementation and testing until
+  further notice. Other Pebble platforms still matter and should keep building,
+  but they are secondary to Emery behavior, ergonomics, and stability.
+- Verify photos do not retry the same failed request repeatedly, GIF/video/link
+  previews still use meaningful fallback attempts, older/newer loading cannot
+  hang indefinitely, selected photo bubbles stay visible after image and paging
+  completions, and Go to Bottom replaces Refresh everywhere the action menu
+  exposed it.
+
+Implementation findings:
+
+- [done] Switched the JS entrypoint back to mock backend mode for the 2.7.5
+  stability pass.
+- [done] Expanded mock media coverage with grouped photos, repeated images,
+  large photos, GIF/video/link/document-preview rows, broken photo rows, and
+  mixed media inside the long stress timeline.
+- [done] Found that watch-side image decode/blank/incomplete-transfer handling
+  retried the same prepared PNG up to three times. Changed those deterministic
+  failures to settle as failed on the watch; meaningful GIF/video/link fallback
+  attempts remain phone-side candidate probes.
+- [done] Found that selected image rows could be selected while the actual image
+  rectangle sat outside the viewport, especially for tall bubbles. Added
+  selected-image-aware scroll targeting so the media area is brought into view.
+- [done] Found that explicit older/newer page requests could compete with
+  background media warming and leave stale visible loading state after a phone
+  stall. Foreground page/image work now preempts background media warming,
+  existing transfer timeouts clear loading state, and Go to Bottom clears stale
+  paging state. A bounded page command retry was tested, but trimmed back
+  because it pushed Gabbro over the app footprint limit.
+- [done] Kept the final watch app under the app metadata footprint ceiling by
+  removing obsolete same-path image retry bookkeeping after retries were
+  disabled. Direct SDK builds need `NODE_PATH` pointed at the SDK bundled
+  `node_modules` in this Codex environment.
+- [done] Replaced the Refresh action-menu item with Go to Bottom. The action
+  clears stale page state and either scrolls to the bottom of the current newest
+  window or reloads the newest chat window before landing at the bottom.
+- [done] Switched the app entrypoint back from the 2.7.5 mock backend to the
+  live Telegram service for Thomas testing.
+- [investigating] Live Telegram testing showed `Memory low` before paging/photo
+  failures. The current finding is watch heap pressure during older/newer
+  staging while photo transfer or decoded bitmaps are still resident. Paging now
+  cancels foreground image transfers on the phone, releases watch-side image
+  memory before page requests and before retrying stage allocation, and gives a
+  normal photo one memory-recovery decode attempt before reporting `Photo
+  failed`. The watch message text buffer was reduced from 500 to 460 bytes
+  because visible previews are capped below that and the full-text action uses
+  its own larger buffer.
+- [done] Smoothed media scrolling after live testing found that image
+  completion could behave like a navigation command. Removed the special
+  selected-photo snap target from normal selection scrolling, stopped image
+  completion from re-scrolling the selected row, and kept active image transfers
+  alive while they remain within the same keep margin used for loaded bitmaps.
+- [done] Follow-up live testing showed silent page prefetch was still mutating
+  the visible watch window and evicting photos while scrolling. Reworked
+  prefetch into phone-side cache warming only, removed passive selected-message
+  scrolling from render/message-complete paths, and throttled duplicate page
+  prefetches so only explicit boundary requests can enter Loading Older/Newer.
+- [done] Added a bounded watch-side timeout for launch/chat-list loading. Chat
+  startup previously relied on the phone eventually sending `chats_done`; if the
+  phone stalled first, the watch could remain on `Loading...` indefinitely.
+- [investigating] One unusually tall live photo could still destabilize the
+  watch after several other photos were loaded. Reverted the experimental
+  phone-side tall-photo preview/downscale path so normal photos keep the same
+  full-media quality path that worked in earlier builds. Current watch-side fix:
+  when a large PNG arrives, free non-target decoded bitmaps before attempting
+  `gbitmap_create_from_png_data` so the decoder has heap headroom instead of
+  crashing before the existing post-failure recovery can run.
+- [investigating] Thomas confirmed reactions now update correctly, but the tall
+  photo still reports failed. The next finding is that the live Emery/Gabbro
+  image budget had been tightened from the older 20 KB path to 19 KB; a tall,
+  detailed image can fail the phone-side prepare step at that limit without any
+  quality/resolution change being attempted. Restored the 20 KB budget on
+  Emery/Gabbro, but the first build showed a static 20 KB watch image buffer
+  pushed the app over Pebble's metadata size ceiling. Reworked the watch image
+  transfer buffer to allocate only while an image is actively transferring, then
+  free it after decode/cancel. This keeps the older 20 KB tall-photo headroom
+  without permanently reserving that RAM, bumps the image cache version so the
+  tall photo is regenerated, and broadens watch-side decode headroom to free
+  other decoded bitmaps based on either compressed PNG size or expected
+  displayed pixel area.
+- [investigating] Thomas reported the tall photo still failed on first chat
+  entry, then worked after loading an adjacent photo, and chat-list avatars
+  sometimes disappeared after entering a chat while avatars were loading. Current
+  simplification: remove background full-image media warming from chat load,
+  live update, and page prefetch paths. It was preparing selected-sized photos
+  before the user actually selected them, and a foreground request could only
+  cancel the queue, not the already-running download/encode. Message history
+  prefetch remains; full photo preparation is now foreground-only again. Also
+  removed phone-side "known avatar" skipping and restart the visible avatar pass
+  after leaving a chat, because avatars were marked known before the watch had
+  necessarily received and decoded them.
+- [investigating] Tall photo still failed after the simplification, so add a
+  tall-only phone processing path rather than changing normal photos. For source
+  photos with a very tall aspect ratio, Telegram is now asked for a photo size
+  near the watch's final target dimensions before falling back to full-media
+  download. The phone encoder still uses the normal path if the tall image fits;
+  only over-budget tall encodes get additional tall-specific scale/color
+  attempts. Diagnostics are more explicit now: phone failures distinguish media
+  download target failures, unsupported/empty bytes, phone JPEG/PNG decode
+  failures, PNG encode budget failures, prepare timeout, and watch-side transfer
+  gap/memory/decode/incomplete failures.
+- [investigating] Thomas saw `Photo decoded blank` on the tall image. That was
+  produced after `gbitmap_create_from_png_data` had already returned a bitmap,
+  so the watch-side blank-pixel detector was likely a stale false-negative check.
+  Removed that second-guessing: if the watch decoder returns a bitmap, display
+  it. Media diagnostic text now appears inside the photo placeholder instead of
+  replacing the top status banner.
+- [investigating] Thomas then saw a crash right as the tall-photo loading bar
+  completed, plus a long empty loading bar when switching away from another
+  still-preparing photo and back to the tall one. Current root-cause finding:
+  foreground image selections were still allowed to join an old phone-side
+  in-flight download/encode even after the watch had canceled that transfer, so
+  a fresh selection could sit behind stale work until the 22-second pipeline
+  timeout. Also, the tall image could still be emitted near the 20 KB ceiling,
+  forcing the watch to hold a large transfer buffer while allocating the decoded
+  bitmap. Foreground message photos now bypass stale in-flight reuse while still
+  using completed cache hits, and tall-only phone output targets a 15 KB
+  watch-safe encoded budget. Normal photos and avatar in-flight dedupe are left
+  on the existing path.
+- [investigating] Follow-up testing confirmed the crash is gone, but interrupting
+  an image load can still leave the next photo waiting too long. The remaining
+  cause is not the watch transfer queue; it is old phone-side work continuing
+  after a newer foreground image request exists. New foreground image requests
+  now supersede older downloads through GramJS `progressCallback`, so obsolete
+  downloads throw before consuming the rest of the media transfer, and the phone
+  skips decode/encode/cache work if the request was superseded. The tall-photo
+  encoder also takes the tall-specific compact path immediately instead of first
+  walking the full normal encode matrix, reducing the synchronous JS window where
+  the phone cannot process a new watch command.
+- [investigating] Thomas clarified that the delayed next load affects all photos
+  after an interruption, not only the tall one. Revised root cause: the watch
+  could clear an image locally without sending any phone-side cancel if the next
+  selected row was not another image yet, and normal photo encodes could still
+  run a synchronous multi-attempt PNG loop after the user had moved on. The watch
+  now sends an explicit `cancel_image` command whenever it abandons an active
+  image. The live backend invalidates foreground image work on that command, and
+  normal message-photo encoding now yields between PNG attempts so cancel/new
+  image commands can be processed mid-encode rather than waiting for the whole
+  encode sweep to finish. Avatar encoding stays synchronous because avatars are
+  small and not part of the selected-photo interruption path.
+- [investigating] Since interrupted-image delays are still visible on-device,
+  add phase diagnostics inside the photo placeholder rather than using the global
+  banner. The phone now sends per-image `Preparing`, `Downloading`, `Decoding`,
+  `Encoding`, `Caching`, and `Sending` status messages, and the watch shows that
+  detail under the loading bar. `Receiving` means the phone has finished
+  preparing bytes and the watch is receiving AppMessage chunks. This should make
+  the next live test identify whether the empty-bar delay is Telegram download,
+  phone-side PNG work, persistent cache/localStorage, or watch transfer.
+- [investigating] Thomas saw the delayed next photo still show a blank loading
+  bar until it jumped directly to `Receiving`, which means the watch request had
+  been sent but the phone JS event loop was still busy with old image work and
+  could not even send the early `Preparing` status yet. The watch now labels
+  locally started image requests as `Waiting phone` before the phone responds,
+  and it waits one short image-retry tick before sending `get_image` so quick
+  scroll-past selections do not immediately launch expensive phone processing.
+  Also moved image payloads up to 15 KB into a static watch transfer buffer so
+  the common/tall processed case no longer consumes heap while Pebble decodes
+  the bitmap; larger payloads still fall back to dynamic allocation.
+- [investigating] Thomas reports the interaction now feels right, but repeated
+  photo swaps can still crash the watch. Root-cause pass: the watch could still
+  keep more than one decoded message photo resident on Emery/Gabbro, and the
+  cache eviction path spared visible unselected photos even when decoded bitmap
+  memory was already over budget. That made repeated photo swaps accumulate the
+  most expensive memory object while also holding the active transfer/decode
+  buffer. Current fix keeps only one decoded message photo resident, clears
+  other decoded photos before starting/decoding a newly selected photo, and
+  enforces the one-photo budget even when the extra bitmap is still visible.
+- [investigating] Live testing found Telegram 400 errors for some expanded-grid
+  reaction emoji, notably crying and broad-smile faces. Correction after Thomas
+  challenged the first interpretation: Telegram can react with crying face, so
+  the app should not remove it or assume it is unsupported. The safer fix is to
+  stop sending raw displayed emoji strings as reaction commands from the watch.
+  The grid now sends stable ASCII reaction tokens, including exact tokens for
+  crying, open-smile, and smiling-eyes faces; the phone maps those tokens back
+  to the intended Telegram reaction emoji. Emoji replies still send the visible
+  glyph text.
+- [investigating] Follow-up reaction-grid testing: crying face works, but
+  open-smile and smiling-eyes still return 400 when sent as exact Telegram
+  reaction emoji. Thinking face and lightning render as missing glyph boxes on
+  Pebble. Remove those boxed entries from the watch grid for now, keep the other
+  visible choices, and map the Telegram-rejected ones to the closest accepted
+  reaction: smile variants to grinning, peace/fists to OK hand, wave/raised
+  hand/raised hands to clapping, and beer choices to party. Verification now
+  expects the mapped reaction glyph instead of the displayed selector glyph.
+- [investigating] Thomas pushed back that reaction mappings should not be
+  inaccurate when the selected emoji is fundamentally different. Split the
+  pickers: the React grid is now pruned to exact or near-exact Telegram
+  reactions, keeping one big-smile option plus the crying special case and
+  removing the gesture/drink choices that only worked through a different
+  reaction. The Emoji Reply grid is separate and keeps the broader
+  Pebble-renderable emoji set, including the pruned reaction glyphs, because
+  replies send ordinary message text instead of Telegram reaction objects.
+- [investigating] Status banners were staying on the last success/error until
+  another status arrived. Add a short watch-side clear timer so transient
+  banners return to `Pebblegram`; loading/connecting/requesting states still
+  persist until the load path finishes or times out.
+- [done] Replaced the app menu icon with the 25x25 paper-plane asset from the
+  Emery paper-plane assets folder. The existing Pebble resource entry still owns
+  the app icon; only the PNG backing it changed.
+- [investigating] The old "8 visible plus 6 ahead" idea should not be restored
+  literally on the watch while memory is tight: the current watch resident
+  message array is 9 rows, and raising it toward 14 would increase static row
+  buffers and make photo heap pressure worse. The better version is to keep the
+  watch window small, prefetch only into the phone-side history/media cache, and
+  let explicit boundary movement swap the watch window from cached rows.
+- [investigating] Reaction sends can return a GramJS/Telegram 400 even though
+  the reaction later appears after reopening the chat. The reaction path now
+  verifies the target message after a send error; if Telegram already applied
+  the reaction, Pebblegram patches the visible row and reports success instead
+  of showing a false failure. If verification confirms the error was accurate,
+  Pebblegram retries once after a short pause, then verifies again before
+  surfacing the failure.
+- [investigating] Live chat-view updates should not replace the active watch
+  window. Whole-window refreshes can yank the selected row and viewport because
+  the watch treats them as fresh initial loads. Live refresh now patches only
+  resident rows whose text/reaction/meta changed, preserving selection and
+  scroll offset. Newly arrived rows are merged into the phone-side history cache
+  for the next explicit boundary/bottom load rather than being injected into the
+  middle of a scrolled viewport.
+- [investigating] Chat-list live refresh already preserves the selected chat by
+  id across reordered rows. Keep validating that it refreshes unread/preview
+  state without moving the cursor unexpectedly.
+
 ## Later Releases
 
 - 2.7: Notification launch/deep-link behavior, if the Pebble app and phone
   notification stack expose enough control.
+
+## Recovery Handoff - 2026-05-19
+
+Current branch/workspace:
+
+- Branch is `experiment/pgjs` in `/home/thomas/pebble/Pebblegram`.
+- Working files are writable, but this Codex session has `.git` mounted
+  read-only. Normal file edits work; `git fetch`, `git commit`, and `git push`
+  fail with `.git/FETCH_HEAD: Read-only file system`.
+- `findmnt` showed the repo root mounted `rw`, but `.git` mounted separately
+  as `ro`. To push normally, reopen/fix the Codex workspace so `.git` is `rw`,
+  or use an external terminal where Git metadata is writable.
+- Local status when this note was written:
+  - `src/pkjs/index.js` modified.
+  - `src/pkjs/pgjs/auth.js` modified.
+  - `src/pkjs/pgjs/image.js` modified.
+  - Untracked recovery/build artifacts also exist: `.lock-waf_linux_build`,
+    `build - Copy/`, `data - Copy/`, `pebble_paper_plane_icon_assets.zip`,
+    `replyemoji.png`.
+- Local branch tracking still reports `ahead 50` because the earlier remote
+  push succeeded but local `.git` could not update its refs. Remote
+  `origin/experiment/pgjs` already contains the 2.7 recovery push plus commit
+  `9eb9967 Refresh persistent image cache LRU on hits`.
+
+Changes that must be preserved and pushed:
+
+- `src/pkjs/pgjs/image.js`: persistent image cache hits now call
+  `persistentCacheNoteUse(key)` so the persistent LRU order is refreshed on
+  cache reads. This was already saved remotely as commit `9eb9967`, but the
+  local working tree still shows it modified because local Git refs could not
+  update.
+- `src/pkjs/pgjs/auth.js`: fix the repeated login/logout loop around Telegram
+  `AUTH_KEY_DUPLICATED` from `invokeWithLayer`.
+  - Track the active GramJS client with `currentClient`.
+  - Treat `AUTH_KEY_DUPLICATED`, `AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED`,
+    `USER_DEACTIVATED`, and `USER_DEACTIVATED_BAN` as fatal session errors.
+  - On fatal connect/reconnect/sign-in failures, disconnect the client, clear
+    the poisoned saved session, and return a user-facing sign-in message.
+  - `reset()` now disconnects the active client before clearing session state.
+  - Temporary sign-in clients are disconnected on password-needed and error
+    paths so they do not linger while settings waits for more input.
+- `src/pkjs/index.js`: removed the redundant launch-time warm
+  `activePgjs().ready()` call. Startup still begins keepalive, update listener,
+  and chat loading; this avoids an unnecessary extra auth/connect attempt.
+
+Validation already run and passed:
+
+- JS syntax check over `src/pkjs` and `tools`.
+- `npm run build:pgjs-gramjs`.
+- Full Pebble SDK build through direct `waf configure build`, producing
+  `build/Pebblegram.pbw`.
+
+Recommended next-chat actions:
+
+- First make `.git` writable or use a terminal/session where Git works.
+- Fetch `origin/experiment/pgjs` so local refs see remote commit `9eb9967`.
+- Preserve the working tree edits in `src/pkjs/pgjs/auth.js` and
+  `src/pkjs/index.js`; do not reset them away.
+- Commit/push the auth duplicate-key fix on `experiment/pgjs`. Include
+  `src/pkjs/pgjs/image.js` only if local Git still needs to reconcile the
+  already-remote LRU commit.
+- Do not include the untracked recovery/build artifacts unless intentionally
+  needed.
+
+## Git Push Procedure From Codex
+
+If `.git` is mounted read-only in Codex, normal `git fetch`, `git commit`, and
+`git push` may fail even though working-tree files are writable. The push can
+still be completed by keeping Git metadata and new objects in ordinary writable
+temporary paths.
+
+- Clone the branch to `/tmp` with a separate metadata directory, for example
+  `git clone --separate-git-dir /tmp/pebblegram-gitdir --branch experiment/pgjs
+  --single-branch https://github.com/TomBolger/Pebblegram.git
+  /tmp/pebblegram-work`.
+- Copy only the intended tracked file changes into the temporary worktree. Do
+  not include copied build/recovery artifacts such as `.lock-waf_linux_build`,
+  `build - Copy/`, `data - Copy/`, `pebble_paper_plane_icon_assets.zip`, or
+  `replyemoji.png` unless they are intentionally part of the release.
+- Route staging and new Git objects to writable temporary paths with
+  `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, and
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`.
+- Stage the intended files, create a tree with `git write-tree`, create the
+  commit with `git commit-tree` using the current remote branch commit as the
+  parent, then push the resulting commit SHA directly to
+  `refs/heads/experiment/pgjs`.
+- After pushing, verify with `git ls-remote --heads origin experiment/pgjs`.
+  The temporary checkout may still fail to update its own tracking ref, but the
+  remote branch is authoritative.
 
 ## Earmarked for v3.0
 
