@@ -1321,7 +1321,6 @@ static void chat_menu_select_callback(struct MenuLayer *menu_layer, MenuIndex *c
   s_selected_chat = cell_index->row;
   copy_cstr(s_current_chat_id, sizeof(s_current_chat_id), s_chats[s_selected_chat].id);
   copy_cstr(s_current_chat_title, sizeof(s_current_chat_title), s_chats[s_selected_chat].title);
-  APP_LOG(APP_LOG_LEVEL_INFO, "Requesting messages for chat %s", s_current_chat_id);
   request_messages(s_current_chat_id);
 }
 
@@ -3238,7 +3237,6 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
         }
         request_next_image();
       }
-      APP_LOG(APP_LOG_LEVEL_INFO, "Loaded %d messages", loaded_count);
       if (stream_initial && s_loading_messages && s_view_state != ViewStateChat && !s_chat_view_pending) {
         s_chat_view_pending = true;
         app_timer_register(1, show_chat_view_timer, NULL);

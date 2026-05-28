@@ -9,8 +9,14 @@ var MAX_MEDIA_PREVIEW_CANDIDATES = 8;
 var MAX_MEDIA_PREVIEW_ATTEMPTS = 12;
 var MAX_REPLY_CONTEXT_FETCHES = 12;
 var MAX_FORWARD_ENTITY_FETCHES = 12;
+var DEBUG_LOGS = false;
 var STRIPPED_JPEG_HEADER_HEX = 'ffd8ffe000104a46494600010100000100010000ffdb004300281c1e231e19282321232d2b28303c64413c37373c7b585d4964918099968f808c8aa0b4e6c3a0aadaad8a8cc8ffcbdaeef5ffffff9bc1fffffffaffe6fdfff8ffdb0043012b2d2d3c353c76414176f8a58ca5f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8ffc00011080000000003012200021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00';
 
+function debugLog(message) {
+  if (DEBUG_LOGS) {
+    console.log(message);
+  }
+}
 
 function toUint8Array(value) {
   if (!value) {
@@ -75,21 +81,6 @@ function strippedPhotoToJpg(bytes) {
   header[164] = bytes[1];
   header[166] = bytes[2];
   return concatBytes([header, bytes.slice(3), new Uint8Array([0xff, 0xd9])]);
-}
-
-function idPart(value) {
-  if (value === undefined || value === null) {
-    return '';
-  }
-  return String(value);
-}
-
-function peerId(value) {
-  if (!value) {
-    return '';
-  }
-  return idPart(value.userId || value.user_id || value.chatId || value.chat_id ||
-    value.channelId || value.channel_id || value.peerId || value.peer_id || value.id);
 }
 
 function idPart(value) {
@@ -687,7 +678,7 @@ function downloadTallPhotoBytes(client, message, photo, options) {
   if (!candidate || !option) {
     return null;
   }
-  console.log('Tall photo using Telegram size ' + option + ' for ' + dimensions.width + 'x' + dimensions.height);
+  debugLog('Tall photo using Telegram size ' + option + ' for ' + dimensions.width + 'x' + dimensions.height);
   return downloadImageBytes(client, message, {thumb: option, cancelled: options && options.cancelled}).catch(function(messageErr) {
     throwIfImageRequestCancelled(options);
     return downloadImageBytes(client, photo, {thumb: option, cancelled: options && options.cancelled}).catch(function(photoErr) {
@@ -781,7 +772,7 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
     return attempt.run().catch(function(err) {
       var detail = attempt.label + ': ' + (err && err.message ? err.message : err);
       errors.push(detail);
-      console.log('Media preview attempt failed ' + detail);
+      debugLog('Media preview attempt failed ' + detail);
       return tryNext();
     });
   }
@@ -1114,7 +1105,7 @@ function dialogFilters(client) {
   return client.invoke(new gram.Api.messages.GetDialogFilters({})).then(function(result) {
     return result && (result.filters || result) || [];
   }).catch(function(err) {
-    console.log('Dialog filters unavailable: ' + (err && err.message ? err.message : err));
+    debugLog('Dialog filters unavailable: ' + (err && err.message ? err.message : err));
     return [];
   });
 }
@@ -1141,7 +1132,7 @@ function dialogRows(dialogs, folderName, folderOrder) {
     var id = entityId(entity);
     var preview = dialog.message ? displayMessageText(dialog.message) : '';
     if (isUnsafeLargeChannel(entity)) {
-      console.log('Skipping large/unsupported channel ' + (displayName(entity) || id) + ' members=' + channelParticipantCount(entity));
+      debugLog('Skipping large/unsupported channel ' + (displayName(entity) || id) + ' members=' + channelParticipantCount(entity));
       return null;
     }
     if (folderName) {
@@ -1217,7 +1208,7 @@ function chats(limit, options) {
           requests.push(client.getDialogs({limit: limit, folder: folderId}).then(function(dialogs) {
             groups.push(dialogRows(dialogs, name || ('Folder ' + folderId), index + 2));
           }).catch(function(err) {
-            console.log('Folder ' + folderId + ' unavailable: ' + (err && err.message ? err.message : err));
+            debugLog('Folder ' + folderId + ' unavailable: ' + (err && err.message ? err.message : err));
           }));
         });
         return Promise.all(requests).then(function() {

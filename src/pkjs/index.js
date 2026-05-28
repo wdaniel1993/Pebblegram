@@ -2,6 +2,7 @@ var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
 
 var USE_MOCK_BACKEND = false;
+var DEBUG_LOGS = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
 var MAX_SEND_QUEUE = 80;
@@ -90,7 +91,7 @@ function activePgjs() {
 
 function wakePhoneBackend() {
   withTimeout(activePgjs().ready(), 'wake timed out', 10000).catch(function(err) {
-    console.log('Phone wake failed: ' + (err && err.message ? err.message : err));
+    debugLog('Phone wake failed: ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -141,8 +142,14 @@ function configureForPlatform() {
   }
 }
 
+function debugLog(message) {
+  if (DEBUG_LOGS) {
+    console.log(message);
+  }
+}
+
 function logDuration(label, startedAt) {
-  console.log(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  debugLog(label + ' took ' + (Date.now() - startedAt) + 'ms');
 }
 
 function timed(label, promise) {
@@ -307,7 +314,7 @@ function flushQueue() {
   }, function(error) {
     entry.attempts = (entry.attempts || 0) + 1;
     sending = false;
-    console.log('sendAppMessage failed: ' + JSON.stringify(error));
+    debugLog('sendAppMessage failed: ' + JSON.stringify(error));
     if (isObsoleteQueuedPayload(entry) || (entry.attempts >= 6 && (isImageTransferPayload(entry.payload) || isAvatarTransferPayload(entry.payload)))) {
       if (sendQueue[0] === entry) {
         sendQueue.shift();
@@ -360,7 +367,7 @@ function done(kind, count, transferId, flag) {
 
 function promiseError(prefix, err) {
   var message = err && err.message ? err.message : String(err || 'unknown error');
-  console.log(prefix + ': ' + message);
+  debugLog(prefix + ': ' + message);
   error(prefix + ': ' + message);
 }
 
@@ -531,7 +538,7 @@ function savePersistentMessages(chatId, messages) {
     }
     localStorage.setItem(MESSAGE_CACHE_ORDER_KEY, JSON.stringify(order));
   } catch (e) {
-    console.log('Message cache save skipped: ' + (e && e.message ? e.message : e));
+    debugLog('Message cache save skipped: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -743,12 +750,19 @@ function trimChatCaches(protectedChatId) {
 function mergeHistoryMessages(chatId, rows) {
   var existing = messageHistoryStore[chatId] || [];
   var byId = {};
-  existing.concat(rows || []).forEach(function(message) {
-    if (message && message.id !== undefined && message.id !== null) {
-      byId[String(message.id)] = message;
-    }
-  });
-  var merged = Object.keys(byId).map(function(id) {
+  var merged;
+
+  function ingest(source) {
+    (source || []).forEach(function(message) {
+      if (message && message.id !== undefined && message.id !== null) {
+        byId[String(message.id)] = message;
+      }
+    });
+  }
+
+  ingest(existing);
+  ingest(rows);
+  merged = Object.keys(byId).map(function(id) {
     return byId[id];
   }).sort(compareMessageIds);
   if (merged.length > PHONE_MESSAGE_CACHE_ROWS) {
@@ -860,7 +874,7 @@ function warmChatHistory(chatId) {
     }
   }).catch(function(err) {
     delete prefetching[chatId];
-    console.log('History warm failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
+    debugLog('History warm failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -885,7 +899,7 @@ function mergeMessages(existing, incoming, allowAppend, trimNewest) {
   incoming.forEach(function(message) {
     var previous = byId[message.id];
     if (previous) {
-      if (messageSignature([previous]) !== messageSignature([message])) {
+      if (singleMessageSignature(previous) !== singleMessageSignature(message)) {
         for (var i = 0; i < merged.length; i += 1) {
           if (merged[i].id === message.id) {
             merged[i] = message;
@@ -1094,7 +1108,7 @@ function startConnectionKeepalive() {
     }
     keepalive = activePgjs().keepalive || activePgjs().ready;
     withTimeout(keepalive(), 'keepalive timed out', 10000).catch(function(err) {
-      console.log('Keepalive reconnect failed: ' + (err && err.message ? err.message : err));
+      debugLog('Keepalive reconnect failed: ' + (err && err.message ? err.message : err));
     });
   }, 45000);
 }
@@ -1106,14 +1120,14 @@ function startTelegramUpdates() {
   updatesStarted = true;
   activePgjs().ready().then(function(client) {
     if (!client || typeof client.addEventHandler !== 'function') {
-      console.log('Telegram updates unavailable; chat list refresh is manual only.');
+      debugLog('Telegram updates unavailable; chat list refresh is manual only.');
       return;
     }
     client.addEventHandler(handleTelegramUpdate);
-    console.log('Telegram updates enabled.');
+    debugLog('Telegram updates enabled.');
   }).catch(function(err) {
     updatesStarted = false;
-    console.log('Telegram updates failed: ' + (err && err.message ? err.message : err));
+    debugLog('Telegram updates failed: ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1139,7 +1153,7 @@ function getChats(silent) {
     prefetchTopChats(chats);
   }).catch(function(err) {
     if (silent) {
-      console.log('Silent chats failed: ' + (err && err.message ? err.message : err));
+      debugLog('Silent chats failed: ' + (err && err.message ? err.message : err));
     } else {
       promiseError('Chats failed', err);
     }
@@ -1227,7 +1241,7 @@ function refreshOpenChat() {
       }
       merged.messages.forEach(function(message) {
         var previous = previousById[message.id];
-        if (previous && messageSignature([previous]) !== messageSignature([message])) {
+        if (previous && singleMessageSignature(previous) !== singleMessageSignature(message)) {
           patches.push(message);
         }
       });
@@ -1242,7 +1256,7 @@ function refreshOpenChat() {
       }
     }
   }).catch(function(err) {
-    console.log('Open chat refresh failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
+    debugLog('Open chat refresh failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1267,7 +1281,7 @@ function verifyReaction(chatId, messageId, token) {
     }
     return reactionApplied(message, token);
   }).catch(function(err) {
-    console.log('Reaction verify failed: ' + (err && err.message ? err.message : err));
+    debugLog('Reaction verify failed: ' + (err && err.message ? err.message : err));
     return false;
   });
 }
@@ -1308,21 +1322,23 @@ function leaveChat(chatId) {
   }
 }
 
+function singleMessageSignature(message) {
+  return [
+    message.id,
+    message.text,
+    message.reactions || '',
+    message.meta || '',
+    message.reply_sender || '',
+    message.reply_text || '',
+    message.forward_sender || '',
+    message.forward_text || '',
+    message.image_token || '',
+    message.outgoing ? '1' : '0'
+  ].join('|');
+}
+
 function messageSignature(messages) {
-  return messages.map(function(message) {
-    return [
-      message.id,
-      message.text,
-      message.reactions || '',
-      message.meta || '',
-      message.reply_sender || '',
-      message.reply_text || '',
-      message.forward_sender || '',
-      message.forward_text || '',
-      message.image_token || '',
-      message.outgoing ? '1' : '0'
-    ].join('|');
-  }).join('~');
+  return (messages || []).map(singleMessageSignature).join('~');
 }
 
 function reactionGlyph(token) {
@@ -1417,7 +1433,7 @@ function reactionApplied(message, token) {
 
 function markRead(chatId) {
   activePgjs().markRead(chatId).catch(function(err) {
-    console.log('Mark read failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
+    debugLog('Mark read failed for ' + chatId + ': ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1507,7 +1523,7 @@ function prefetchOlderMessages(chatId, beforeId) {
     mergeHistoryMessages(chatId, older);
   }).catch(function(err) {
     delete pagePrefetching[key];
-    console.log('Older prefetch failed: ' + (err && err.message ? err.message : err));
+    debugLog('Older prefetch failed: ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1531,7 +1547,7 @@ function prefetchNewerMessages(chatId, afterId) {
     mergeHistoryMessages(chatId, newer);
   }).catch(function(err) {
     delete pagePrefetching[key];
-    console.log('Newer prefetch failed: ' + (err && err.message ? err.message : err));
+    debugLog('Newer prefetch failed: ' + (err && err.message ? err.message : err));
   });
 }
 
@@ -1629,7 +1645,7 @@ function sendImage(chatId, messageId) {
       return;
     }
     var detail = err && err.message ? err.message : String(err || 'unknown image error');
-    console.log('Image failed for ' + messageId + ': ' + detail);
+    debugLog('Image failed for ' + messageId + ': ' + detail);
     imageTransferActive = false;
     var failed = {};
     failed[MessageKeys.Type] = 'image_error';
@@ -1752,7 +1768,7 @@ function sendChatAvatars() {
     avatarIndex++;
     scheduleChatAvatars(80);
   }).catch(function(err) {
-    console.log('Avatar failed for ' + chat.id + ': ' + (err && err.message ? err.message : err));
+    debugLog('Avatar failed for ' + chat.id + ': ' + (err && err.message ? err.message : err));
     avatarIndex++;
     scheduleChatAvatars(20);
   });
@@ -1760,7 +1776,7 @@ function sendChatAvatars() {
 
 Pebble.addEventListener('ready', function() {
   configureForPlatform();
-  console.log('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
+  debugLog('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
   sendSettings();
   startConnectionKeepalive();
   getChats(false);
@@ -1832,7 +1848,7 @@ Pebble.addEventListener('webviewclosed', function(event) {
   try {
     data = JSON.parse(decodeURIComponent(event.response));
   } catch (e) {
-    console.log('settings parse failed: ' + e.message);
+    debugLog('settings parse failed: ' + e.message);
     return;
   }
 
@@ -1846,7 +1862,7 @@ Pebble.addEventListener('webviewclosed', function(event) {
     status('Telegram connected');
     getChats(false);
   }).catch(function(err) {
-    console.log('Auth failed: ' + (err && err.message ? err.message : String(err || 'unknown error')));
+    debugLog('Auth failed: ' + (err && err.message ? err.message : String(err || 'unknown error')));
     error(err && err.message ? err.message : 'Auth failed');
   });
 });
