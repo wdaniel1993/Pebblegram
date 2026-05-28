@@ -41,7 +41,6 @@ Pebblegram 2.9 is the current live Telegram build.
 - Treated webpage/link previews as text rows on the watch so repo/share links do not enter the image preview path.
 - Improved auth/session recovery for duplicated or revoked Telegram auth keys and removed redundant startup connection attempts.
 - Limited Telegram login-code requests to one per phone number every five minutes and added a saved-session backup to reduce accidental login loss.
-- Added a mock backend stress timeline for emulator testing of media, reactions, paging, replies, and long mixed histories.
 - Updated the app menu icon and bundled release PBW for 2.9.
 
 ## Quick Start

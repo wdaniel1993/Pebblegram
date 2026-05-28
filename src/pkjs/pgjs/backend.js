@@ -3,10 +3,6 @@ var telegram = require('./telegram');
 var image = require('./image');
 
 function create(options) {
-  if (options && options.mock) {
-    return require('./mock_backend').create(options);
-  }
-
   auth.setStatusHandler(options.status);
 
   return {

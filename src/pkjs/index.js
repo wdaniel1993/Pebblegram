@@ -1,7 +1,6 @@
 var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
 
-var USE_MOCK_BACKEND = false;
 var DEBUG_LOGS = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
@@ -81,7 +80,6 @@ function settingsPageUrl() {
 function activePgjs() {
   if (!pgjs) {
     pgjs = pgjsBackend.create({
-      mock: USE_MOCK_BACKEND,
       cannedReplies: cannedReplies,
       status: status
     });
@@ -149,10 +147,15 @@ function debugLog(message) {
 }
 
 function logDuration(label, startedAt) {
-  debugLog(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  if (DEBUG_LOGS) {
+    console.log(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  }
 }
 
 function timed(label, promise) {
+  if (!DEBUG_LOGS) {
+    return promise;
+  }
   var startedAt = Date.now();
   return promise.then(function(value) {
     logDuration(label, startedAt);
@@ -216,7 +219,7 @@ function sendToWatch(payload) {
   if (!trimSendQueueFor(payload)) {
     return;
   }
-  sendQueue.push({payload: payload, queuedAt: Date.now()});
+  sendQueue.push({payload: payload, queuedAt: DEBUG_LOGS ? Date.now() : 0});
   flushQueue();
 }
 
@@ -236,15 +239,24 @@ function isMessageTransferPayload(payload) {
   return type === 'messages_start' || type === 'message' || type === 'message_prepend' || type === 'message_append' || type === 'messages_done';
 }
 
+function pruneQueuedPayloads(match) {
+  var write = 0;
+  for (var read = 0; read < sendQueue.length; read += 1) {
+    if ((read === 0 && sending) || !match(sendQueue[read].payload)) {
+      sendQueue[write] = sendQueue[read];
+      write += 1;
+    }
+  }
+  sendQueue.length = write;
+}
+
 function cancelQueuedMessageTransfers() {
   messageStreamSeq += 1;
   if (messageStreamTimer) {
     clearTimeout(messageStreamTimer);
     messageStreamTimer = null;
   }
-  sendQueue = sendQueue.filter(function(entry, index) {
-    return index === 0 && sending ? true : !isMessageTransferPayload(entry.payload);
-  });
+  pruneQueuedPayloads(isMessageTransferPayload);
 }
 
 function cancelQueuedImageTransfers() {
@@ -254,9 +266,7 @@ function cancelQueuedImageTransfers() {
   if (pgjs && typeof pgjs.cancelImageRequests === 'function') {
     pgjs.cancelImageRequests();
   }
-  sendQueue = sendQueue.filter(function(entry, index) {
-    return index === 0 && sending ? true : !isImageTransferPayload(entry.payload);
-  });
+  pruneQueuedPayloads(isImageTransferPayload);
 }
 
 function transferId(payload) {
@@ -283,9 +293,7 @@ function cancelQueuedAvatarTransfers() {
     clearTimeout(avatarTimer);
     avatarTimer = null;
   }
-  sendQueue = sendQueue.filter(function(entry, index) {
-    return index === 0 && sending ? true : !isAvatarTransferPayload(entry.payload);
-  });
+  pruneQueuedPayloads(isAvatarTransferPayload);
 }
 
 function flushQueue() {
@@ -299,9 +307,9 @@ function flushQueue() {
   var entry = sendQueue[0];
   Pebble.sendAppMessage(entry.payload, function() {
     sendFailureDelay = 250;
-    if (entry.payload[MessageKeys.Type] === 'image_done' ||
+    if (DEBUG_LOGS && (entry.payload[MessageKeys.Type] === 'image_done' ||
         entry.payload[MessageKeys.Type] === 'chats_done' ||
-        entry.payload[MessageKeys.Type] === 'messages_done') {
+        entry.payload[MessageKeys.Type] === 'messages_done')) {
       logDuration('AppMessage ' + entry.payload[MessageKeys.Type] + ' queue', entry.queuedAt);
     }
     if (entry.payload[MessageKeys.Type] === 'image_done' ||
@@ -518,6 +526,18 @@ function persistentMessageCacheOrder() {
   }
 }
 
+function removeArrayValue(items, value) {
+  var write = 0;
+  for (var read = 0; read < items.length; read += 1) {
+    if (items[read] !== value) {
+      items[write] = items[read];
+      write += 1;
+    }
+  }
+  items.length = write;
+  return items;
+}
+
 function savePersistentMessages(chatId, messages) {
   var id = String(chatId || '');
   if (!id) {
@@ -529,9 +549,7 @@ function savePersistentMessages(chatId, messages) {
       return;
     }
     localStorage.setItem(persistentMessageCacheKey(id), JSON.stringify(rows));
-    var order = persistentMessageCacheOrder().filter(function(item) {
-      return item !== id;
-    });
+    var order = removeArrayValue(persistentMessageCacheOrder(), id);
     order.push(id);
     while (order.length > MAX_CACHED_CHATS) {
       localStorage.removeItem(persistentMessageCacheKey(order.shift()));
@@ -563,9 +581,7 @@ function removePersistentMessages(chatId) {
   }
   localStorage.removeItem(persistentMessageCacheKey(id));
   try {
-    var order = persistentMessageCacheOrder().filter(function(item) {
-      return item !== id;
-    });
+    var order = removeArrayValue(persistentMessageCacheOrder(), id);
     localStorage.setItem(MESSAGE_CACHE_ORDER_KEY, JSON.stringify(order));
   } catch (e) {}
 }
@@ -713,9 +729,7 @@ function removeChatCache(chatId, clearPersistent) {
       delete pagePrefetching[key];
     }
   });
-  chatCacheOrder = chatCacheOrder.filter(function(item) {
-    return item !== id;
-  });
+  removeArrayValue(chatCacheOrder, id);
   if (clearPersistent !== false) {
     removePersistentMessages(id);
   }
@@ -726,9 +740,7 @@ function touchChatCache(chatId) {
   if (!id) {
     return;
   }
-  chatCacheOrder = chatCacheOrder.filter(function(item) {
-    return item !== id;
-  });
+  removeArrayValue(chatCacheOrder, id);
   chatCacheOrder.push(id);
 }
 
@@ -827,14 +839,15 @@ function messageWindowAroundAnchor(rows, anchorId, olderAhead) {
 }
 
 function sendOlderWindow(chatId, anchorId, beforeId, silent) {
-  var current = messageStore[chatId] || [];
   var rows = cachedOlderRows(chatId, beforeId || anchorId, OLDER_MESSAGE_ROWS);
   var merged;
   if (!rows.length) {
     done('messages_done', 0, 0, silent ? 'silent' : null);
     return 0;
   }
-  merged = mergeHistoryMessages(chatId, rows.concat(current));
+  touchChatCache(chatId);
+  trimChatCaches(currentChatId || chatId);
+  merged = messageHistoryStore[chatId] || [];
   messageStore[chatId] = messageWindowAroundAnchor(merged, anchorId, MESSAGE_EDGE_BUFFER_ROWS);
   messageStoreNewest[chatId] = false;
   sendMessageWindow(chatId, messageStore[chatId], 'older', silent, messageStore[chatId].length);
@@ -842,14 +855,15 @@ function sendOlderWindow(chatId, anchorId, beforeId, silent) {
 }
 
 function sendNewerWindow(chatId, anchorId, afterId, silent) {
-  var current = messageStore[chatId] || [];
   var rows = cachedNewerRows(chatId, afterId || anchorId, NEWER_MESSAGE_ROWS);
   var merged;
   if (!rows.length) {
     done('messages_done', 0, 0, silent ? 'silent' : null);
     return 0;
   }
-  merged = mergeHistoryMessages(chatId, current.concat(rows));
+  touchChatCache(chatId);
+  trimChatCaches(currentChatId || chatId);
+  merged = messageHistoryStore[chatId] || [];
   messageStore[chatId] = messageWindowAroundAnchor(merged, anchorId,
                                                      MAX_MESSAGE_ROWS - MESSAGE_EDGE_BUFFER_ROWS - 1);
   messageStoreNewest[chatId] = false;
@@ -1098,7 +1112,7 @@ function handleTelegramUpdate(update) {
 
 
 function startConnectionKeepalive() {
-  if (connectionKeepaliveTimer || USE_MOCK_BACKEND) {
+  if (connectionKeepaliveTimer) {
     return;
   }
   connectionKeepaliveTimer = setInterval(function() {
@@ -1622,7 +1636,7 @@ function chatAction(kind, chatId) {
 }
 
 function sendImage(chatId, messageId) {
-  var startedAt = Date.now();
+  var startedAt = DEBUG_LOGS ? Date.now() : 0;
   cancelQueuedAvatarTransfers();
   cancelQueuedImageTransfers();
   imageTransferActive = true;
@@ -1637,7 +1651,9 @@ function sendImage(chatId, messageId) {
     if (requestSeq !== imageRequestSeq || currentChatId !== chatId) {
       return;
     }
-    logDuration('image prepare ' + messageId, startedAt);
+    if (DEBUG_LOGS) {
+      logDuration('image prepare ' + messageId, startedAt);
+    }
     sendImageStatus(messageId, 'Sending');
     sendImageBytes(messageId, bytes);
   }).catch(function(err) {
@@ -1776,7 +1792,7 @@ function sendChatAvatars() {
 
 Pebble.addEventListener('ready', function() {
   configureForPlatform();
-  debugLog('Pebblegram JS ready, backend=' + (USE_MOCK_BACKEND ? 'mock' : 'pgjs') + ', canned=' + cannedReplies());
+  debugLog('Pebblegram JS ready, backend=pgjs, canned=' + cannedReplies());
   sendSettings();
   startConnectionKeepalive();
   getChats(false);

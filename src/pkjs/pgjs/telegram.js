@@ -678,7 +678,9 @@ function downloadTallPhotoBytes(client, message, photo, options) {
   if (!candidate || !option) {
     return null;
   }
-  debugLog('Tall photo using Telegram size ' + option + ' for ' + dimensions.width + 'x' + dimensions.height);
+  if (DEBUG_LOGS) {
+    debugLog('Tall photo using Telegram size ' + option + ' for ' + dimensions.width + 'x' + dimensions.height);
+  }
   return downloadImageBytes(client, message, {thumb: option, cancelled: options && options.cancelled}).catch(function(messageErr) {
     throwIfImageRequestCancelled(options);
     return downloadImageBytes(client, photo, {thumb: option, cancelled: options && options.cancelled}).catch(function(photoErr) {
@@ -772,7 +774,9 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
     return attempt.run().catch(function(err) {
       var detail = attempt.label + ': ' + (err && err.message ? err.message : err);
       errors.push(detail);
-      debugLog('Media preview attempt failed ' + detail);
+      if (DEBUG_LOGS) {
+        debugLog('Media preview attempt failed ' + detail);
+      }
       return tryNext();
     });
   }
@@ -1132,7 +1136,9 @@ function dialogRows(dialogs, folderName, folderOrder) {
     var id = entityId(entity);
     var preview = dialog.message ? displayMessageText(dialog.message) : '';
     if (isUnsafeLargeChannel(entity)) {
-      debugLog('Skipping large/unsupported channel ' + (displayName(entity) || id) + ' members=' + channelParticipantCount(entity));
+      if (DEBUG_LOGS) {
+        debugLog('Skipping large/unsupported channel ' + (displayName(entity) || id) + ' members=' + channelParticipantCount(entity));
+      }
       return null;
     }
     if (folderName) {

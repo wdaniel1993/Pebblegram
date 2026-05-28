@@ -269,7 +269,9 @@ function encodedLooksBlank(encoded, sourceStats) {
 }
 
 function logDuration(label, startedAt) {
-  debugLog(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  if (DEBUG_LOGS) {
+    console.log(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  }
 }
 
 function nextTurn() {
@@ -399,7 +401,9 @@ function safeCompactPng(source, width, height, colors, maxBytes, maskCircle) {
     for (colorIndex = 0; colorIndex < colorSteps.length; colorIndex += 1) {
       fallback = encodePng(source, nextWidth, nextHeight, colorSteps[colorIndex], maskCircle, false);
       if ((!maxBytes || fallback.length <= maxBytes) && !encodedLooksBlank(fallback, sourceStats)) {
-        debugLog('image blank fallback used at ' + nextWidth + 'x' + nextHeight);
+        if (DEBUG_LOGS) {
+          debugLog('image blank fallback used at ' + nextWidth + 'x' + nextHeight);
+        }
         return fallback;
       }
     }
@@ -412,6 +416,18 @@ function cacheKey(chatId, messageId, width, height, colors, maxBytes) {
   return [IMAGE_CACHE_VERSION, chatId, messageId, width, height, colors, maxBytes].join(':');
 }
 
+function removeArrayValue(items, value) {
+  var write = 0;
+  for (var read = 0; read < items.length; read += 1) {
+    if (items[read] !== value) {
+      items[write] = items[read];
+      write += 1;
+    }
+  }
+  items.length = write;
+  return items;
+}
+
 function isTallSource(source) {
   return source && source.width > 0 && source.height / source.width >= TALL_IMAGE_ASPECT;
 }
@@ -420,10 +436,14 @@ function compactMessagePngAsync(source, width, height, colors, maxBytes, options
   var tall = isTallSource(source);
   var watchSafeMaxBytes = tall ? Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES) : maxBytes;
   if (tall && watchSafeMaxBytes < maxBytes) {
-    debugLog('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
+    if (DEBUG_LOGS) {
+      debugLog('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
+    }
     return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
                            [1, 0.85, 0.7, 0.56, 0.45, 0.36, 0.32], 'contain', options).catch(function(tallErr) {
-      debugLog('tall image compact path: ' + (tallErr && tallErr.message ? tallErr.message : tallErr));
+      if (DEBUG_LOGS) {
+        debugLog('tall image compact path: ' + (tallErr && tallErr.message ? tallErr.message : tallErr));
+      }
       throwIfCancelled(options);
       return compactPngAsync(source, width, height, 16, watchSafeMaxBytes, false, true,
                              [0.5, 0.42, 0.35, 0.3, 0.26], 'contain', options);
@@ -434,7 +454,9 @@ function compactMessagePngAsync(source, width, height, colors, maxBytes, options
     if (!tall) {
       throw err;
     }
-    debugLog('tall image encode fallback: ' + (err && err.message ? err.message : err));
+    if (DEBUG_LOGS) {
+      debugLog('tall image encode fallback: ' + (err && err.message ? err.message : err));
+    }
     throwIfCancelled(options);
     return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
                            [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.32],
@@ -443,9 +465,7 @@ function compactMessagePngAsync(source, width, height, colors, maxBytes, options
 }
 
 function noteImageCacheUse(key) {
-  imageCacheOrder = imageCacheOrder.filter(function(item) {
-    return item !== key;
-  });
+  removeArrayValue(imageCacheOrder, key);
   imageCacheOrder.push(key);
 }
 
@@ -490,9 +510,7 @@ function persistentCacheNoteUse(key) {
   var order;
   try {
     order = JSON.parse(localStorage.getItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY) || '[]');
-    order = order.filter(function(item) {
-      return item !== key;
-    });
+    removeArrayValue(order, key);
     order.push(key);
     localStorage.setItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY, JSON.stringify(order));
   } catch (e) {}
@@ -512,9 +530,7 @@ function persistentCacheSet(key, bytes) {
   var encoded;
   try {
     order = JSON.parse(localStorage.getItem(PERSISTENT_IMAGE_CACHE_ORDER_KEY) || '[]');
-    order = order.filter(function(item) {
-      return item !== key;
-    });
+    removeArrayValue(order, key);
     while (order.length >= MAX_PERSISTENT_IMAGE_CACHE_ITEMS) {
       localStorage.removeItem('pgjs.imageCache.' + order.shift());
     }
@@ -542,27 +558,37 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
   options = options || {};
   if (imageCache[key]) {
     noteImageCacheUse(key);
-    debugLog('image cache hit ' + label);
+    if (DEBUG_LOGS) {
+      debugLog('image cache hit ' + label);
+    }
     imageStatus(options, 'Cache hit');
     return Promise.resolve(imageCache[key]);
   }
   var cached = persistentCacheGet(key);
   if (cached) {
-    debugLog('persistent image cache hit ' + label);
+    if (DEBUG_LOGS) {
+      debugLog('persistent image cache hit ' + label);
+    }
     imageStatus(options, 'Storage cache hit');
     return Promise.resolve(cached);
   }
   if (imageInflight[key] && !options.noInflightReuse) {
-    debugLog('image inflight hit ' + label);
+    if (DEBUG_LOGS) {
+      debugLog('image inflight hit ' + label);
+    }
     return imageInflight[key];
   }
   if (imageInflight[key]) {
-    debugLog('image inflight bypass ' + label);
+    if (DEBUG_LOGS) {
+      debugLog('image inflight bypass ' + label);
+    }
   }
-  var downloadStartedAt = Date.now();
+  var downloadStartedAt = DEBUG_LOGS ? Date.now() : 0;
   pipeline = withTimeout(Promise.resolve().then(downloader), 'image pipeline timed out', MEDIA_PIPELINE_TIMEOUT_MS).then(function(raw) {
-    logDuration('image download ' + label, downloadStartedAt);
-    var encodeStartedAt = Date.now();
+    if (DEBUG_LOGS) {
+      logDuration('image download ' + label, downloadStartedAt);
+    }
+    var encodeStartedAt = DEBUG_LOGS ? Date.now() : 0;
     var bytes = toUint8Array(raw);
     var source;
     if (!bytes || !bytes.length) {
@@ -577,7 +603,9 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
       Promise.resolve(safeCompactPng(source, width, height, colors, maxBytes, true)) :
       compactMessagePngAsync(source, width, height, colors, maxBytes, options)).then(function(encoded) {
       throwIfCancelled(options);
-      logDuration('image encode ' + label, encodeStartedAt);
+      if (DEBUG_LOGS) {
+        logDuration('image encode ' + label, encodeStartedAt);
+      }
       imageStatus(options, 'Caching');
       cacheSet(key, encoded);
       return encoded;
