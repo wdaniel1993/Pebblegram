@@ -4,6 +4,7 @@ var clientPromise = null;
 var currentClient = null;
 var AUTH_TIMEOUT_MS = 30000;
 var CODE_TIMEOUT_MS = 90000;
+var CODE_REQUEST_MIN_INTERVAL_MS = 5 * 60 * 1000;
 var AUTH_DC = {
   id: 1,
   host: 'pluto.web.telegram.org'
@@ -188,13 +189,22 @@ function pinAuthDc(client, config) {
 
 function requestCode(gram, config, creds) {
   var client = createClient(gram, config, '');
+  var codeRequestAge = cache.codeRequestAgeMs(creds.phone);
   pinAuthDc(client, config);
+  if (codeRequestAge !== null && codeRequestAge < CODE_REQUEST_MIN_INTERVAL_MS) {
+    var waitSeconds = Math.ceil((CODE_REQUEST_MIN_INTERVAL_MS - codeRequestAge) / 1000);
+    if (creds.phoneCodeHash && creds.pendingSession) {
+      return Promise.reject(new Error('A Telegram login code was already requested. Enter that code, or wait ' + waitSeconds + ' seconds before requesting another.'));
+    }
+    return Promise.reject(new Error('Telegram login code recently requested. Wait ' + waitSeconds + ' seconds before requesting another.'));
+  }
   return timeout(
     Promise.resolve().then(function() {
       reportStatus('Connecting...');
       return client.connect();
     }).then(function() {
       reportStatus('Sending code...');
+      cache.noteCodeRequest(creds.phone);
       return client.invoke(new gram.Api.auth.SendCode({
         phoneNumber: creds.phone,
         apiId: config.apiId,

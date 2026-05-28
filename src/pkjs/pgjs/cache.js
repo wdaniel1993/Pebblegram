@@ -20,6 +20,7 @@ function getNumber(name, fallback) {
 
 function clearSession() {
   localStorage.removeItem(PREFIX + 'session');
+  localStorage.removeItem(PREFIX + 'sessionBackup');
   localStorage.removeItem(PREFIX + 'authStage');
   localStorage.removeItem(PREFIX + 'code');
   localStorage.removeItem(PREFIX + 'password');
@@ -36,17 +37,27 @@ function credentials() {
     password: get('password', ''),
     phoneCodeHash: get('phoneCodeHash', ''),
     pendingSession: get('pendingSession', ''),
-    session: get('session', ''),
+    session: get('session', '') || get('sessionBackup', ''),
     authStage: get('authStage', '')
   };
 }
 
 function saveSettings(data) {
+  var nextApiId;
+  var nextApiHash;
   if (data.apiId !== undefined) {
-    set('apiId', String(data.apiId).trim());
+    nextApiId = String(data.apiId).trim();
+    if (get('apiId', '') && get('apiId', '') !== nextApiId) {
+      clearSession();
+    }
+    set('apiId', nextApiId);
   }
   if (data.apiHash !== undefined) {
-    set('apiHash', String(data.apiHash).trim());
+    nextApiHash = String(data.apiHash).trim();
+    if (get('apiHash', '') && nextApiHash && get('apiHash', '') !== nextApiHash) {
+      clearSession();
+    }
+    set('apiHash', nextApiHash);
   }
   if (data.phone !== undefined) {
     if (get('phone', '') !== String(data.phone).trim()) {
@@ -76,6 +87,20 @@ function clearCodeRequest() {
   localStorage.removeItem(PREFIX + 'authStage');
 }
 
+function noteCodeRequest(phone) {
+  set('lastCodeRequestAt', String(Date.now()));
+  set('lastCodeRequestPhone', phone || '');
+}
+
+function codeRequestAgeMs(phone) {
+  var requestedAt = getNumber('lastCodeRequestAt', 0);
+  var requestPhone = get('lastCodeRequestPhone', '');
+  if (!requestedAt || requestPhone !== (phone || '')) {
+    return null;
+  }
+  return Date.now() - requestedAt;
+}
+
 function setPhoneCodeRequest(hash, pendingSession) {
   set('phoneCodeHash', hash);
   set('pendingSession', pendingSession);
@@ -84,6 +109,7 @@ function setPhoneCodeRequest(hash, pendingSession) {
 
 function setSession(session) {
   set('session', session);
+  set('sessionBackup', session);
   set('authStage', 'complete');
   localStorage.removeItem(PREFIX + 'code');
   localStorage.removeItem(PREFIX + 'password');
@@ -99,6 +125,8 @@ module.exports = {
   setSession: setSession,
   clearCode: clearCode,
   clearCodeRequest: clearCodeRequest,
+  noteCodeRequest: noteCodeRequest,
+  codeRequestAgeMs: codeRequestAgeMs,
   setPhoneCodeRequest: setPhoneCodeRequest,
   clearSession: clearSession
 };
