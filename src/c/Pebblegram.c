@@ -334,6 +334,7 @@ static void remove_chat_at(int row);
 static void destroy_chat_avatars(void);
 static void mask_avatar_corners(GContext *ctx, GPoint center, int radius, GColor bg_color);
 static void render_messages(void);
+static void preserve_stream_anchor(const char *anchor_id, int anchor_y, bool dirty);
 static void show_chat_view_timer(void *data);
 static void message_timeout_timer_callback(void *data);
 static void cancel_message_timeout(void);
@@ -1640,6 +1641,46 @@ static Message *append_message_slot(void) {
   memset(&s_messages[s_message_count], 0, sizeof(Message));
   s_message_count++;
   return &s_messages[s_message_count - 1];
+}
+
+static void remove_message_at(int index) {
+  char anchor_id[MAX_ID];
+  int anchor_y = 0;
+  anchor_id[0] = '\0';
+  if (index < 0 || index >= s_message_count) {
+    return;
+  }
+  if (s_messages_root) {
+    recalc_message_layout();
+    int anchor_index = index + 1 < s_message_count ? index + 1 : index - 1;
+    if (anchor_index >= 0 && anchor_index < s_message_count) {
+      copy_cstr(anchor_id, sizeof(anchor_id), s_messages[anchor_index].id);
+      anchor_y = s_message_y[anchor_index];
+    }
+  }
+  clear_message_slot(&s_messages[index]);
+  for (int i = index; i < s_message_count - 1; i++) {
+    s_messages[i] = s_messages[i + 1];
+  }
+  memset(&s_messages[s_message_count - 1], 0, sizeof(Message));
+  s_message_count--;
+  if (s_message_count <= 0) {
+    s_selected_message = s_at_newest ? s_message_count : -1;
+  } else if (index < s_message_count) {
+    s_selected_message = index;
+  } else {
+    s_selected_message = s_message_count - 1;
+  }
+  if (s_messages_root) {
+    if (anchor_id[0]) {
+      preserve_stream_anchor(anchor_id, anchor_y, true);
+    } else {
+      recalc_message_layout();
+      set_chat_scroll_offset(s_chat_scroll_offset, false);
+      layer_mark_dirty(s_messages_root);
+      request_next_image();
+    }
+  }
 }
 
 static void preserve_stream_anchor(const char *anchor_id, int anchor_y, bool dirty) {
@@ -3039,8 +3080,13 @@ static void delete_selected_message(void) {
   if (s_selected_message < 0 || s_selected_message >= s_message_count) {
     return;
   }
+  char message_id[MAX_ID];
+  int delete_index = s_selected_message;
+  copy_cstr(message_id, sizeof(message_id), s_messages[s_selected_message].id);
   show_status("Deleting...");
-  send_command("delete_message", s_current_chat_id, NULL, NULL, s_messages[s_selected_message].id);
+  if (send_command("delete_message", s_current_chat_id, NULL, NULL, message_id)) {
+    remove_message_at(delete_index);
+  }
 }
 
 static const ReactionChoice *reaction_grid_choices(void) {
@@ -3876,7 +3922,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   }
 
   if (strcmp(type, "deleted") == 0) {
-    request_messages(s_current_chat_id);
+    char *deleted_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    int deleted_index = find_message_index_by_id(deleted_id);
+    if (deleted_index >= 0) {
+      remove_message_at(deleted_index);
+    }
+    show_status("Deleted");
     return;
   }
 
@@ -4064,7 +4115,7 @@ static const char *action_item_title(int index) {
     static const char *reply_items[] = {
       "Dictate Reply",
       "Canned Message",
-      "Emoji Reply"
+      "Emoji"
     };
     return reply_items[index];
   }
@@ -4072,7 +4123,7 @@ static const char *action_item_title(int index) {
     ActionItem item = action_item_at(index);
     switch (item) {
       case ActionItemCompose:
-        return "New Message";
+        return "Voice";
       case ActionItemCanned:
         return "Canned Message";
       case ActionItemReply:
@@ -4088,7 +4139,7 @@ static const char *action_item_title(int index) {
       case ActionItemFullContext:
         return selected_message_context_is_forward() ? "View Forward" : "View Quote";
       case ActionItemReplyEmoji:
-        return "Emoji Reply";
+        return "Emoji";
       case ActionItemGoToBottom:
         return "Go to Bottom";
       case ActionItemReplyDictate:

@@ -9,7 +9,7 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 
 ## Download
 
-- [Download Pebblegram 3.1 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.1.0/Pebblegram.pbw)
+- [Download Pebblegram 3.2 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.2.0/Pebblegram.pbw)
 
 ## What It Does
 
@@ -18,6 +18,7 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Displays incoming and outgoing chat bubbles
 - Loads inline photo previews, GIF/video still previews, and text link previews
 - Sends replies with Pebble dictation
+- Sends replies with the Emery touch keyboard
 - Sends configurable canned replies
 - Sends emoji replies
 - Sends, updates, and removes Telegram reactions
@@ -28,22 +29,19 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Includes a black-and-white optimized Diorite image path
 - Includes round-screen layout handling for Gabbro
 
-## Changes Since 3.0
+## Changes Since 3.1
 
-Pebblegram 3.1 is the current live Telegram build.
+Pebblegram 3.2 is the current live Telegram build.
 
-- Fixed PebbleOS crashes caused by long links and dense stack-trace text by shortening links to `[Link] domain.com` and compacting technical tokens before they reach the watch.
-- Refined emoji safety so supported emoji stay as glyphs, known unsupported emoji become useful `:name:` aliases, and unknown unsupported emoji fall back safely.
-- Restored the richer reaction picker and added emoji-only sending from the new-message flow.
-- Added sticker/custom emoji label handling when GramJS exposes a usable name or alt value.
-- Reduced Emery watch RAM footprint by about 17.9 KB versus 3.0 without lowering the 15 KB Emery photo payload limit.
-- Moved photo/avatar transfer buffers to exact-size temporary allocations and tightened chunk bounds before image data is copied.
 - Raised Emery photo previews to a 30 KB payload ceiling with higher-resolution phone-side preparation for sharper small text.
-- Updated the bundled release PBW for 3.1.
+- Added the Emery touch keyboard for composing short replies directly on the watch.
+- Kept the keyboard compact with bordered keys, one-key shift, symbol mode, and optimistic outgoing bubbles that become the sent message when Telegram confirms delivery.
+- Made message deletes update the open chat in place instead of reloading the whole thread.
+- Updated the bundled release PBW for 3.2.
 
 ## Quick Start
 
-1. Install [Pebblegram 3.1 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.1.0/Pebblegram.pbw) with the Pebble/Rebble mobile app.
+1. Install [Pebblegram 3.2 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.2.0/Pebblegram.pbw) with the Pebble/Rebble mobile app.
 2. Open Pebblegram settings in the Pebble mobile app.
 3. Enter your Telegram API ID, API hash, and phone number.
 4. Save once to request a Telegram login code.
@@ -87,4 +85,4 @@ For local testing with embedded API credentials, keep them in an ignored environ
 
 ## Status
 
-Pebblegram 3.1 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.
+Pebblegram 3.2 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.

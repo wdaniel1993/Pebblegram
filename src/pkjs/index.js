@@ -1862,6 +1862,7 @@ function deleteMessage(chatId, messageId) {
     var payload = {};
     removeChatCache(chatId);
     payload[MessageKeys.Type] = 'deleted';
+    payload[MessageKeys.MessageId] = String(messageId || '');
     sendToWatch(payload);
   }).catch(function(err) {
     promiseError('Delete failed', err);
