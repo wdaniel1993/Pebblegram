@@ -14,13 +14,13 @@
 #define MAX_META 16
 #define MAX_CONTEXT_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 60, 60, 60, 56, 72, 72, 64)
 #define MAX_ID 24
-#define MAX_IMAGE_ERROR 56
+#define MAX_IMAGE_ERROR 32
 #define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 15000, 15000, 15000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
 #define MAX_LOADED_IMAGES 1
 #define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 120, 96, 96, 96, 156, 156, 118)
 #define IMAGE_FRAME_EXTRA_W PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10, 8, 8, 6, 14, 14, 10)
-#define APP_INBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 2048, 2048, 2048, 2048, 3072, 3072, 3072)
+#define APP_INBOX_SIZE 2048
 #define APP_OUTBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 512, 512, 512, 512, 1024, 1024, 1024)
 #define BW_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 1, 0, 0, 0)
 #define ROUND_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 0, 0, 1)
@@ -177,18 +177,18 @@ static const ReactionChoice REACTION_GRID_CHOICES[] = {
   {"remove", "Remove"}
 };
 
-static const ReactionChoice EMOJI_REPLY_CHOICES[] = {
-  {"👍", "👍"}, {"❤", "❤"}, {"😂", "😂"}, {"😱", "😱"},
-  {"😢", "😢"}, {"😡", "😡"}, {"😀", "😀"}, {"😄", "😄"},
-  {"😭", "😭"}, {"😁", "😁"}, {"😍", "😍"}, {"😘", "😘"},
-  {"😎", "😎"}, {"😳", "😳"}, {"😬", "😬"}, {"😐", "😐"},
-  {"😴", "😴"}, {"😇", "😇"}, {"😈", "😈"}, {"🤮", "🤮"},
-  {"👎", "👎"}, {"🙏", "🙏"}, {"👀", "👀"}, {"💔", "💔"},
-  {"🎉", "🎉"}, {"🍻", "🍻"}, {"🍺", "🍺"}, {"💩", "💩"},
-  {"⌚", "⌚"}, {"✅", "✅"}, {"✨", "✨"}, {"❗", "❗"},
-  {"⭐", "⭐"}, {"💯", "💯"}, {"🤗", "🤗"}, {"🤝", "🤝"},
-  {"🤩", "🤩"}, {"🤪", "🤪"}, {"🤬", "🤬"}, {"🥰", "🥰"},
-  {"🥺", "🥺"}
+static const char *const EMOJI_REPLY_CHOICES[] = {
+  "👍", "❤", "😂", "😱",
+  "😢", "😡", "😀", "😄",
+  "😭", "😁", "😍", "😘",
+  "😎", "😳", "😬", "😐",
+  "😴", "😇", "😈", "🤮",
+  "👎", "🙏", "👀", "💔",
+  "🎉", "🍻", "🍺", "💩",
+  "⌚", "✅", "✨", "❗",
+  "⭐", "💯", "🤗", "🤝",
+  "🤩", "🤪", "🤬", "🥰",
+  "🥺"
 };
 
 static Window *s_main_window;
@@ -216,8 +216,10 @@ static Message *s_message_stage;
 static int s_message_y[MAX_MESSAGES];
 static int s_message_h[MAX_MESSAGES];
 static int s_compose_bubble_y;
-static uint8_t s_image_buffer[MAX_IMAGE_BYTES];
-static uint8_t s_avatar_buffer[MAX_AVATAR_BYTES];
+static uint8_t *s_image_buffer;
+static uint8_t *s_avatar_buffer;
+static uint16_t s_image_buffer_capacity;
+static uint16_t s_avatar_buffer_capacity;
 static char s_image_message_id[MAX_ID];
 static char s_selected_image_focus_id[MAX_ID];
 static char s_avatar_chat_id[MAX_ID];
@@ -249,7 +251,7 @@ static bool s_pending_send_as_reply;
 static char s_current_chat_id[MAX_ID];
 static char s_current_chat_title[48];
 static char s_status_text[64];
-static char s_loading_text[160] = "Loading...";
+static char s_loading_text[96] = "Loading...";
 static char s_chat_refresh_selected_id[MAX_ID];
 static char s_chat_list_selected_id[MAX_ID];
 
@@ -582,6 +584,102 @@ static int find_chat_index_by_id(const char *chat_id) {
   return -1;
 }
 
+static void free_image_transfer_buffer(void) {
+  if (s_image_buffer) {
+    free(s_image_buffer);
+    s_image_buffer = NULL;
+  }
+  s_image_buffer_capacity = 0;
+}
+
+static void free_avatar_transfer_buffer(void) {
+  if (s_avatar_buffer) {
+    free(s_avatar_buffer);
+    s_avatar_buffer = NULL;
+  }
+  s_avatar_buffer_capacity = 0;
+}
+
+static bool ensure_transfer_buffer(uint8_t **buffer, uint16_t *capacity,
+                                   int size, int max_size) {
+  if (size <= 0 || size > max_size) {
+    return false;
+  }
+  if (*buffer && *capacity >= size) {
+    return true;
+  }
+  if (*buffer) {
+    free(*buffer);
+    *buffer = NULL;
+    *capacity = 0;
+  }
+  *buffer = malloc(size);
+  if (!*buffer) {
+    return false;
+  }
+  *capacity = (uint16_t)size;
+  return true;
+}
+
+static bool ensure_image_transfer_buffer(int image_size) {
+  return ensure_transfer_buffer(&s_image_buffer, &s_image_buffer_capacity,
+                                image_size, MAX_IMAGE_BYTES);
+}
+
+static bool ensure_avatar_transfer_buffer(int image_size) {
+  return ensure_transfer_buffer(&s_avatar_buffer, &s_avatar_buffer_capacity,
+                                image_size, MAX_AVATAR_BYTES);
+}
+
+static void reset_image_transfer_state(void) {
+  free_image_transfer_buffer();
+  s_image_message_id[0] = '\0';
+  s_image_size = 0;
+  s_image_received = 0;
+  s_image_expected_offset = 0;
+  s_image_transfer_id = 0;
+}
+
+static void reset_avatar_transfer_state(void) {
+  free_avatar_transfer_buffer();
+  s_avatar_chat_id[0] = '\0';
+  s_avatar_size = 0;
+  s_avatar_received = 0;
+  s_avatar_expected_offset = 0;
+  s_avatar_transfer_id = 0;
+}
+
+static bool transfer_chunk_fits(int offset, int length, int expected_offset,
+                                int total_size, int capacity) {
+  return offset == expected_offset &&
+         offset >= 0 &&
+         length > 0 &&
+         total_size > 0 &&
+         capacity >= total_size &&
+         offset <= total_size &&
+         length <= total_size - offset &&
+         length <= capacity - offset;
+}
+
+static bool ensure_full_text_body(void) {
+  if (s_full_text_body) {
+    return true;
+  }
+  s_full_text_body = malloc(MAX_FULL_TEXT);
+  if (!s_full_text_body) {
+    return false;
+  }
+  s_full_text_body[0] = '\0';
+  return true;
+}
+
+static void free_full_text_body(void) {
+  if (s_full_text_body) {
+    free(s_full_text_body);
+    s_full_text_body = NULL;
+  }
+}
+
 static void destroy_chat_avatar(Chat *chat) {
   if (chat && chat->avatar_bitmap) {
     gbitmap_destroy(chat->avatar_bitmap);
@@ -604,11 +702,7 @@ static void destroy_chat_avatars(void) {
   for (int i = 0; i < MAX_CHATS; i++) {
     destroy_chat_avatar(&s_chats[i]);
   }
-  s_avatar_size = 0;
-  s_avatar_received = 0;
-  s_avatar_expected_offset = 0;
-  s_avatar_transfer_id = 0;
-  s_avatar_chat_id[0] = '\0';
+  reset_avatar_transfer_state();
 }
 
 static void mask_avatar_corners(GContext *ctx, GPoint center, int radius, GColor bg_color) {
@@ -668,11 +762,7 @@ static void destroy_message_images(void) {
     s_messages[i].image_progress = 0;
   }
   s_loaded_image_count = 0;
-  s_image_size = 0;
-  s_image_received = 0;
-  s_image_expected_offset = 0;
-  s_image_transfer_id = 0;
-  s_image_message_id[0] = '\0';
+  reset_image_transfer_state();
   s_selected_image_focus_id[0] = '\0';
 }
 
@@ -857,11 +947,7 @@ static void clear_active_image_request(void) {
   if (message) {
     message->image_requested = false;
   }
-  s_image_message_id[0] = '\0';
-  s_image_size = 0;
-  s_image_received = 0;
-  s_image_expected_offset = 0;
-  s_image_transfer_id = 0;
+  reset_image_transfer_state();
 }
 
 static bool click_is_repeating(ClickRecognizerRef recognizer) {
@@ -2437,6 +2523,7 @@ static void request_next_image(void) {
   message->image_requested = true;
   set_message_image_progress(message, 5);
   copy_cstr(s_image_message_id, sizeof(s_image_message_id), message->image_token);
+  free_image_transfer_buffer();
   s_image_size = 0;
   s_image_received = 0;
   s_image_expected_offset = 0;
@@ -2672,14 +2759,6 @@ static const ReactionChoice *reaction_grid_choices(void) {
   return REACTION_GRID_CHOICES;
 }
 
-static const ReactionChoice *emoji_reply_choices(void) {
-  return EMOJI_REPLY_CHOICES;
-}
-
-static const ReactionChoice *action_grid_choices(void) {
-  return s_action_mode == ActionMenuEmojiReplyGrid ? emoji_reply_choices() : reaction_grid_choices();
-}
-
 static int reaction_grid_count(void) {
   return (int)(sizeof(REACTION_GRID_CHOICES) / sizeof(REACTION_GRID_CHOICES[0]));
 }
@@ -2699,7 +2778,7 @@ static const char *emoji_reply_glyph_at(int index) {
   if (index < 0 || index >= emoji_reply_count()) {
     return "";
   }
-  return emoji_reply_choices()[index].glyph;
+  return EMOJI_REPLY_CHOICES[index];
 }
 
 static void send_selected_reaction(const char *token) {
@@ -3236,11 +3315,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int image_size = tuple_int(iter, MESSAGE_KEY_ImageSize, 0);
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     if (!chat_id || find_chat_index_by_id(chat_id) < 0 || image_size <= 0 || image_size > MAX_AVATAR_BYTES) {
-      s_avatar_chat_id[0] = '\0';
-      s_avatar_size = 0;
-      s_avatar_received = 0;
-      s_avatar_expected_offset = 0;
-      s_avatar_transfer_id = 0;
+      reset_avatar_transfer_state();
+      return;
+    }
+    if (!ensure_avatar_transfer_buffer(image_size)) {
+      reset_avatar_transfer_state();
       return;
     }
     copy_cstr(s_avatar_chat_id, sizeof(s_avatar_chat_id), chat_id);
@@ -3256,18 +3335,16 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int offset = tuple_int(iter, MESSAGE_KEY_Index, -1);
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     Tuple *data = dict_find(iter, MESSAGE_KEY_ImageData);
+    int data_len = data ? data->length : 0;
     if (!chat_id || strcmp(chat_id, s_avatar_chat_id) != 0 || transfer_id != s_avatar_transfer_id || !data ||
-        offset != s_avatar_expected_offset ||
-        offset < 0 || offset + data->length > MAX_AVATAR_BYTES || offset + data->length > s_avatar_size) {
-      s_avatar_chat_id[0] = '\0';
-      s_avatar_size = 0;
-      s_avatar_received = 0;
-      s_avatar_expected_offset = 0;
-      s_avatar_transfer_id = 0;
+        !s_avatar_buffer ||
+        !transfer_chunk_fits(offset, data_len, s_avatar_expected_offset,
+                             s_avatar_size, s_avatar_buffer_capacity)) {
+      reset_avatar_transfer_state();
       return;
     }
-    memcpy(s_avatar_buffer + offset, data->value->data, data->length);
-    s_avatar_received = offset + data->length;
+    memcpy(s_avatar_buffer + offset, data->value->data, data_len);
+    s_avatar_received = offset + data_len;
     s_avatar_expected_offset = s_avatar_received;
     return;
   }
@@ -3277,7 +3354,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     int chat_index = find_chat_index_by_id(chat_id);
     if (chat_index >= 0 && chat_id && strcmp(chat_id, s_avatar_chat_id) == 0 &&
-        transfer_id == s_avatar_transfer_id && s_avatar_received == s_avatar_size) {
+        transfer_id == s_avatar_transfer_id && s_avatar_received == s_avatar_size &&
+        s_avatar_buffer) {
       Chat *chat = &s_chats[chat_index];
       destroy_chat_avatar(chat);
       chat->avatar_bitmap = gbitmap_create_from_png_data(s_avatar_buffer, s_avatar_size);
@@ -3286,11 +3364,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       }
     }
     if (chat_id && strcmp(chat_id, s_avatar_chat_id) == 0) {
-      s_avatar_chat_id[0] = '\0';
-      s_avatar_size = 0;
-      s_avatar_received = 0;
-      s_avatar_expected_offset = 0;
-      s_avatar_transfer_id = 0;
+      reset_avatar_transfer_state();
     }
     return;
   }
@@ -3314,8 +3388,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
         layer_mark_dirty(s_messages_root);
       }
       if (message_id && strcmp(message_id, s_image_message_id) == 0) {
-        s_image_message_id[0] = '\0';
-        s_image_transfer_id = 0;
+        reset_image_transfer_state();
       }
       request_next_image();
       return;
@@ -3323,6 +3396,20 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 	    if (image_index == s_selected_message || message_needs_decode_headroom(message, image_size)) {
 	      destroy_other_message_images(message);
 	    }
+    if (!ensure_image_transfer_buffer(image_size)) {
+      destroy_other_message_images(message);
+    }
+    if (!ensure_image_transfer_buffer(image_size)) {
+      message->image_requested = false;
+      message->image_failed = true;
+      set_message_image_error(message, "Photo memory low");
+      reset_image_transfer_state();
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      request_next_image();
+      return;
+    }
     copy_cstr(s_image_message_id, sizeof(s_image_message_id), message_id);
     s_image_size = image_size;
 	    s_image_received = 0;
@@ -3357,12 +3444,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int offset = tuple_int(iter, MESSAGE_KEY_Index, -1);
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     Tuple *data = dict_find(iter, MESSAGE_KEY_ImageData);
+    int data_len = data ? data->length : 0;
     if (!message_id || strcmp(message_id, s_image_message_id) != 0 ||
         transfer_id != s_image_transfer_id || !data) {
       return;
     }
-    if (offset != s_image_expected_offset ||
-        offset < 0 || offset + data->length > MAX_IMAGE_BYTES || offset + data->length > s_image_size) {
+    if (!s_image_buffer ||
+        !transfer_chunk_fits(offset, data_len, s_image_expected_offset,
+                             s_image_size, s_image_buffer_capacity)) {
       APP_LOG(APP_LOG_LEVEL_WARNING, "Image transfer gap for %s at %d expected %d",
               message_id, offset, s_image_expected_offset);
       Message *message = find_message_by_image_token(message_id);
@@ -3378,8 +3467,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       request_next_image();
       return;
     }
-    memcpy(s_image_buffer + offset, data->value->data, data->length);
-    s_image_received = offset + data->length;
+    memcpy(s_image_buffer + offset, data->value->data, data_len);
+    s_image_received = offset + data_len;
     s_image_expected_offset = s_image_received;
     Message *message = find_message_by_image_token(message_id);
     if (message) {
@@ -3401,7 +3490,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     bool is_active_image = message_id && strcmp(message_id, s_image_message_id) == 0 &&
                            transfer_id == s_image_transfer_id;
     if (message && is_active_image) {
-      if (should_keep_image && s_image_received == s_image_size) {
+      if (should_keep_image && s_image_received == s_image_size && s_image_buffer) {
         destroy_message_bitmap(message);
         if (s_loaded_image_count > 0 &&
             (image_index == s_selected_message || message_needs_decode_headroom(message, s_image_size))) {
@@ -3437,11 +3526,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
         app_timer_cancel(s_image_retry_timer);
         s_image_retry_timer = NULL;
       }
-      s_image_size = 0;
-      s_image_received = 0;
-      s_image_expected_offset = 0;
-      s_image_transfer_id = 0;
-      s_image_message_id[0] = '\0';
+      reset_image_transfer_state();
     }
     request_next_image();
     return;
@@ -3470,11 +3555,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
         app_timer_cancel(s_image_retry_timer);
         s_image_retry_timer = NULL;
       }
-      s_image_message_id[0] = '\0';
-      s_image_size = 0;
-      s_image_received = 0;
-      s_image_expected_offset = 0;
-      s_image_transfer_id = 0;
+      reset_image_transfer_state();
     }
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
@@ -3557,8 +3638,11 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
       message->image_requested = true;
     }
     if (message_id && strcmp(message_id, s_image_message_id) == 0) {
+      free_image_transfer_buffer();
       s_image_size = 0;
       s_image_received = 0;
+      s_image_expected_offset = 0;
+      s_image_transfer_id = 0;
     }
     schedule_image_retry();
     if (s_messages_root) {
@@ -3810,7 +3894,6 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
   }
 
   if (s_action_mode == ActionMenuReactionGrid || s_action_mode == ActionMenuEmojiReplyGrid) {
-    const ReactionChoice *choices = action_grid_choices();
     int cols = 3;
     int cell_h = ROUND_UI ? 40 : 44;
     int cell_w = content_w / cols;
@@ -3841,13 +3924,16 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
         graphics_fill_rect(ctx, cell, 4, GCornersAll);
       }
       graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorLightGray);
-      if (strcmp(choices[i].token, "remove") == 0) {
-        graphics_draw_text(ctx, choices[i].glyph,
+      if (s_action_mode == ActionMenuReactionGrid &&
+          strcmp(reaction_grid_choices()[i].token, "remove") == 0) {
+        graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
                            fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                            GRect(cell.origin.x, cell.origin.y + 10, cell.size.w, cell.size.h - 10),
                            GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       } else {
-        graphics_draw_text(ctx, choices[i].glyph,
+        const char *glyph = s_action_mode == ActionMenuEmojiReplyGrid ?
+                            emoji_reply_glyph_at(i) : reaction_grid_choices()[i].glyph;
+        graphics_draw_text(ctx, glyph,
                            fonts_get_system_font(FONT_KEY_GOTHIC_28),
                            GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
                            GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -3938,6 +4024,7 @@ static void action_window_unload(Window *window) {
     layer_destroy(s_action_layer);
     s_action_layer = NULL;
   }
+  free_full_text_body();
   window_destroy(window);
   if (s_action_window == window) {
     s_action_window = NULL;
@@ -4038,28 +4125,30 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         break;
       case ActionItemFullText:
         s_full_text_context = true;
-        if (has_selected_message()) {
-          s_full_text_title[0] = '\0';
-          copy_cstr(s_full_text_body, MAX_FULL_TEXT, s_messages[s_selected_message].text);
-          send_command_with_status("get_message_text", s_current_chat_id, NULL, NULL,
-                                   s_messages[s_selected_message].id, false);
+        if (!has_selected_message() || !ensure_full_text_body()) {
+          show_status("Memory low");
+          break;
         }
+        s_full_text_title[0] = '\0';
+        copy_cstr(s_full_text_body, MAX_FULL_TEXT, s_messages[s_selected_message].text);
+        send_command_with_status("get_message_text", s_current_chat_id, NULL, NULL,
+                                 s_messages[s_selected_message].id, false);
         s_action_mode = ActionMenuFullText;
         s_full_text_scroll_offset = 0;
         layer_mark_dirty(s_action_layer);
         break;
       case ActionItemFullContext:
         s_full_text_context = true;
-        if (has_selected_message()) {
-          char body[MAX_CONTEXT_TEXT];
-          message_context_strings(&s_messages[s_selected_message], s_full_text_title,
-                                  sizeof(s_full_text_title), body, sizeof(body));
-          if (s_full_text_body) {
-            copy_cstr(s_full_text_body, MAX_FULL_TEXT, body);
-          }
-          send_command_with_status("get_context", s_current_chat_id, NULL, NULL,
-                                   s_messages[s_selected_message].id, false);
+        if (!has_selected_message() || !ensure_full_text_body()) {
+          show_status("Memory low");
+          break;
         }
+        char body[MAX_CONTEXT_TEXT];
+        message_context_strings(&s_messages[s_selected_message], s_full_text_title,
+                                sizeof(s_full_text_title), body, sizeof(body));
+        copy_cstr(s_full_text_body, MAX_FULL_TEXT, body);
+        send_command_with_status("get_context", s_current_chat_id, NULL, NULL,
+                                 s_messages[s_selected_message].id, false);
         s_action_mode = ActionMenuFullText;
         s_full_text_scroll_offset = 0;
         layer_mark_dirty(s_action_layer);
@@ -4180,6 +4269,9 @@ static void action_back_click_handler(ClickRecognizerRef recognizer, void *conte
   if (s_action_mode == ActionMenuCanned || s_action_mode == ActionMenuConfirm ||
       s_action_mode == ActionMenuReply || s_action_mode == ActionMenuReactionGrid ||
       s_action_mode == ActionMenuEmojiReplyGrid || s_action_mode == ActionMenuFullText) {
+    if (s_action_mode == ActionMenuFullText) {
+      free_full_text_body();
+    }
     s_action_mode = ActionMenuMain;
     s_action_selected = 0;
     layer_mark_dirty(s_action_layer);
@@ -4432,10 +4524,6 @@ static void init(void) {
   s_view_state = ViewStateChatList;
   s_selected_message = -1;
   s_chats_loading = true;
-  s_full_text_body = malloc(MAX_FULL_TEXT);
-  if (s_full_text_body) {
-    s_full_text_body[0] = '\0';
-  }
   light_enable(false);
 
   app_message_register_inbox_received(inbox_received_callback);
@@ -4469,10 +4557,9 @@ static void deinit(void) {
   if (s_dictation_session) {
     dictation_session_destroy(s_dictation_session);
   }
-  if (s_full_text_body) {
-    free(s_full_text_body);
-    s_full_text_body = NULL;
-  }
+  free_image_transfer_buffer();
+  free_avatar_transfer_buffer();
+  free_full_text_body();
   window_destroy(s_main_window);
 }
 

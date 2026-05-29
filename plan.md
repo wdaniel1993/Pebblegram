@@ -186,6 +186,10 @@ Priority: after reliability review, unless a fix needs memory headroom earlier.
 
 Goal: create room for features without repeatedly shrinking the photo buffer.
 
+Status: first aggressive Emery/watch RAM pass complete; build passed. Needs
+live/on-device confirmation for photo/avatar loading and full-text view after the
+buffer lifetime changes.
+
 Tasks:
 
 - Compare current memory-sensitive constants and binary size against the 3.0 main
@@ -194,6 +198,20 @@ Tasks:
 - Audit JS bundle size and duplicated sanitizer/mapping tables.
 - Check image/photo buffer size and avoid reducing it unless measurements prove
   it is necessary.
+- [done] Kept the Emery photo limit at 15,000 bytes; moved the photo transfer
+  buffer out of permanent BSS and into exact-size transient heap allocation.
+- [done] Moved avatar transfer storage out of permanent BSS and into exact-size
+  transient heap allocation.
+- [done] Free transfer buffers on completion, error, cancellation, retry reset,
+  chat/avatar teardown, and app shutdown.
+- [done] Added a shared chunk-bounds guard so image/avatar chunks must match the
+  expected offset and fit within the allocated transfer window before `memcpy`.
+- [done] Made the full-text body buffer lazy and freed it when leaving the
+  full-text action view.
+- [done] Compacted always-resident emoji reply table storage.
+- [done] Trimmed per-message image error text storage to the watch-visible size.
+- [done] Reduced Emery/Gabbro AppMessage inbox allocation from 3 KB to 2 KB,
+  matching the smaller platforms while staying above the largest expected tuple.
 - Prefer compact token mappings where the watch can send small ASCII tokens and
   JS can hold larger Telegram/API strings.
 - Identify low-risk string/table savings before cutting user-visible media
@@ -266,6 +284,22 @@ Latest crash hardening run:
 - [done] Exact stack-trace sanitizer smoke test.
 - [done] `pebble build` with WSL Node on PATH.
 - [done] Copied build to `I:\My Drive\Pebblegram.pbw`.
+
+Latest Phase 6 RAM pass:
+
+- [done] Confirmed RePebble docs via Context7: PNG source bytes can be freed
+  after `gbitmap_create_from_png_data()`.
+- [done] Used Rocq to verify the chunk-bound guard implies
+  `offset + length <= total_size` and `offset + length <= capacity`.
+- [done] Built the v3.0.0 tag in a temporary worktree for a baseline.
+- [done] Current Emery footprint: 47,461 bytes RAM footprint, 83,611 bytes free
+  heap in the build report.
+- [done] v3.0.0 Emery footprint: 65,333 bytes RAM footprint, 65,739 bytes free
+  heap in the build report.
+- [done] Net versus v3.0.0 on Emery: 17,872 bytes less reported RAM footprint.
+- [done] Net versus the pre-optimization feature build on Emery: 18,056 bytes
+  less reported RAM footprint.
+- [done] `pebble build` passed after the optimization changes.
 
 ## Manual Test Matrix
 
