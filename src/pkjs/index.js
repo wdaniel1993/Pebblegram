@@ -1568,9 +1568,9 @@ function prefetchNewerMessages(chatId, afterId) {
 function sendMessage(chatId, text, replyTo) {
   timed('send message ' + chatId, activePgjs().sendMessage(chatId, text, replyTo)).then(function() {
     var payload = {};
-    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'sent';
     sendToWatch(payload);
+    refreshOpenChat();
   }).catch(function(err) {
     promiseError('Send failed', err);
   });
@@ -1590,9 +1590,9 @@ function deleteMessage(chatId, messageId) {
 function editMessage(chatId, messageId, text) {
   timed('edit message ' + chatId, activePgjs().editMessage(chatId, messageId, text)).then(function() {
     var payload = {};
-    removeChatCache(chatId);
     payload[MessageKeys.Type] = 'edited';
     sendToWatch(payload);
+    refreshOpenChat();
   }).catch(function(err) {
     promiseError('Edit failed', err);
   });

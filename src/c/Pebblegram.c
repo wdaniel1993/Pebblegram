@@ -2838,6 +2838,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     int mode = tuple_int(iter, MESSAGE_KEY_Index, MESSAGE_MODE_INITIAL);
     bool initial = mode == MESSAGE_MODE_INITIAL;
+    bool requested_page = s_loading_older_messages || s_loading_newer_messages;
     if (initial && s_view_state != ViewStateChat && !s_loading_messages) {
       return;
     }
@@ -2855,7 +2856,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       s_newer_anchor_id[0] = '\0';
       s_at_newest = true;
       s_at_oldest = false;
-    } else if (!prepare_message_stage()) {
+    } else if (requested_page && !prepare_message_stage()) {
       reset_message_stream_state();
       s_loading_older_messages = false;
       s_loading_newer_messages = false;
@@ -2901,6 +2902,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     char anchor_id[MAX_ID];
     int anchor_y = 0;
     Message *slot;
+    bool follow_bottom;
     if (!message_transfer_matches(iter)) {
       return;
     }
@@ -2909,6 +2911,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     }
     anchor_id[0] = '\0';
     recalc_message_layout();
+    follow_bottom = s_at_newest && compose_target_is_selected();
     if (!s_message_stream_silent && s_loading_newer_messages && s_newer_anchor_id[0]) {
       copy_cstr(anchor_id, sizeof(anchor_id), s_newer_anchor_id);
       int anchor_index = find_message_index_by_id(s_newer_anchor_id);
@@ -2922,6 +2925,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     slot = append_message_slot();
     populate_message_from_tuple(slot, iter);
     s_expected_rows = count;
+    if (!s_message_stream_silent && follow_bottom) {
+      scroll_to_bottom(false);
+      return;
+    }
     render_after_stream_append(anchor_id, anchor_y);
     return;
   }
@@ -3090,6 +3097,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       commit_message_stage(count);
     } else if (s_message_count > count) {
       s_message_count = count;
+    }
+    if (!staged_load) {
+      clear_message_stage();
     }
     int preserved_index = find_message_index_by_id(selected_id);
     if (preserved_index < 0 && staged_load && fallback_id[0]) {
@@ -3501,9 +3511,19 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     show_status("Reacted");
   }
 
-  if (strcmp(type, "sent") == 0 || strcmp(type, "deleted") == 0 ||
-      strcmp(type, "edited") == 0) {
+  if (strcmp(type, "sent") == 0) {
+    show_status("Sent");
+    return;
+  }
+
+  if (strcmp(type, "edited") == 0) {
+    show_status("Edited");
+    return;
+  }
+
+  if (strcmp(type, "deleted") == 0) {
     request_messages(s_current_chat_id);
+    return;
   }
 
   if (strcmp(type, "message_context") == 0) {
