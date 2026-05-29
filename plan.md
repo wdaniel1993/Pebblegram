@@ -357,6 +357,15 @@ Latest media/keyboard pass:
   with 82,075 bytes free heap; Gabbro 48,977 / 82,095; Basalt 47,661 /
   17,875; Diorite 47,637 / 17,899.
 - [done] Copied this build to `I:\My Drive\Pebblegram.pbw`.
+- [done] Refreshed the GitHub `v3.1.0` tag and release asset with the tested
+  higher-resolution photo build before re-enabling the keyboard.
+- [done] Re-enabled the Emery touch keyboard on top of the refreshed 3.1
+  baseline and fixed the optimistic-send selection to land on the pending
+  outgoing bubble.
+- [done] Keyboard test build passed: Emery 50,189 bytes RAM footprint with
+  80,883 bytes free heap.
+- [done] Copied the keyboard test build to `I:\My Drive\Pebblegram.pbw`;
+  the GitHub 3.1 release asset remains the tested no-keyboard photo build.
 
 ## Manual Test Matrix
 

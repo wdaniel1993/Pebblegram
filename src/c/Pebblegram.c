@@ -68,7 +68,7 @@
 #define IMAGE_DECODE_HEADROOM_PIXELS 16000
 #define STATUS_CLEAR_MS 1000
 #define VIEW_TRANSITION_MS 120
-#define TOUCH_KEYBOARD_ENABLED PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 0, 0, 0)
+#define TOUCH_KEYBOARD_ENABLED PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 1, 0, 0)
 #define TOUCH_KEYBOARD_MAX_TEXT 120
 #define TOUCH_KEYBOARD_INPUT_H 30
 #define TOUCH_KEYBOARD_ROW_H 21
@@ -2117,7 +2117,7 @@ static void send_touch_keyboard_text(void) {
   slot->outgoing = true;
   s_at_newest = true;
   s_user_scrolled_messages = false;
-  s_selected_message = s_message_count;
+  s_selected_message = s_message_count - 1;
   if (s_messages_root) {
     recalc_message_layout();
     set_chat_scroll_offset(s_chat_content_height, true);
