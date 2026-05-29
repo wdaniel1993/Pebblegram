@@ -15,6 +15,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -104,6 +105,257 @@ MOCK_MESSAGES = {
 }
 
 
+WATCH_EMOJI_ALIASES = {
+    "\u2709\ufe0f": ":envelope:",
+    "\u2709": ":envelope:",
+    "\u260e\ufe0f": ":phone:",
+    "\u260e": ":phone:",
+    "\u23f0": ":alarm_clock:",
+    "\u231b": ":hourglass:",
+    "\u23f3": ":hourglass:",
+    "\u2714\ufe0f": ":check_mark:",
+    "\u2714": ":check_mark:",
+    "\u274c": ":x:",
+    "\u2b55": ":o:",
+    "\u26a0\ufe0f": ":warning:",
+    "\u26a0": ":warning:",
+    "\u2600\ufe0f": ":sun:",
+    "\u2600": ":sun:",
+    "\u2601\ufe0f": ":cloud:",
+    "\u2601": ":cloud:",
+    "\u2614": ":umbrella:",
+    "\u26c5": ":partly_sunny:",
+    "\u26a1": ":zap:",
+    "\u2744\ufe0f": ":snowflake:",
+    "\u2744": ":snowflake:",
+    "\u2615": ":coffee:",
+    "\u26fd": ":fuelpump:",
+    "\u2708\ufe0f": ":airplane:",
+    "\u2708": ":airplane:",
+    "\u26f5": ":sailboat:",
+    "\u26bd": ":soccer:",
+    "\u26be": ":baseball:",
+    "\u26f3": ":golf:",
+    "\u2665\ufe0f": ":heart:",
+    "\u2665": ":heart:",
+    "\u2660\ufe0f": ":spades:",
+    "\u2660": ":spades:",
+    "\u2663\ufe0f": ":clubs:",
+    "\u2663": ":clubs:",
+    "\u2666\ufe0f": ":diamonds:",
+    "\u2666": ":diamonds:",
+    "\u267b\ufe0f": ":recycle:",
+    "\u267b": ":recycle:",
+    "\u00a9\ufe0f": ":copyright:",
+    "\u00ae\ufe0f": ":registered:",
+    "\u2122\ufe0f": ":tm:",
+    "\u270a": ":fist:",
+    "\U0001f434": ":horse:",
+    "\U0001f40e": ":racehorse:",
+    "\U0001f984": ":unicorn:",
+    "\U0001f436": ":dog:",
+    "\U0001f415": ":dog:",
+    "\U0001f431": ":cat:",
+    "\U0001f408": ":cat:",
+    "\U0001f42d": ":mouse:",
+    "\U0001f439": ":hamster:",
+    "\U0001f430": ":rabbit:",
+    "\U0001f98a": ":fox:",
+    "\U0001f43b": ":bear:",
+    "\U0001f43c": ":panda:",
+    "\U0001f428": ":koala:",
+    "\U0001f42f": ":tiger:",
+    "\U0001f981": ":lion:",
+    "\U0001f42e": ":cow:",
+    "\U0001f437": ":pig:",
+    "\U0001f438": ":frog:",
+    "\U0001f435": ":monkey:",
+    "\U0001f648": ":see_no_evil:",
+    "\U0001f649": ":hear_no_evil:",
+    "\U0001f64a": ":speak_no_evil:",
+    "\U0001f414": ":chicken:",
+    "\U0001f427": ":penguin:",
+    "\U0001f426": ":bird:",
+    "\U0001f986": ":duck:",
+    "\U0001f989": ":owl:",
+    "\U0001f43a": ":wolf:",
+    "\U0001f41d": ":bee:",
+    "\U0001f41b": ":bug:",
+    "\U0001f98b": ":butterfly:",
+    "\U0001f40c": ":snail:",
+    "\U0001f41e": ":lady_beetle:",
+    "\U0001f41c": ":ant:",
+    "\U0001f422": ":turtle:",
+    "\U0001f40d": ":snake:",
+    "\U0001f419": ":octopus:",
+    "\U0001f980": ":crab:",
+    "\U0001f420": ":fish:",
+    "\U0001f42c": ":dolphin:",
+    "\U0001f433": ":whale:",
+    "\U0001f988": ":shark:",
+    "\U0001f418": ":elephant:",
+    "\U0001f992": ":giraffe:",
+    "\U0001f308": ":rainbow:",
+    "\U0001f680": ":rocket:",
+    "\U0001f346": ":eggplant:",
+    "\U0001f351": ":peach:",
+    "\U0001f34e": ":apple:",
+    "\U0001f34c": ":banana:",
+    "\U0001f349": ":watermelon:",
+    "\U0001f347": ":grapes:",
+    "\U0001f353": ":strawberry:",
+    "\U0001f352": ":cherries:",
+    "\U0001f34d": ":pineapple:",
+    "\U0001f951": ":avocado:",
+    "\U0001f33d": ":corn:",
+    "\U0001f955": ":carrot:",
+    "\U0001f966": ":broccoli:",
+    "\U0001f345": ":tomato:",
+    "\U0001f344": ":mushroom:",
+    "\U0001f336": ":hot_pepper:",
+    "\U0001f35e": ":bread:",
+    "\U0001f950": ":croissant:",
+    "\U0001f9c0": ":cheese:",
+    "\U0001f95a": ":egg:",
+    "\U0001f373": ":cooking:",
+    "\U0001f95e": ":pancakes:",
+    "\U0001f953": ":bacon:",
+    "\U0001f354": ":burger:",
+    "\U0001f35f": ":fries:",
+    "\U0001f355": ":pizza:",
+    "\U0001f32d": ":hot_dog:",
+    "\U0001f32e": ":taco:",
+    "\U0001f32f": ":burrito:",
+    "\U0001f37f": ":popcorn:",
+    "\U0001f363": ":sushi:",
+    "\U0001f35c": ":ramen:",
+    "\U0001f35d": ":spaghetti:",
+    "\U0001f366": ":ice_cream:",
+    "\U0001f369": ":donut:",
+    "\U0001f36a": ":cookie:",
+    "\U0001f382": ":cake:",
+    "\U0001f370": ":cake:",
+    "\U0001f36b": ":chocolate:",
+    "\U0001f36c": ":candy:",
+    "\U0001f36d": ":lollipop:",
+    "\U0001f377": ":wine:",
+    "\U0001f378": ":cocktail:",
+    "\U0001f379": ":tropical_drink:",
+    "\U0001f942": ":champagne:",
+    "\U0001f44c": ":ok_hand:",
+    "\U0001f44a": ":fist:",
+    "\U0001f44b": ":wave:",
+    "\U0001f44f": ":clap:",
+    "\U0001f64c": ":raised_hands:",
+    "\U0001f48b": ":kiss_mark:",
+    "\U0001f525": ":fire:",
+    "\U0001f914": ":thinking:",
+    "\U0001f92f": ":exploding_head:",
+    "\U0001f937": ":shrug:",
+    "\U0001f926": ":facepalm:",
+    "\U0001f91e": ":crossed_fingers:",
+    "\U0001faf6": ":heart_hands:",
+}
+
+WATCH_SUPPORTED_EMOJI = set(
+    "⌚☺☠⚧✅✋✌✨❎❗❣❤⭐🌙🌟🌷🌸🌺🍀🍺🍻🎉🎶🏳🐥👀👍👎"
+    "💀💓💔💕💖💗💘💙💚💛💜💝💞💟💡💣💥💩💯🖤"
+    "😀😁😂😃😄😅😆😇😈😉😊😋😌😍😎😏😐😑😒😓😔😕😖😗😘😙😚"
+    "😛😜😝😞😟😠😡😢😣😤😥😦😧😨😩😪😫😬😭😮😯😰😱😲😳😴😵😶😷"
+    "🙃🙄🙏🤗🤘🤝🤣🤤🤩🤪🤬🤮🥰🥺"
+)
+
+WATCH_EMOJI_PATTERN = re.compile("|".join(re.escape(key) for key in WATCH_EMOJI_ALIASES))
+WATCH_SURROGATE_EMOJI_PATTERN = re.compile("[\U00010000-\U0010ffff]")
+WATCH_FORMAT_PATTERN = re.compile("[\u200b-\u200f\ufe00-\ufe0f\ufeff]")
+WATCH_LINK_PATTERN = re.compile(
+    r"\b((?:https?://|www\.)[^\s<>\"']+|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}(?:/[^\s<>\"']*)?)",
+    re.IGNORECASE,
+)
+WATCH_LINK_TLDS = {
+    "app",
+    "biz",
+    "ca",
+    "co",
+    "com",
+    "dev",
+    "edu",
+    "gov",
+    "info",
+    "io",
+    "me",
+    "net",
+    "org",
+    "tv",
+    "uk",
+    "us",
+}
+WATCH_TECHNICAL_TOKEN_PATTERN = re.compile(
+    r"\b[A-Za-z_$][A-Za-z0-9_$]*(?:[.$][A-Za-z_$][A-Za-z0-9_$]*){2,}(?::\d+)?"
+)
+
+
+def likely_bare_link_host(host: str) -> bool:
+    parts = (host or "").lower().split(".")
+    return len(parts) > 1 and parts[-1] in WATCH_LINK_TLDS
+
+
+def shorten_watch_links(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        if match.start() > 0 and text[match.start() - 1] == "@":
+            return url
+        stripped = url.rstrip(".,!?;:)]}")
+        trailer = url[len(stripped) :]
+        host_match = re.match(r"^(?:https?://)?(?:www\.)?([^/?#]+)", stripped, re.IGNORECASE)
+        if (
+            host_match
+            and "://" not in stripped
+            and not stripped.lower().startswith("www.")
+            and not likely_bare_link_host(host_match.group(1))
+        ):
+            return url
+        return ("[Link] " + host_match.group(1) if host_match else "[Link]") + trailer
+
+    return WATCH_LINK_PATTERN.sub(replace, text)
+
+
+def summarize_watch_stack_trace(text: str) -> str:
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"\n\s+at\s+[^\n]+", " [trace]", text)
+    text = re.sub(r"\n\s*\.\.\.\s+\d+\s+more", " [trace]", text)
+    return re.sub(r"(?:\s+\[trace\]){2,}", " [trace]", text)
+
+
+def shorten_technical_token(match: re.Match[str]) -> str:
+    token = match.group(0)
+    stripped = token.rstrip(".,!?;:)]}")
+    trailer = token[len(stripped) :]
+    parts = stripped.split(".")
+    short = ".".join(parts[-2:]) if len(parts) > 2 else stripped
+    if len(short) > 24 and len(parts) > 1:
+        short = parts[-1]
+    if len(short) > 24:
+        short = short[:21] + "..."
+    return short + trailer
+
+
+def shorten_watch_technical_tokens(text: str) -> str:
+    text = re.sub(r"\br8-map-id-[A-Za-z0-9-]+(?::\d+)?", "r8-map", text)
+    return WATCH_TECHNICAL_TOKEN_PATTERN.sub(shorten_technical_token, text)
+
+
+def watch_text(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = WATCH_EMOJI_PATTERN.sub(lambda match: WATCH_EMOJI_ALIASES[match.group(0)], text)
+    text = WATCH_FORMAT_PATTERN.sub("", text)
+    text = WATCH_SURROGATE_EMOJI_PATTERN.sub(
+        lambda match: match.group(0) if match.group(0) in WATCH_SUPPORTED_EMOJI else ":emoji:",
+        text,
+    )
+    return shorten_watch_technical_tokens(shorten_watch_links(summarize_watch_stack_trace(text)))
+
+
 class Backend:
     async def chats(self, limit: int) -> list[dict[str, Any]]:
         raise NotImplementedError
@@ -123,16 +375,25 @@ class Backend:
 
 class MockBackend(Backend):
     async def chats(self, limit: int) -> list[dict[str, Any]]:
-        return MOCK_CHATS[:limit]
+        return [
+            {**chat, "preview": watch_text(chat.get("preview", ""))}
+            for chat in MOCK_CHATS[:limit]
+        ]
 
     async def messages(self, chat_id: str, limit: int, before_id: str | None = None) -> list[dict[str, Any]]:
         messages = MOCK_MESSAGES.get(chat_id, [])
         if before_id:
             for index, message in enumerate(messages):
                 if str(message.get("id", "")) == before_id:
-                    return messages[max(0, index - limit):index]
+                    return [
+                        {**message, "text": watch_text(message.get("text", ""))}
+                        for message in messages[max(0, index - limit):index]
+                    ]
             return []
-        return messages[-limit:]
+        return [
+            {**message, "text": watch_text(message.get("text", ""))}
+            for message in messages[-limit:]
+        ]
 
     async def image_png(self, chat_id: str, message_id: str, width: int, height: int, colors: int = 64) -> bytes:
         if MOCK_PHOTO_PATH.exists():
@@ -218,7 +479,7 @@ class TelethonBackend(Backend):
                 {
                     "id": chat_id,
                     "title": self._display_name(dialog, entity),
-                    "preview": preview[:90],
+                    "preview": watch_text(preview)[:90],
                     "unread": bool(getattr(dialog, "unread_count", 0)),
                 }
             )
@@ -254,7 +515,7 @@ class TelethonBackend(Backend):
                 {
                     "id": str(message.id),
                     "sender": await self._sender_name(message),
-                    "text": text[:500],
+                    "text": watch_text(text)[:500],
                     "outgoing": bool(message.out),
                     "image_token": str(message.id) if has_photo else None,
                 }

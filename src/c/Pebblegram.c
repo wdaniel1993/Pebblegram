@@ -142,80 +142,53 @@ typedef struct {
 
 static const ReactionChoice REACTION_GRID_CHOICES[] = {
   // Favorites
-  {"like", "\xF0\x9F\x91\x8D"},  // 👍
-  {"heart", "\xE2\x9D\xA4"},     // ❤
-  {"laugh", "\xF0\x9F\xA4\xA3"}, // 🤣
-  {"wow", "\xF0\x9F\x98\xB1"},   // 😱
-  {"sad", "\xF0\x9F\x98\xA2"},   // 😢
-  {"angry", "\xF0\x9F\x98\xA1"}, // 😡
+  {"like", "\xF0\x9F\x91\x8D"},
+  {"heart", "\xE2\x9D\xA4"},
+  {"laugh", "\xF0\x9F\xA4\xA3"},
+  {"wow", "\xF0\x9F\x98\xB1"},
+  {"sad", "\xF0\x9F\x98\xA2"},
+  {"angry", "\xF0\x9F\x98\xA1"},
   // Faces
-  {"cry_loud", "\xF0\x9F\x98\xAD"},    // 😭
-  {"grin", "\xF0\x9F\x98\x81"},  // 😁
-  {"love", "\xF0\x9F\x98\x8D"},  // 😍
-  {"kiss", "\xF0\x9F\x98\x98"},  // 😘
-  {"cool", "\xF0\x9F\x98\x8E"},  // 😎
-  {"blush", "\xF0\x9F\x98\xB3"}, // 😳
-  {"grimace", "\xF0\x9F\x98\xAC"}, // 😬
-  {"neutral", "\xF0\x9F\x98\x90"}, // 😐
-  {"sleep", "\xF0\x9F\x98\xB4"}, // 😴
-  {"angel", "\xF0\x9F\x98\x87"}, // 😇
-  {"devil", "\xF0\x9F\x98\x88"}, // 😈
-  {"sick", "\xF0\x9F\xA4\xAE"},  // 🤮
+  {"cry_loud", "\xF0\x9F\x98\xAD"},
+  {"grin", "\xF0\x9F\x98\x81"},
+  {"love", "\xF0\x9F\x98\x8D"},
+  {"kiss", "\xF0\x9F\x98\x98"},
+  {"cool", "\xF0\x9F\x98\x8E"},
+  {"blush", "\xF0\x9F\x98\xB3"},
+  {"grimace", "\xF0\x9F\x98\xAC"},
+  {"neutral", "\xF0\x9F\x98\x90"},
+  {"sleep", "\xF0\x9F\x98\xB4"},
+  {"angel", "\xF0\x9F\x98\x87"},
+  {"devil", "\xF0\x9F\x98\x88"},
+  {"sick", "\xF0\x9F\xA4\xAE"},
   // Hands
-  {"dislike", "\xF0\x9F\x91\x8E"}, // 👎
-  {"ok", "\xF0\x9F\x91\x8C"},       // 👌
-  {"clap", "\xF0\x9F\x91\x8F"},    // 👏
-  {"pray", "\xF0\x9F\x99\x8F"},    // 🙏
-  {"eyes", "\xF0\x9F\x91\x80"},    // 👀
+  {"dislike", "\xF0\x9F\x91\x8E"},
+  {"ok", "\xF0\x9F\x91\x8C"},
+  {"clap", "\xF0\x9F\x91\x8F"},
+  {"pray", "\xF0\x9F\x99\x8F"},
+  {"eyes", "\xF0\x9F\x91\x80"},
   // Hearts
-  {"broken_heart", "\xF0\x9F\x92\x94"}, // 💔
-  {"kiss_mark", "\xF0\x9F\x92\x8B"},    // 💋
+  {"broken_heart", "\xF0\x9F\x92\x94"},
+  {"kiss_mark", "\xF0\x9F\x92\x8B"},
   // Symbols
-  {"fire", "\xF0\x9F\x94\xA5"},  // 🔥
-  {"party", "\xF0\x9F\x8E\x89"}, // 🎉
-  {"poop", "\xF0\x9F\x92\xA9"},  // 💩
+  {"fire", "\xF0\x9F\x94\xA5"},
+  {"party", "\xF0\x9F\x8E\x89"},
+  {"poop", "\xF0\x9F\x92\xA9"},
   {"remove", "Remove"}
 };
 
 static const ReactionChoice EMOJI_REPLY_CHOICES[] = {
-  {"\xF0\x9F\x91\x8D", "\xF0\x9F\x91\x8D"}, // 👍
-  {"\xE2\x9D\xA4", "\xE2\x9D\xA4"},         // ❤
-  {"\xF0\x9F\x98\x82", "\xF0\x9F\x98\x82"}, // 😂
-  {"\xF0\x9F\x98\xB1", "\xF0\x9F\x98\xB1"}, // 😱
-  {"\xF0\x9F\x98\xA2", "\xF0\x9F\x98\xA2"}, // 😢
-  {"\xF0\x9F\x98\xA1", "\xF0\x9F\x98\xA1"}, // 😡
-  {"\xF0\x9F\x98\x80", "\xF0\x9F\x98\x80"}, // 😀
-  {"\xF0\x9F\x98\x84", "\xF0\x9F\x98\x84"}, // 😄
-  {"\xF0\x9F\x98\xAD", "\xF0\x9F\x98\xAD"}, // 😭
-  {"\xF0\x9F\x98\x81", "\xF0\x9F\x98\x81"}, // 😁
-  {"\xF0\x9F\x98\x8D", "\xF0\x9F\x98\x8D"}, // 😍
-  {"\xF0\x9F\x98\x98", "\xF0\x9F\x98\x98"}, // 😘
-  {"\xF0\x9F\x98\x8E", "\xF0\x9F\x98\x8E"}, // 😎
-  {"\xF0\x9F\x98\xB3", "\xF0\x9F\x98\xB3"}, // 😳
-  {"\xF0\x9F\x98\xAC", "\xF0\x9F\x98\xAC"}, // 😬
-  {"\xF0\x9F\x98\x90", "\xF0\x9F\x98\x90"}, // 😐
-  {"\xF0\x9F\x98\xB4", "\xF0\x9F\x98\xB4"}, // 😴
-  {"\xF0\x9F\x98\x87", "\xF0\x9F\x98\x87"}, // 😇
-  {"\xF0\x9F\x98\x88", "\xF0\x9F\x98\x88"}, // 😈
-  {"\xF0\x9F\xA4\xAE", "\xF0\x9F\xA4\xAE"}, // 🤮
-  {"\xF0\x9F\x91\x8E", "\xF0\x9F\x91\x8E"}, // 👎
-  {"\xF0\x9F\x91\x8C", "\xF0\x9F\x91\x8C"}, // 👌
-  {"\xF0\x9F\x91\x8A", "\xF0\x9F\x91\x8A"}, // 👊
-  {"\xE2\x9C\x8A", "\xE2\x9C\x8A"},         // ✊
-  {"\xE2\x9C\x8C", "\xE2\x9C\x8C"},         // ✌
-  {"\xF0\x9F\x91\x8B", "\xF0\x9F\x91\x8B"}, // 👋
-  {"\xE2\x9C\x8B", "\xE2\x9C\x8B"},         // ✋
-  {"\xF0\x9F\x91\x8F", "\xF0\x9F\x91\x8F"}, // 👏
-  {"\xF0\x9F\x99\x8C", "\xF0\x9F\x99\x8C"}, // 🙌
-  {"\xF0\x9F\x99\x8F", "\xF0\x9F\x99\x8F"}, // 🙏
-  {"\xF0\x9F\x91\x80", "\xF0\x9F\x91\x80"}, // 👀
-  {"\xF0\x9F\x92\x94", "\xF0\x9F\x92\x94"}, // 💔
-  {"\xF0\x9F\x92\x8B", "\xF0\x9F\x92\x8B"}, // 💋
-  {"\xF0\x9F\x94\xA5", "\xF0\x9F\x94\xA5"}, // 🔥
-  {"\xF0\x9F\x8E\x89", "\xF0\x9F\x8E\x89"}, // 🎉
-  {"\xF0\x9F\x8D\xBB", "\xF0\x9F\x8D\xBB"}, // 🍻
-  {"\xF0\x9F\x8D\xBA", "\xF0\x9F\x8D\xBA"}, // 🍺
-  {"\xF0\x9F\x92\xA9", "\xF0\x9F\x92\xA9"}  // 💩
+  {"👍", "👍"}, {"❤", "❤"}, {"😂", "😂"}, {"😱", "😱"},
+  {"😢", "😢"}, {"😡", "😡"}, {"😀", "😀"}, {"😄", "😄"},
+  {"😭", "😭"}, {"😁", "😁"}, {"😍", "😍"}, {"😘", "😘"},
+  {"😎", "😎"}, {"😳", "😳"}, {"😬", "😬"}, {"😐", "😐"},
+  {"😴", "😴"}, {"😇", "😇"}, {"😈", "😈"}, {"🤮", "🤮"},
+  {"👎", "👎"}, {"🙏", "🙏"}, {"👀", "👀"}, {"💔", "💔"},
+  {"🎉", "🎉"}, {"🍻", "🍻"}, {"🍺", "🍺"}, {"💩", "💩"},
+  {"⌚", "⌚"}, {"✅", "✅"}, {"✨", "✨"}, {"❗", "❗"},
+  {"⭐", "⭐"}, {"💯", "💯"}, {"🤗", "🤗"}, {"🤝", "🤝"},
+  {"🤩", "🤩"}, {"🤪", "🤪"}, {"🤬", "🤬"}, {"🥰", "🥰"},
+  {"🥺", "🥺"}
 };
 
 static Window *s_main_window;
@@ -1353,6 +1326,7 @@ static void copy_context_part(char *dest, size_t dest_size, const char *start, c
   }
   memcpy(dest, start, len);
   dest[len] = '\0';
+  trim_incomplete_utf8(dest);
 }
 
 static int message_context_height(Message *message) {
@@ -1374,12 +1348,14 @@ static void set_message_context(Message *message, const char *reply_sender, cons
     sender = reply_sender && reply_sender[0] ? reply_sender : "Reply";
     text = reply_text && reply_text[0] ? reply_text : "Message";
     snprintf(message->context, sizeof(message->context), "%s\n%s", sender, text);
+    trim_incomplete_utf8(message->context);
     return;
   }
   if ((forward_sender && forward_sender[0]) || (forward_text && forward_text[0])) {
     sender = forward_sender && forward_sender[0] ? forward_sender : "Forwarded";
     text = forward_text && forward_text[0] ? forward_text : "Message";
     snprintf(message->context, sizeof(message->context), "Fwd from %s\n%s", sender, text);
+    trim_incomplete_utf8(message->context);
     return;
   }
   message->context[0] = '\0';
@@ -3604,7 +3580,7 @@ static int action_item_count(void) {
   switch (s_action_mode) {
     case ActionMenuMain:
       if (!has_selected_message()) {
-        return 3;
+        return 4;
       }
       return 4 +
              (s_messages[s_selected_message].outgoing ? 1 : 0) +
@@ -3633,6 +3609,7 @@ static ActionItem action_item_at(int index) {
     static const ActionItem compose_items[] = {
       ActionItemCompose,
       ActionItemCanned,
+      ActionItemReplyEmoji,
       ActionItemGoToBottom
     };
     return compose_items[index];
@@ -3665,7 +3642,8 @@ static ActionItem action_item_at(int index) {
 
 static bool action_item_has_chevron(int index) {
   if (s_action_mode == ActionMenuMain) {
-    return action_item_at(index) == ActionItemReact;
+    ActionItem item = action_item_at(index);
+    return item == ActionItemReact || item == ActionItemReplyEmoji;
   }
   if (s_action_mode == ActionMenuReply) {
     return index == 2;
@@ -3728,11 +3706,12 @@ static const char *action_item_title(int index) {
         return "View Full Message";
       case ActionItemFullContext:
         return selected_message_context_is_forward() ? "View Forward" : "View Quote";
+      case ActionItemReplyEmoji:
+        return "Emoji Reply";
       case ActionItemGoToBottom:
         return "Go to Bottom";
       case ActionItemReplyDictate:
       case ActionItemReplyCanned:
-      case ActionItemReplyEmoji:
       case ActionItemArchiveChat:
       case ActionItemDeleteChat:
       case ActionItemMuteChat:
@@ -4037,6 +4016,14 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         s_action_selected = 0;
         layer_mark_dirty(s_action_layer);
         break;
+      case ActionItemReplyEmoji:
+        s_pending_edit_message_id[0] = '\0';
+        s_pending_chat_command[0] = '\0';
+        s_pending_send_as_reply = false;
+        s_action_mode = ActionMenuEmojiReplyGrid;
+        s_action_selected = 0;
+        layer_mark_dirty(s_action_layer);
+        break;
       case ActionItemEdit:
         if (has_selected_message() && s_messages[s_selected_message].outgoing) {
           copy_cstr(s_pending_edit_message_id, sizeof(s_pending_edit_message_id), s_messages[s_selected_message].id);
@@ -4083,7 +4070,6 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
         break;
       case ActionItemReplyDictate:
       case ActionItemReplyCanned:
-      case ActionItemReplyEmoji:
       case ActionItemArchiveChat:
       case ActionItemDeleteChat:
       case ActionItemMuteChat:
@@ -4128,7 +4114,7 @@ static void action_select_click_handler(ClickRecognizerRef recognizer, void *con
   if (s_action_mode == ActionMenuEmojiReplyGrid) {
     const char *token = emoji_reply_glyph_at(selected);
     close_action_window();
-    send_text_message(token, true);
+    send_text_message(token, s_pending_send_as_reply);
     s_pending_send_as_reply = false;
     return;
   }

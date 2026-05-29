@@ -221,6 +221,42 @@ function documentFileName(document) {
   return document && (document.fileName || document.name) || '';
 }
 
+function firstStringField(source, fields) {
+  var value;
+  if (!source) {
+    return '';
+  }
+  for (var i = 0; i < fields.length; i += 1) {
+    value = source[fields[i]];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
+function stickerSetLabel(stickerset) {
+  return firstStringField(stickerset, [
+    'title',
+    'shortName',
+    'short_name',
+    'name',
+    'slug'
+  ]);
+}
+
+function stickerAttributeLabel(attribute) {
+  return firstStringField(attribute, [
+    'alt',
+    'emoticon',
+    'emoji',
+    'title',
+    'shortName',
+    'short_name',
+    'name'
+  ]) || stickerSetLabel(attribute && attribute.stickerset);
+}
+
 function hasDocumentAttribute(document, name) {
   var attrs = documentAttributes(document);
   var propName = name.charAt(0).toLowerCase() + name.slice(1);
@@ -369,11 +405,13 @@ function isSticker(message) {
 }
 
 function stickerLabel(message) {
-  var attr = hasDocumentAttribute(messageDocument(message), 'Sticker') ||
-             hasDocumentAttribute(messageDocument(message), 'CustomEmoji');
-  var alt = attr && (attr.alt || attr.emoticon || attr.emoji);
+  var document = messageDocument(message);
+  var attr = hasDocumentAttribute(document, 'Sticker') ||
+             hasDocumentAttribute(document, 'CustomEmoji');
+  var label = attributeName(attr).indexOf('CustomEmoji') !== -1 ? 'Emoji' : 'Sticker';
+  var detail = stickerAttributeLabel(attr);
   var text = messageText(message);
-  return compactMediaLabel('Sticker', alt || text || 'not shown');
+  return compactMediaLabel(label, detail || documentFileName(document) || text || 'not shown');
 }
 
 function hasPreviewableStill(message) {
@@ -1297,6 +1335,12 @@ function reactionEmoticon(token) {
       return '\ud83d\udd25';
     case 'party':
       return '\ud83c\udf89';
+    case 'star_struck':
+      return '\ud83e\udd29';
+    case 'smiling_hearts':
+      return '\ud83e\udd70';
+    case 'symbols_mouth':
+      return '\ud83e\udd2c';
     case 'clap':
       return '\ud83d\udc4f';
     case 'grin':
