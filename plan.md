@@ -301,6 +301,63 @@ Latest Phase 6 RAM pass:
   less reported RAM footprint.
 - [done] `pebble build` passed after the optimization changes.
 
+Latest media/keyboard pass:
+
+- [done] Found the GIF preview slowdown: the old guessed thumbnail strings could
+  make GramJS fall through to downloading the full GIF document when that thumb
+  name was not present.
+- [done] Reworked GIF/video preview selection to prefer actual Telegram
+  thumbnail objects, sort by useful still-preview quality, de-duplicate
+  candidates, and keep stripped thumbnails as a last resort.
+- [done] Reduced media preview attempts so a bad animated/video thumbnail cannot
+  stall through a long chain of redundant download paths.
+- [done] Raised watch text storage from 460 to 620 bytes and full-text view
+  storage from 1200 to 1600 bytes, then reverted after chat-open OS crashes.
+- [done] Raised Emery/Gabbro image payload limits from 15 KB to 22 KB and raised
+  Emery image preparation to 188x172, then reverted after chat-open OS crashes.
+- [done] Brought the polished pgkb touch keyboard onto current main without
+  reverting the 3.1 RAM optimizations or text-crash hardening.
+- [done] Disabled the Emery touch keyboard for the recovery build after chat-open
+  OS crashes; keep the code in-tree but inactive until the crash source is
+  isolated.
+- [done] Build, inspect memory reports, and keep the keyboard only if Emery still
+  has comfortable headroom.
+- [done] Build report after this pass: Emery 52,009 bytes RAM footprint with
+  79,063 bytes free heap; Gabbro 50,653 / 80,419; Basalt 49,265 / 16,271;
+  Diorite 49,241 / 16,295.
+- [done] Copied `Pebblegram.pbw` to `I:\My Drive\Pebblegram.pbw`.
+- [done] Recovery build after chat-open OS crash report: keyboard disabled,
+  raised text/photo limits reverted, GIF thumbnail fix still active. Emery
+  49,005 bytes RAM footprint with 82,067 bytes free heap; Gabbro 48,981 /
+  82,091; Basalt 47,665 / 17,871; Diorite 47,641 / 17,895.
+- [done] Copied recovery build to `I:\My Drive\Pebblegram.pbw`.
+- [done] Kept the touch keyboard disabled for this pass.
+- [done] Changed GIF/video preview selection to prefer real remote Telegram
+  `PhotoSize`/`PhotoSizeProgressive` stills over tiny cached/stripped bytes.
+- [done] Bumped the image cache version so prior low-quality GIF stills are not
+  reused.
+- [done] Raised only Emery photo transfer/display limits to 20 KB and 166 px,
+  leaving the recovered text limits and non-Emery image budgets unchanged.
+- [done] Built this image-quality pass: Emery remains 49,005 bytes RAM footprint
+  with 82,067 bytes free heap.
+- [done] Copied this pass to `I:\My Drive\Pebblegram.pbw`.
+- [done] Reverted the slower GIF preview scoring because the remote stills did
+  not improve quality and made loading feel worse.
+- [done] Evaluated the remaining GIF path: without adding a phone-side GIF/video
+  frame decoder, Telegram's available GIF still thumbnails appear to be the
+  limiting quality source. Keep GIFs on the fast thumbnail path for now.
+- [done] Raised Emery media payload headroom to 30 KB while leaving room for the
+  keyboard to return later; avoided going higher because the PNG transfer buffer
+  and decoded bitmap overlap briefly in watch heap.
+- [done] Raised Emery photo prep/display to 176 px and fixed image layout to use
+  the full message bubble image width.
+- [done] Added gentler high-budget photo downscale steps so phone-side encoding
+  preserves more resolution before falling back to smaller images.
+- [done] Built the higher-resolution photo pass: Emery 48,997 bytes RAM footprint
+  with 82,075 bytes free heap; Gabbro 48,977 / 82,095; Basalt 47,661 /
+  17,875; Diorite 47,637 / 17,899.
+- [done] Copied this build to `I:\My Drive\Pebblegram.pbw`.
+
 ## Manual Test Matrix
 
 - Chat message with one long `https://` URL.
@@ -317,6 +374,9 @@ Latest Phase 6 RAM pass:
 - Emoji-only new outgoing message from the new-message menu.
 - Emoji reply from selected-message reply menu.
 - Reaction send, reaction replace, and reaction remove.
+- GIF preview load speed and quality.
+- Photo preview quality on Emery after the 22 KB limit.
+- Emery touch keyboard open/type/shift/symbol/backspace/send.
 - App restart and reconnect after phone/network sleep.
 
 ## Working Notes

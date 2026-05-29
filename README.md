@@ -38,6 +38,7 @@ Pebblegram 3.1 is the current live Telegram build.
 - Added sticker/custom emoji label handling when GramJS exposes a usable name or alt value.
 - Reduced Emery watch RAM footprint by about 17.9 KB versus 3.0 without lowering the 15 KB Emery photo payload limit.
 - Moved photo/avatar transfer buffers to exact-size temporary allocations and tightened chunk bounds before image data is copied.
+- Raised Emery photo previews to a 30 KB payload ceiling with higher-resolution phone-side preparation for sharper small text.
 - Updated the bundled release PBW for 3.1.
 
 ## Quick Start

@@ -15,10 +15,10 @@
 #define MAX_CONTEXT_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 60, 60, 60, 56, 72, 72, 64)
 #define MAX_ID 24
 #define MAX_IMAGE_ERROR 32
-#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 15000, 15000, 15000)
+#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 30000, 15000, 15000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
 #define MAX_LOADED_IMAGES 1
-#define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 120, 96, 96, 96, 156, 156, 118)
+#define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 120, 96, 96, 96, 176, 156, 118)
 #define IMAGE_FRAME_EXTRA_W PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10, 8, 8, 6, 14, 14, 10)
 #define APP_INBOX_SIZE 2048
 #define APP_OUTBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 512, 512, 512, 512, 1024, 1024, 1024)
@@ -68,6 +68,16 @@
 #define IMAGE_DECODE_HEADROOM_PIXELS 16000
 #define STATUS_CLEAR_MS 1000
 #define VIEW_TRANSITION_MS 120
+#define TOUCH_KEYBOARD_ENABLED PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 0, 0, 0)
+#define TOUCH_KEYBOARD_MAX_TEXT 120
+#define TOUCH_KEYBOARD_INPUT_H 30
+#define TOUCH_KEYBOARD_ROW_H 21
+#define TOUCH_KEYBOARD_ROWS 4
+#ifdef _PBL_API_EXISTS_touch_service_subscribe
+#define TOUCH_KEYBOARD_AVAILABLE 1
+#else
+#define TOUCH_KEYBOARD_AVAILABLE 0
+#endif
 
 // Platform constants are centralized here. Basalt/Diorite stay conservative on
 // heap use; Emery/Gabbro can afford longer text and larger image payloads.
@@ -248,6 +258,10 @@ static char s_pending_text[MAX_TEXT];
 static char s_pending_edit_message_id[MAX_ID];
 static char s_pending_chat_command[24];
 static bool s_pending_send_as_reply;
+static bool s_touch_keyboard_open;
+static bool s_touch_keyboard_symbols;
+static bool s_touch_keyboard_shift;
+static char s_touch_keyboard_sent_text[TOUCH_KEYBOARD_MAX_TEXT];
 static char s_current_chat_id[MAX_ID];
 static char s_current_chat_title[48];
 static char s_status_text[64];
@@ -336,6 +350,10 @@ static void click_config_provider(void *context);
 static void copy_cstr(char *dest, size_t dest_size, const char *src);
 static void action_click_config_provider(void *context);
 static void action_window_unload(Window *window);
+#if TOUCH_KEYBOARD_AVAILABLE
+static int touch_keyboard_height(void);
+static void touch_handler(const TouchEvent *event, void *context);
+#endif
 static bool selected_message_is_truncated(void);
 static bool selected_message_has_context(void);
 static bool has_selected_message(void);
@@ -1388,7 +1406,13 @@ static int clamp_scroll_offset(int offset) {
     return 0;
   }
   GRect bounds = layer_get_bounds(s_messages_root);
-  int max_offset = PG_MAX(0, s_chat_content_height - bounds.size.h);
+  int visible_h = bounds.size.h;
+#if TOUCH_KEYBOARD_AVAILABLE
+  if (s_touch_keyboard_open) {
+    visible_h = PG_MAX(1, visible_h - touch_keyboard_height());
+  }
+#endif
+  int max_offset = PG_MAX(0, s_chat_content_height - visible_h);
   return PG_MAX(0, PG_MIN(offset, max_offset));
 }
 
@@ -1736,14 +1760,14 @@ static void draw_message_context(GContext *ctx, Message *message, GRect rect) {
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
-static int message_bubble_height(Message *message, int text_w) {
+static int message_bubble_height(Message *message, int text_w, int bubble_w) {
   char display_text[MESSAGE_PREVIEW_TEXT + 8];
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   int name_h = (!message->outgoing && message->sender[0]) ? 16 : 0;
   int reaction_h = (message->reactions[0] || message->meta[0]) ? 17 : 0;
   int context_h = message_context_height(message);
   int image_h = message->image_placeholder ?
-                message_image_display_height(message, message_image_frame_width(text_w)) + 8 : 0;
+                message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
   copy_cstr(display_text, sizeof(display_text), message->text);
   truncate_cstr_bytes(display_text, sizeof(display_text), MESSAGE_PREVIEW_TEXT, " ...");
   GSize size = GSize(0, 0);
@@ -1767,25 +1791,32 @@ static void recalc_message_layout(void) {
   }
 
   GRect bounds = layer_get_bounds(s_messages_root);
+#if TOUCH_KEYBOARD_AVAILABLE
+  int visible_h = s_touch_keyboard_open ? PG_MAX(1, bounds.size.h - touch_keyboard_height()) :
+                                          bounds.size.h;
+#else
+  int visible_h = bounds.size.h;
+#endif
   int bubble_w = message_bubble_width(bounds);
   int text_w = bubble_w - 10;
   int y = ROUND_UI ? 8 : 3;
 
   for (int i = 0; i < s_message_count; i++) {
     s_message_y[i] = y;
-    s_message_h[i] = message_bubble_height(&s_messages[i], text_w);
+    s_message_h[i] = message_bubble_height(&s_messages[i], text_w, bubble_w);
     y += s_message_h[i] + (ROUND_UI ? 6 : 5);
   }
   int bottom_pad = ROUND_UI ? 12 : 5;
-  int compose_min_y = bounds.size.h - COMPOSE_BUBBLE_H - (ROUND_UI ? 8 : 6);
-  if (s_at_newest && s_message_count > 0 && y + COMPOSE_BUBBLE_GAP < compose_min_y) {
+  int compose_min_y = visible_h - COMPOSE_BUBBLE_H - (ROUND_UI ? 8 : 6);
+  bool reserve_compose_bubble = s_at_newest && !s_touch_keyboard_open;
+  if (reserve_compose_bubble && s_message_count > 0 && y + COMPOSE_BUBBLE_GAP < compose_min_y) {
     int shift = compose_min_y - COMPOSE_BUBBLE_GAP - y;
     for (int i = 0; i < s_message_count; i++) {
       s_message_y[i] += shift;
     }
     y += shift;
   }
-  if (s_at_newest) {
+  if (reserve_compose_bubble) {
     s_compose_bubble_y = PG_MAX(y + COMPOSE_BUBBLE_GAP, compose_min_y);
     s_chat_content_height = s_compose_bubble_y + COMPOSE_BUBBLE_H + bottom_pad;
   } else {
@@ -1935,6 +1966,257 @@ static void render_messages(void) {
   request_next_image();
 }
 
+static GRect compose_rect_for_bounds(GRect bounds) {
+  int compose_w = PG_MIN(bounds.size.w - 24, ROUND_UI ? 120 : 132);
+  int compose_x = (bounds.size.w - compose_w) / 2;
+  int compose_y = s_compose_bubble_y - s_chat_scroll_offset;
+  return GRect(compose_x, compose_y, compose_w, COMPOSE_BUBBLE_H);
+}
+
+#if TOUCH_KEYBOARD_AVAILABLE
+static int touch_keyboard_height(void) {
+  return TOUCH_KEYBOARD_INPUT_H + (TOUCH_KEYBOARD_ROW_H * TOUCH_KEYBOARD_ROWS);
+}
+
+static GRect touch_keyboard_rect_for_bounds(GRect bounds) {
+  int keyboard_h = touch_keyboard_height();
+  return GRect(0, bounds.size.h - keyboard_h, bounds.size.w, keyboard_h);
+}
+
+static void close_touch_keyboard(void) {
+  if (!s_touch_keyboard_open) {
+    return;
+  }
+  s_touch_keyboard_open = false;
+  s_touch_keyboard_symbols = false;
+  s_touch_keyboard_shift = false;
+  s_pending_text[0] = '\0';
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void open_touch_keyboard(void) {
+  if (!TOUCH_KEYBOARD_ENABLED) {
+    return;
+  }
+  s_touch_keyboard_open = true;
+  s_touch_keyboard_symbols = false;
+  s_touch_keyboard_shift = false;
+  s_pending_text[0] = '\0';
+  show_status("Type message");
+  if (s_messages_root) {
+    recalc_message_layout();
+    set_chat_scroll_offset(s_chat_content_height, true);
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static const char *touch_keyboard_chars_for_row(int row) {
+  static const char *alpha[] = {"qwertyuiop", "asdfghjkl", "zxcvbnm"};
+  static const char *symbols[] = {"1234567890", "-/:;()$&@", ".,!?'\"+"};
+  return s_touch_keyboard_symbols ? symbols[row] : alpha[row];
+}
+
+static GRect touch_keyboard_key_rect(GRect keyboard_rect, int row, int start_unit,
+                                     int unit_count, int total_units) {
+  int row_y = keyboard_rect.origin.y + TOUCH_KEYBOARD_INPUT_H + (row * TOUCH_KEYBOARD_ROW_H);
+  int left = (keyboard_rect.size.w * start_unit) / total_units;
+  int right = (keyboard_rect.size.w * (start_unit + unit_count)) / total_units;
+  return GRect(keyboard_rect.origin.x + left + 1, row_y + 1,
+               PG_MAX(1, right - left - 2), TOUCH_KEYBOARD_ROW_H - 2);
+}
+
+static bool touch_keyboard_point_in_key(GRect keyboard_rect, GPoint point, int row,
+                                        int start_unit, int unit_count, int total_units) {
+  GRect rect = touch_keyboard_key_rect(keyboard_rect, row, start_unit, unit_count, total_units);
+  return grect_contains_point(&rect, &point);
+}
+
+static char touch_keyboard_char_at(GRect keyboard_rect, GPoint point, char *action) {
+  if (action) {
+    *action = '\0';
+  }
+  if (!grect_contains_point(&keyboard_rect, &point) ||
+      point.y < keyboard_rect.origin.y + TOUCH_KEYBOARD_INPUT_H) {
+    return '\0';
+  }
+
+  for (int row = 0; row < 2; row++) {
+    const char *chars = touch_keyboard_chars_for_row(row);
+    int len = strlen(chars);
+    for (int i = 0; i < len; i++) {
+      if (touch_keyboard_point_in_key(keyboard_rect, point, row, i, 1, len)) {
+        return chars[i];
+      }
+    }
+  }
+
+  const char *third_row = touch_keyboard_chars_for_row(2);
+  if (touch_keyboard_point_in_key(keyboard_rect, point, 2, 0, 2, 11)) {
+    if (action) *action = '^';
+    return '\0';
+  }
+  for (int i = 0; i < 7; i++) {
+    if (touch_keyboard_point_in_key(keyboard_rect, point, 2, i + 2, 1, 11)) {
+      return third_row[i];
+    }
+  }
+  if (touch_keyboard_point_in_key(keyboard_rect, point, 2, 9, 2, 11)) {
+    if (action) *action = 'b';
+    return '\0';
+  }
+
+  if (touch_keyboard_point_in_key(keyboard_rect, point, 3, 0, 2, 10)) {
+    if (action) *action = 'm';
+  } else if (touch_keyboard_point_in_key(keyboard_rect, point, 3, 2, 5, 10)) {
+    if (action) *action = ' ';
+  } else if (touch_keyboard_point_in_key(keyboard_rect, point, 3, 7, 3, 10)) {
+    if (action) *action = '>';
+  }
+  return '\0';
+}
+
+static void append_touch_keyboard_char(char ch) {
+  size_t current = strlen(s_pending_text);
+  if (current + 1 >= TOUCH_KEYBOARD_MAX_TEXT) {
+    show_status("Message full");
+    return;
+  }
+  if (!s_touch_keyboard_symbols && s_touch_keyboard_shift && ch >= 'a' && ch <= 'z') {
+    ch = (char)(ch - 'a' + 'A');
+  }
+  s_pending_text[current] = ch;
+  s_pending_text[current + 1] = '\0';
+  s_touch_keyboard_shift = false;
+}
+
+static void backspace_touch_keyboard_text(void) {
+  size_t len = strlen(s_pending_text);
+  if (len > 0) {
+    s_pending_text[len - 1] = '\0';
+  }
+}
+
+static void send_touch_keyboard_text(void) {
+  if (!s_pending_text[0]) {
+    show_status("Type message");
+    return;
+  }
+  char text[TOUCH_KEYBOARD_MAX_TEXT];
+  copy_cstr(text, sizeof(text), s_pending_text);
+  copy_cstr(s_touch_keyboard_sent_text, sizeof(s_touch_keyboard_sent_text), text);
+  s_touch_keyboard_open = false;
+  s_touch_keyboard_symbols = false;
+  s_touch_keyboard_shift = false;
+  s_pending_text[0] = '\0';
+  Message *slot = append_message_slot();
+  copy_cstr(slot->id, sizeof(slot->id), "pending");
+  copy_cstr(slot->text, sizeof(slot->text), text);
+  copy_cstr(slot->meta, sizeof(slot->meta), "...");
+  slot->outgoing = true;
+  s_at_newest = true;
+  s_user_scrolled_messages = false;
+  s_selected_message = s_message_count;
+  if (s_messages_root) {
+    recalc_message_layout();
+    set_chat_scroll_offset(s_chat_content_height, true);
+  }
+  send_text_message(text, false);
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void handle_touch_keyboard_key(char ch, char action) {
+  if (ch) {
+    append_touch_keyboard_char(ch);
+  } else if (action == ' ') {
+    append_touch_keyboard_char(' ');
+  } else if (action == 'b') {
+    backspace_touch_keyboard_text();
+  } else if (action == '^') {
+    s_touch_keyboard_shift = !s_touch_keyboard_shift;
+  } else if (action == 'm') {
+    s_touch_keyboard_symbols = !s_touch_keyboard_symbols;
+    s_touch_keyboard_shift = false;
+  } else if (action == '>') {
+    send_touch_keyboard_text();
+    return;
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void draw_touch_keyboard_key(GContext *ctx, GRect rect, const char *label) {
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, rect, 0, GCornerNone);
+  graphics_context_set_stroke_color(ctx, GColorBlack);
+  graphics_draw_rect(ctx, rect);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(rect.origin.x, rect.origin.y + 1, rect.size.w, rect.size.h - 1),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+}
+
+static void draw_touch_keyboard_char_row(GContext *ctx, GRect keyboard_rect, int row) {
+  const char *chars = touch_keyboard_chars_for_row(row);
+  int len = strlen(chars);
+  char label[2] = {'\0', '\0'};
+  for (int i = 0; i < len; i++) {
+    label[0] = chars[i];
+    if (!s_touch_keyboard_symbols && s_touch_keyboard_shift && label[0] >= 'a' && label[0] <= 'z') {
+      label[0] = (char)(label[0] - 'a' + 'A');
+    }
+    draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, row, i, 1, len), label);
+  }
+}
+
+static void draw_touch_keyboard(GContext *ctx, GRect bounds) {
+  GRect keyboard_rect = touch_keyboard_rect_for_bounds(bounds);
+  GRect input_rect = GRect(keyboard_rect.origin.x + 7, keyboard_rect.origin.y + 3,
+                          keyboard_rect.size.w - 14, TOUCH_KEYBOARD_INPUT_H - 5);
+  graphics_context_set_fill_color(ctx, GColorDarkGray);
+  graphics_fill_rect(ctx, keyboard_rect, 0, GCornerNone);
+  graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : OUT_BUBBLE);
+  graphics_fill_rect(ctx, input_rect, 6, GCornersAll);
+  graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+  graphics_draw_round_rect(ctx, input_rect, 6);
+  graphics_context_set_text_color(ctx, s_pending_text[0] ? GColorBlack : GColorDarkGray);
+  graphics_draw_text(ctx, s_pending_text[0] ? s_pending_text : "Type...",
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(input_rect.origin.x + 5, input_rect.origin.y + 1,
+                           input_rect.size.w - 10, input_rect.size.h - 2),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  draw_touch_keyboard_char_row(ctx, keyboard_rect, 0);
+  draw_touch_keyboard_char_row(ctx, keyboard_rect, 1);
+  draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 2, 0, 2, 11), "^");
+  const char *third_row = touch_keyboard_chars_for_row(2);
+  char label[2] = {'\0', '\0'};
+  for (int i = 0; i < 7; i++) {
+    label[0] = third_row[i];
+    if (!s_touch_keyboard_symbols && s_touch_keyboard_shift && label[0] >= 'a' && label[0] <= 'z') {
+      label[0] = (char)(label[0] - 'a' + 'A');
+    }
+    draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 2, i + 2, 1, 11), label);
+  }
+  draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 2, 9, 2, 11), "<");
+  draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 3, 0, 2, 10),
+                          s_touch_keyboard_symbols ? "ABC" : "#?");
+  draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 3, 2, 5, 10), "space");
+  draw_touch_keyboard_key(ctx, touch_keyboard_key_rect(keyboard_rect, 3, 7, 3, 10), "send");
+}
+#else
+static void close_touch_keyboard(void) {
+  s_touch_keyboard_open = false;
+  s_touch_keyboard_symbols = false;
+  s_touch_keyboard_shift = false;
+  s_pending_text[0] = '\0';
+}
+#endif
+
 static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, CHAT_BG);
@@ -2023,7 +2305,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     }
 
     if (message->image_placeholder) {
-      int max_image_w = message_image_frame_width(text_w);
+      int max_image_w = message_image_frame_width(bubble_w);
       int image_w = message_image_display_width(message, max_image_w);
       int image_h = message_image_display_height(message, max_image_w);
       GRect image_rect = GRect(x + 5 + ((text_w - image_w) / 2),
@@ -2082,12 +2364,11 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     }
   }
 
-  int compose_w = PG_MIN(bounds.size.w - 24, ROUND_UI ? 120 : 132);
-  int compose_x = (bounds.size.w - compose_w) / 2;
-  int compose_y = s_compose_bubble_y - s_chat_scroll_offset;
+  GRect compose_rect = compose_rect_for_bounds(bounds);
+  int compose_y = compose_rect.origin.y;
   bool compose_selected = compose_target_is_selected();
-  GRect compose_rect = GRect(compose_x, compose_y, compose_w, COMPOSE_BUBBLE_H);
-  if (s_at_newest && compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
+  if (s_at_newest && !s_touch_keyboard_open &&
+      compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
     graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
     graphics_fill_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2, GCornersAll);
     graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (compose_selected ? APP_COLOR : GColorDarkGray));
@@ -2103,6 +2384,12 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
                              compose_rect.size.w - 16, compose_rect.size.h - 5),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
   }
+
+#if TOUCH_KEYBOARD_AVAILABLE
+  if (s_touch_keyboard_open) {
+    draw_touch_keyboard(ctx, bounds);
+  }
+#endif
 }
 
 static void destroy_chat_view(void) {
@@ -2652,6 +2939,7 @@ static void request_newer_messages(bool silent) {
 static void request_messages(const char *chat_id) {
   cancel_message_timeout();
   cancel_message_retry();
+  close_touch_keyboard();
   destroy_message_images();
   clear_message_stage();
   s_loading_older_messages = false;
@@ -2977,8 +3265,17 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       copy_cstr(anchor_id, sizeof(anchor_id), s_messages[s_selected_message].id);
       anchor_y = s_message_y[s_selected_message];
     }
-    slot = append_message_slot();
+    char *incoming_text = tuple_cstring(iter, MESSAGE_KEY_Text);
+    bool replaces_pending = s_touch_keyboard_sent_text[0] &&
+                            s_message_count > 0 &&
+                            strcmp(s_messages[s_message_count - 1].id, "pending") == 0 &&
+                            tuple_int(iter, MESSAGE_KEY_IsOutgoing, 0) != 0 &&
+                            incoming_text && strcmp(incoming_text, s_touch_keyboard_sent_text) == 0;
+    slot = replaces_pending ? &s_messages[s_message_count - 1] : append_message_slot();
     populate_message_from_tuple(slot, iter);
+    if (replaces_pending) {
+      s_touch_keyboard_sent_text[0] = '\0';
+    }
     s_expected_rows = count;
     if (!s_message_stream_silent && follow_bottom) {
       scroll_to_bottom(false);
@@ -3978,6 +4275,7 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void show_action_window(ActionMenuMode mode) {
+  close_touch_keyboard();
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
   } else {
@@ -4443,6 +4741,11 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
 }
 
 static void main_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_touch_keyboard_open) {
+    close_touch_keyboard();
+    show_status(s_current_chat_title);
+    return;
+  }
   if (s_view_state == ViewStateChat) {
     cancel_message_timeout();
     cancel_message_retry();
@@ -4452,12 +4755,43 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
     s_message_transfer_id = 0;
     s_chat_view_pending = false;
     clear_message_stage();
+    close_touch_keyboard();
     send_command_with_status("leave_chat", s_current_chat_id, NULL, NULL, NULL, false);
     render_chat_list_with_transition();
   } else {
     window_stack_pop(true);
   }
 }
+
+#if TOUCH_KEYBOARD_AVAILABLE
+static void touch_handler(const TouchEvent *event, void *context) {
+  if (!TOUCH_KEYBOARD_ENABLED || !event || event->type != TouchEvent_Liftoff ||
+      s_view_state != ViewStateChat || !s_messages_root) {
+    return;
+  }
+
+  GRect bounds = layer_get_bounds(s_messages_root);
+  GRect frame = layer_get_frame(s_messages_root);
+  GPoint point = GPoint(event->x - frame.origin.x, event->y - frame.origin.y);
+  if (!grect_contains_point(&bounds, &point)) {
+    return;
+  }
+  if (s_touch_keyboard_open) {
+    GRect keyboard_rect = touch_keyboard_rect_for_bounds(bounds);
+    char action;
+    char ch = touch_keyboard_char_at(keyboard_rect, point, &action);
+    handle_touch_keyboard_key(ch, action);
+    return;
+  }
+
+  if (s_at_newest) {
+    GRect compose_rect = compose_rect_for_bounds(bounds);
+    if (grect_contains_point(&compose_rect, &point)) {
+      open_touch_keyboard();
+    }
+  }
+}
+#endif
 
 static void click_config_provider(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, main_select_click_handler);
@@ -4530,6 +4864,11 @@ static void init(void) {
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_open(APP_INBOX_SIZE, APP_OUTBOX_SIZE);
+#if TOUCH_KEYBOARD_AVAILABLE
+  if (TOUCH_KEYBOARD_ENABLED) {
+    touch_service_subscribe(touch_handler, NULL);
+  }
+#endif
 
   s_main_window = window_create();
   window_set_click_config_provider(s_main_window, click_config_provider);
@@ -4560,6 +4899,11 @@ static void deinit(void) {
   free_image_transfer_buffer();
   free_avatar_transfer_buffer();
   free_full_text_body();
+#if TOUCH_KEYBOARD_AVAILABLE
+  if (TOUCH_KEYBOARD_ENABLED) {
+    touch_service_unsubscribe();
+  }
+#endif
   window_destroy(s_main_window);
 }
 

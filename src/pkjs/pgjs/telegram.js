@@ -3,10 +3,9 @@ var gram = require('./gramjs.bundle');
 var readOutboxByChatId = {};
 var MEDIA_DOWNLOAD_TIMEOUT_MS = 3000;
 var FULL_MEDIA_DOWNLOAD_TIMEOUT_MS = 18000;
-var FALLBACK_THUMB_TYPES = ['x', 'm', 's'];
 var MAX_SAFE_CHANNEL_PARTICIPANTS = 2000;
-var MAX_MEDIA_PREVIEW_CANDIDATES = 8;
-var MAX_MEDIA_PREVIEW_ATTEMPTS = 12;
+var MAX_MEDIA_PREVIEW_CANDIDATES = 5;
+var MAX_MEDIA_PREVIEW_ATTEMPTS = 4;
 var MAX_REPLY_CONTEXT_FETCHES = 12;
 var MAX_FORWARD_ENTITY_FETCHES = 12;
 var DEBUG_LOGS = false;
@@ -546,6 +545,9 @@ function pushMediaPreviewCandidate(candidates, candidate) {
     }
     return;
   }
+  if (objectName(candidate).indexOf('PhotoPathSize') !== -1) {
+    return;
+  }
   candidates.push(candidate);
 }
 
@@ -553,56 +555,129 @@ function isStrippedPreviewCandidate(candidate) {
   return objectName(candidate).indexOf('PhotoStrippedSize') !== -1;
 }
 
-function mediaPreviewArea(candidate) {
-  if (isStrippedPreviewCandidate(candidate)) {
-    return -2;
-  }
+function isVideoPreviewCandidate(candidate) {
+  return objectName(candidate).indexOf('VideoSize') !== -1;
+}
+
+function previewCandidateBytesLength(candidate) {
+  var bytes = toUint8Array(candidate && (candidate.bytes || candidate.data));
+  return bytes ? bytes.length : 0;
+}
+
+function previewCandidateDimensionArea(candidate) {
   if (typeof candidate === 'string') {
-    return -1;
+    return 0;
   }
   var width = candidate && (candidate.w || candidate.width);
   var height = candidate && (candidate.h || candidate.height);
   return (width || 0) * (height || 0);
 }
 
+function previewCandidateSize(candidate) {
+  var sizes = candidate && candidate.sizes;
+  var best = 0;
+  if (typeof candidate === 'string') {
+    return 0;
+  }
+  if (typeof (candidate && candidate.size) === 'number') {
+    best = candidate.size;
+  }
+  if (Array.isArray(sizes)) {
+    for (var i = 0; i < sizes.length; i += 1) {
+      if (typeof sizes[i] === 'number' && sizes[i] > best) {
+        best = sizes[i];
+      }
+    }
+  }
+  return best;
+}
+
+function mediaPreviewScore(candidate) {
+  var name = objectName(candidate);
+  var bytesLength = previewCandidateBytesLength(candidate);
+  var area = previewCandidateDimensionArea(candidate);
+  var size = previewCandidateSize(candidate);
+  if (typeof candidate === 'string') {
+    return 0;
+  }
+  if (bytesLength && !isStrippedPreviewCandidate(candidate)) {
+    return 900000000 + Math.max(area, size, bytesLength);
+  }
+  if (name.indexOf('PhotoSizeProgressive') !== -1) {
+    return 800000000 + Math.max(area, size);
+  }
+  if (name.indexOf('PhotoSize') !== -1) {
+    return 700000000 + Math.max(area, size);
+  }
+  if (isVideoPreviewCandidate(candidate)) {
+    return 600000000 + Math.max(area, size);
+  }
+  if (isStrippedPreviewCandidate(candidate)) {
+    return 1000 + bytesLength;
+  }
+  if (area || size) {
+    return 10000 + Math.max(area, size);
+  }
+  return 1;
+}
+
+function mediaPreviewDedupKey(candidate) {
+  if (typeof candidate === 'string') {
+    return 'string:' + candidate;
+  }
+  return [
+    objectName(candidate),
+    candidate && candidate.type || '',
+    candidate && (candidate.w || candidate.width) || '',
+    candidate && (candidate.h || candidate.height) || '',
+    previewCandidateSize(candidate),
+    previewCandidateBytesLength(candidate)
+  ].join(':');
+}
+
 function mediaPreviewCandidates(message) {
   var media = message && message.media;
   var document = messageDocument(message);
-  var webpage = messageWebpage(message);
   var file = message && message.file;
   var extendedMedia = media && (media.extendedMedia || media.extended_media);
   var candidates = [];
+  var unique = [];
+  var seen = {};
 
-  if (hasPreviewableStill(message)) {
-    pushMediaPreviewCandidate(candidates, FALLBACK_THUMB_TYPES);
-  }
   pushMediaPreviewCandidate(candidates, media && (media.videoCover || media.video_cover));
   pushMediaPreviewCandidate(candidates, extendedMedia && (extendedMedia.thumb || extendedMedia.thumbs));
   pushMediaPreviewCandidate(candidates, document && (document.thumb || document.thumbnail));
   pushMediaPreviewCandidate(candidates, document && document.thumbs);
-  pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
   pushMediaPreviewCandidate(candidates, file && (file.thumb || file.thumbnail || file.thumbs));
   pushMediaPreviewCandidate(candidates, media && media.photo && media.photo.sizes);
+  pushMediaPreviewCandidate(candidates, document && (document.videoThumbs || document.video_thumbs));
+
   candidates.sort(function(a, b) {
-    return mediaPreviewArea(b) - mediaPreviewArea(a);
+    return mediaPreviewScore(b) - mediaPreviewScore(a);
   });
-  return candidates.slice(0, MAX_MEDIA_PREVIEW_CANDIDATES);
+  for (var i = 0; i < candidates.length && unique.length < MAX_MEDIA_PREVIEW_CANDIDATES; i += 1) {
+    var candidate = candidates[i];
+    var key = mediaPreviewDedupKey(candidate);
+    if (!seen[key]) {
+      seen[key] = true;
+      unique.push(candidate);
+    }
+  }
+  return unique;
 }
 
 function previewThumbOption(candidate) {
   if (!candidate) {
     return null;
   }
-  return candidate.type || candidate.size || candidate;
+  if (typeof candidate === 'string') {
+    return candidate;
+  }
+  return candidate;
 }
 
 function isThumbNameCandidate(candidate) {
   return typeof candidate === 'string';
-}
-
-function looksLikePhoto(candidate) {
-  var name = objectName(candidate);
-  return !!(candidate && !candidate.type && (name.indexOf('Photo') !== -1 || candidate.sizes));
 }
 
 function candidateBytes(candidate) {
@@ -758,38 +833,18 @@ function downloadMediaPreviewCandidate(client, message, candidate) {
       }
     });
   }
-  if (looksLikePhoto(candidate)) {
-    pushAttempt(attemptLabel('photo', candidate, option), function() {
-      return downloadImageBytes(client, candidate, {});
-    });
-  }
   if (option) {
+    pushAttempt(attemptLabel('message-thumb', candidate, option), function() {
+      return downloadImageBytes(client, message, {thumb: option});
+    });
     if (document) {
       pushAttempt(attemptLabel('document-thumb', candidate, option), function() {
         return downloadImageBytes(client, document, {thumb: option});
       });
     }
-    pushAttempt(attemptLabel('message-thumb', candidate, option), function() {
-      return downloadImageBytes(client, message, {thumb: option});
-    });
-    if (media && !isThumbNameCandidate(candidate)) {
+    if (media && !document && !isThumbNameCandidate(candidate)) {
       pushAttempt(attemptLabel('media-thumb', candidate, option), function() {
         return downloadImageBytes(client, media, {thumb: option});
-      });
-    }
-  }
-  if (!isThumbNameCandidate(candidate)) {
-    pushAttempt(attemptLabel('message-candidate', candidate, option), function() {
-      return downloadImageBytes(client, message, {thumb: candidate});
-    });
-    if (media) {
-      pushAttempt(attemptLabel('media-candidate', candidate, option), function() {
-        return downloadImageBytes(client, media, {thumb: candidate});
-      });
-    }
-    if (document) {
-      pushAttempt(attemptLabel('document-candidate', candidate, option), function() {
-        return downloadImageBytes(client, document, {thumb: candidate});
       });
     }
   }

@@ -6,7 +6,7 @@ var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 32;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
-var IMAGE_CACHE_VERSION = 'v16';
+var IMAGE_CACHE_VERSION = 'v18';
 var MEDIA_PIPELINE_TIMEOUT_MS = 22000;
 var TALL_IMAGE_ASPECT = 1.85;
 var TALL_IMAGE_WATCH_MAX_BYTES = 9000;
@@ -435,6 +435,9 @@ function isTallSource(source) {
 function compactMessagePngAsync(source, width, height, colors, maxBytes, options) {
   var tall = isTallSource(source);
   var watchSafeMaxBytes = tall ? Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES) : maxBytes;
+  var normalScaleSteps = maxBytes >= 24000 ?
+                         [1, 0.96, 0.92, 0.88, 0.82, 0.75, 0.67, 0.58, 0.5, 0.42] :
+                         [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.42];
   if (tall && watchSafeMaxBytes < maxBytes) {
     if (DEBUG_LOGS) {
       debugLog('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
@@ -450,7 +453,7 @@ function compactMessagePngAsync(source, width, height, colors, maxBytes, options
     });
   }
   return compactPngAsync(source, width, height, colors, watchSafeMaxBytes, false, true,
-                         [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.42], 'contain', options).catch(function(err) {
+                         normalScaleSteps, 'contain', options).catch(function(err) {
     if (!tall) {
       throw err;
     }

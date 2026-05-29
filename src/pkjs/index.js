@@ -108,9 +108,9 @@ function configureForPlatform() {
     MAX_MESSAGE_TEXT = 460;
     MAX_CONTEXT_VIEW_TEXT = 1200;
     MESSAGE_WINDOW_BUDGET = 5400;
-    IMAGE_SIZE = 156;
-    IMAGE_WIDTH = 170;
-    IMAGE_MAX_BYTES = 15000;
+    IMAGE_SIZE = 176;
+    IMAGE_WIDTH = 176;
+    IMAGE_MAX_BYTES = 30000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 9;
