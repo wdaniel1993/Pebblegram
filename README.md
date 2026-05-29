@@ -9,7 +9,7 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 
 ## Download
 
-- [Download the Pebble app PBW](release/Pebblegram.pbw)
+- [Download Pebblegram 3.1 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.1.0/Pebblegram.pbw)
 
 ## What It Does
 
@@ -28,24 +28,21 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Includes a black-and-white optimized Diorite image path
 - Includes round-screen layout handling for Gabbro
 
-## Changes Since 2.3
+## Changes Since 3.0
 
-Pebblegram 2.9 is the current live Telegram build.
+Pebblegram 3.1 is the current live Telegram build.
 
-- Added message actions for replies, forwards, edits, deletes, full-text viewing, quote/context viewing, and Go to Bottom navigation.
-- Added Telegram reactions with a Pebble-safe reaction picker, separate emoji-reply picker, and reaction refresh/verification after Telegram send errors.
-- Improved live refresh so chat-list previews and unread state update while open chats preserve selection, scroll position, and resident message rows.
-- Reworked older/newer paging so foreground page loads preempt background work, recover cleanly from stalls, and no longer leave the watch stuck on Loading Older.
-- Hardened photo loading for photo-heavy chats, including foreground-only message photo preparation, cancellation of obsolete phone-side image work, per-image loading status, persistent image-cache LRU refresh, and one decoded message photo resident on the watch.
-- Fixed tall-photo handling on Emery/Gabbro without tiling or excessive padding by using tall-specific Telegram photo candidates and compact watch-safe encoding.
-- Treated webpage/link previews as text rows on the watch so repo/share links do not enter the image preview path.
-- Improved auth/session recovery for duplicated or revoked Telegram auth keys and removed redundant startup connection attempts.
-- Limited Telegram login-code requests to one per phone number every five minutes and added a saved-session backup to reduce accidental login loss.
-- Updated the app menu icon and bundled release PBW for 2.9.
+- Fixed PebbleOS crashes caused by long links and dense stack-trace text by shortening links to `[Link] domain.com` and compacting technical tokens before they reach the watch.
+- Refined emoji safety so supported emoji stay as glyphs, known unsupported emoji become useful `:name:` aliases, and unknown unsupported emoji fall back safely.
+- Restored the richer reaction picker and added emoji-only sending from the new-message flow.
+- Added sticker/custom emoji label handling when GramJS exposes a usable name or alt value.
+- Reduced Emery watch RAM footprint by about 17.9 KB versus 3.0 without lowering the 15 KB Emery photo payload limit.
+- Moved photo/avatar transfer buffers to exact-size temporary allocations and tightened chunk bounds before image data is copied.
+- Updated the bundled release PBW for 3.1.
 
 ## Quick Start
 
-1. Install [release/Pebblegram.pbw](release/Pebblegram.pbw) with the Pebble/Rebble mobile app.
+1. Install [Pebblegram 3.1 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.1.0/Pebblegram.pbw) with the Pebble/Rebble mobile app.
 2. Open Pebblegram settings in the Pebble mobile app.
 3. Enter your Telegram API ID, API hash, and phone number.
 4. Save once to request a Telegram login code.
@@ -89,4 +86,4 @@ For local testing with embedded API credentials, keep them in an ignored environ
 
 ## Status
 
-Pebblegram 2.9 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.
+Pebblegram 3.1 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.
