@@ -16,20 +16,15 @@ const runtimeConfig = {
   testServers: parseBoolean(process.env.PGJS_TELEGRAM_TEST_SERVERS)
 };
 
-await build({
-  entryPoints: ["tools/pgjs-gramjs-entry.js"],
+const commonOptions = {
   bundle: true,
   platform: "browser",
   format: "cjs",
   target: "es2015",
-  outfile: "src/pkjs/pgjs/gramjs.bundle.js",
   minify: true,
   sourcemap: false,
   legalComments: "none",
   logLevel: "info",
-  define: {
-    __PGJS_BUILTIN_CONFIG__: JSON.stringify(runtimeConfig)
-  },
   alias: {
     crypto: "./src/pkjs/pgjs/shims/crypto.js",
     fs: "./src/pkjs/pgjs/shims/empty.js",
@@ -45,4 +40,19 @@ await build({
     socks: "./src/pkjs/pgjs/shims/empty.js",
     websocket: "./src/pkjs/pgjs/shims/websocket.js"
   }
+};
+
+await build({
+  ...commonOptions,
+  entryPoints: ["tools/pgjs-gramjs-entry.js"],
+  outfile: "src/pkjs/pgjs/gramjs.bundle.js",
+  define: {
+    __PGJS_BUILTIN_CONFIG__: JSON.stringify(runtimeConfig)
+  }
+});
+
+await build({
+  ...commonOptions,
+  entryPoints: ["tools/pgjs-codecs-entry.js"],
+  outfile: "src/pkjs/pgjs/codecs.bundle.js"
 });

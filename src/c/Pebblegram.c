@@ -57,6 +57,7 @@
 #define MESSAGE_COMMAND_MAX_ATTEMPTS 3
 #define MESSAGE_TRANSFER_TIMEOUT_MS 20000
 #define IMAGE_COMMAND_RETRY_MS 350
+#define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
 #define CHAT_COMMAND_WAKE_RETRY_MS 700
 #define CHAT_COMMAND_MAX_ATTEMPTS 4
@@ -66,6 +67,10 @@
 #define IMAGE_TALL_MAX_MULTIPLIER 2
 #define IMAGE_DECODE_HEADROOM_BYTES 12000
 #define IMAGE_DECODE_HEADROOM_PIXELS 16000
+#define IMAGE_DECODE_FINAL_HEADROOM_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 8000, 7000, 7000, 6000, 10000, 9000, 8000)
+#define IMAGE_DECODE_MAX_DIMENSION 512
+#define IMAGE_RETRY_MAX_LEVEL 3
+#define IMAGE_DIAG_LOGS 0
 #define STATUS_CLEAR_MS 1000
 #define VIEW_TRANSITION_MS 120
 #define TOUCH_KEYBOARD_ENABLED PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 1, 0, 0)
@@ -77,6 +82,12 @@
 #define TOUCH_KEYBOARD_AVAILABLE 1
 #else
 #define TOUCH_KEYBOARD_AVAILABLE 0
+#endif
+
+#if IMAGE_DIAG_LOGS
+#define IMAGE_DIAG(...) APP_LOG(APP_LOG_LEVEL_INFO, __VA_ARGS__)
+#else
+#define IMAGE_DIAG(...)
 #endif
 
 // Platform constants are centralized here. Basalt/Diorite stay conservative on
@@ -140,9 +151,11 @@ typedef struct {
   bool image_requested;
   bool image_failed;
   uint8_t image_progress;
+  uint8_t image_retry_level;
   uint16_t image_width;
   uint16_t image_height;
   GBitmap *image_bitmap;
+  uint8_t *image_data;
 } Message;
 
 typedef struct {
@@ -237,6 +250,7 @@ static int s_image_size;
 static int s_image_received;
 static int s_image_expected_offset;
 static int s_image_transfer_id;
+static bool s_image_is_pbi;
 static int s_avatar_size;
 static int s_avatar_received;
 static int s_avatar_expected_offset;
@@ -657,6 +671,7 @@ static void reset_image_transfer_state(void) {
   s_image_received = 0;
   s_image_expected_offset = 0;
   s_image_transfer_id = 0;
+  s_image_is_pbi = false;
 }
 
 static void reset_avatar_transfer_state(void) {
@@ -748,6 +763,10 @@ static void destroy_message_bitmap(Message *message) {
       s_loaded_image_count--;
     }
   }
+  if (message && message->image_data) {
+    free(message->image_data);
+    message->image_data = NULL;
+  }
 }
 
 static void refresh_loaded_image_count(void) {
@@ -791,15 +810,23 @@ static void schedule_image_retry(void) {
   }
 }
 
-static void schedule_image_transfer_timeout(void) {
+static void schedule_image_timeout(uint32_t timeout_ms) {
   if (s_image_retry_timer) {
     app_timer_cancel(s_image_retry_timer);
   }
   if (s_view_state == ViewStateChat && s_messages_root) {
-    s_image_retry_timer = app_timer_register(IMAGE_TRANSFER_STALL_MS, image_retry_timer_callback, NULL);
+    s_image_retry_timer = app_timer_register(timeout_ms, image_retry_timer_callback, NULL);
   } else {
     s_image_retry_timer = NULL;
   }
+}
+
+static void schedule_image_prepare_timeout(void) {
+  schedule_image_timeout(IMAGE_PREPARE_STALL_MS);
+}
+
+static void schedule_image_transfer_timeout(void) {
+  schedule_image_timeout(IMAGE_TRANSFER_STALL_MS);
 }
 
 static bool message_needs_image(Message *message) {
@@ -819,7 +846,7 @@ static int message_image_display_width(const Message *message, int max_w) {
     h = max_h;
     w = (message->image_width * h) / message->image_height;
   }
-  return PG_MAX(32, PG_MIN(max_w, w));
+  return PG_MAX(32, PG_MIN(PG_MIN(max_w, (int)message->image_width), w));
 }
 
 static int message_image_display_height(const Message *message, int max_w) {
@@ -833,7 +860,7 @@ static int message_image_display_height(const Message *message, int max_w) {
   if (h > max_h) {
     h = max_h;
   }
-  return PG_MAX(32, PG_MIN(max_h, h));
+  return PG_MAX(32, PG_MIN(PG_MIN(max_h, (int)message->image_height), h));
 }
 
 static int message_index_from_ptr(Message *message) {
@@ -881,6 +908,16 @@ static bool message_image_visible(int index) {
   return message_image_near_viewport(index, 0);
 }
 
+static bool message_image_should_keep(int index) {
+  if (index < 0 || index >= s_message_count) {
+    return false;
+  }
+  if (index == s_selected_message) {
+    return true;
+  }
+  return message_image_near_viewport(index, IMAGE_KEEP_SCREEN_MARGIN);
+}
+
 static int message_image_focus_distance(int index) {
   if (s_selected_message >= 0 && s_selected_message < s_message_count) {
     return abs(index - s_selected_message) * 1000;
@@ -911,6 +948,52 @@ static bool message_needs_decode_headroom(const Message *message, int image_size
   int image_w = message_image_display_width(message, message_image_frame_width(bubble_w));
   int image_h = message_image_display_height(message, message_image_frame_width(bubble_w));
   return image_w * image_h >= IMAGE_DECODE_HEADROOM_PIXELS;
+}
+
+static size_t message_image_bitmap_heap_estimate(const Message *message) {
+  if (!message || message->image_width == 0 || message->image_height == 0) {
+    return 0;
+  }
+  size_t row_bytes = (size_t)((message->image_width + 3) & ~3);
+  return row_bytes * message->image_height;
+}
+
+static bool message_image_decode_has_headroom(const Message *message) {
+#ifdef _PBL_API_EXISTS_heap_bytes_free
+  size_t estimate = message_image_bitmap_heap_estimate(message);
+  if (estimate > 0) {
+    size_t needed = estimate + IMAGE_DECODE_FINAL_HEADROOM_BYTES;
+    size_t available = heap_bytes_free();
+    if (available < needed) {
+      APP_LOG(APP_LOG_LEVEL_WARNING, "Photo decode skipped, heap %u need %u",
+              (unsigned)available, (unsigned)needed);
+      return false;
+    }
+  }
+#endif
+  return true;
+}
+
+static unsigned image_request_decode_cost_budget(void) {
+#ifdef _PBL_API_EXISTS_heap_bytes_free
+  size_t available = heap_bytes_free();
+  size_t reserve = IMAGE_DECODE_FINAL_HEADROOM_BYTES + 4096;
+  if (available <= reserve) {
+    return 0;
+  }
+  size_t budget = available - reserve;
+  return (unsigned)PG_MIN(budget, 65000);
+#else
+  return 0;
+#endif
+}
+
+static unsigned image_diag_heap_free(void) {
+#ifdef _PBL_API_EXISTS_heap_bytes_free
+  return (unsigned)heap_bytes_free();
+#else
+  return 0;
+#endif
 }
 
 static bool message_is_gif(const Message *message) {
@@ -950,6 +1033,7 @@ static void prepare_selected_image_request(void) {
     selected->image_failed = false;
     selected->image_error[0] = '\0';
     selected->image_progress = 0;
+    selected->image_retry_level = 0;
   }
 
   if (s_image_message_id[0] && strcmp(s_image_message_id, selected->image_token) != 0) {
@@ -975,7 +1059,7 @@ static bool click_is_repeating(ClickRecognizerRef recognizer) {
 
 static void sync_message_images(void) {
   for (int i = 0; i < MAX_MESSAGES; i++) {
-    if (!message_image_near_viewport(i, IMAGE_KEEP_SCREEN_MARGIN)) {
+    if (!message_image_should_keep(i)) {
       destroy_message_bitmap(&s_messages[i]);
       s_messages[i].image_failed = false;
       s_messages[i].image_error[0] = '\0';
@@ -986,7 +1070,7 @@ static void sync_message_images(void) {
   if (s_image_message_id[0]) {
     Message *message = find_message_by_image_token(s_image_message_id);
     int image_index = message_index_from_ptr(message);
-    if (!message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN)) {
+    if (!message_image_should_keep(image_index)) {
       clear_active_image_request();
     }
   }
@@ -1547,10 +1631,13 @@ static void preserve_stage_image_state(void) {
       }
       if (!stage->image_bitmap && current->image_bitmap) {
         stage->image_bitmap = current->image_bitmap;
+        stage->image_data = current->image_data;
         current->image_bitmap = NULL;
+        current->image_data = NULL;
       }
       stage->image_requested = current->image_requested;
       stage->image_failed = current->image_failed;
+      stage->image_retry_level = current->image_retry_level;
       copy_cstr(stage->image_error, sizeof(stage->image_error), current->image_error);
       current->image_token[0] = '\0';
       break;
@@ -1610,6 +1697,7 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
     message->image_failed = false;
     message->image_error[0] = '\0';
     message->image_progress = 0;
+    message->image_retry_level = 0;
     message->image_bitmap = NULL;
   }
 }
@@ -2782,16 +2870,66 @@ static bool send_active_image_request(void) {
     return false;
   }
   int image_index = message_index_from_ptr(message);
-  if (!message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN)) {
+  if (image_index != s_selected_message &&
+      !message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN)) {
+    IMAGE_DIAG("PGIMG watch request cancel offscreen msg=%s index=%d selected=%d",
+               message->image_token, image_index, s_selected_message);
     clear_active_image_request();
     return false;
   }
-  if (send_command_with_status("get_image", s_current_chat_id, NULL, NULL, message->image_token, false)) {
-    schedule_image_transfer_timeout();
+  unsigned budget = image_request_decode_cost_budget();
+  char request_text[18];
+  snprintf(request_text, sizeof(request_text), "%u:%u",
+           (unsigned)message->image_retry_level,
+           budget);
+  IMAGE_DIAG("PGIMG watch request msg=%s attempt=%u index=%d selected=%d budget=%u heap=%u",
+             message->image_token, (unsigned)message->image_retry_level,
+             image_index, s_selected_message, budget, image_diag_heap_free());
+  if (send_command_with_status("get_image", s_current_chat_id, request_text, NULL, message->image_token, false)) {
+    schedule_image_prepare_timeout();
     return true;
   }
   schedule_image_retry();
   return false;
+}
+
+static bool retry_active_image_request(Message *message, const char *detail) {
+  int image_index = message_index_from_ptr(message);
+  if (!message || !message->image_token[0] ||
+      image_index < 0 ||
+      (image_index != s_selected_message &&
+       !message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN)) ||
+      message->image_retry_level >= IMAGE_RETRY_MAX_LEVEL) {
+    IMAGE_DIAG("PGIMG watch retry blocked msg=%s index=%d selected=%d attempt=%u detail=%s",
+               message ? message->image_token : "(null)", image_index, s_selected_message,
+               message ? (unsigned)message->image_retry_level : 0,
+               detail && detail[0] ? detail : "");
+    return false;
+  }
+
+  IMAGE_DIAG("PGIMG watch retry msg=%s fromAttempt=%u detail=%s heap=%u",
+             message->image_token, (unsigned)message->image_retry_level,
+             detail && detail[0] ? detail : "", image_diag_heap_free());
+  if (s_image_retry_timer) {
+    app_timer_cancel(s_image_retry_timer);
+    s_image_retry_timer = NULL;
+  }
+  reset_image_transfer_state();
+  copy_cstr(s_image_message_id, sizeof(s_image_message_id), message->image_token);
+  message->image_retry_level++;
+  message->image_requested = true;
+  message->image_failed = false;
+  message->image_progress = 0;
+  copy_cstr(message->image_error, sizeof(message->image_error),
+            detail && detail[0] ? detail : "Resizing");
+  set_message_image_progress(message, 12);
+  if (!send_active_image_request()) {
+    schedule_image_retry();
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+  return true;
 }
 
 static void request_next_image(void) {
@@ -2803,8 +2941,12 @@ static void request_next_image(void) {
   if (s_image_message_id[0]) {
     Message *active_message = find_message_by_image_token(s_image_message_id);
     int active_index = message_index_from_ptr(active_message);
-    if (!message_image_near_viewport(active_index, IMAGE_KEEP_SCREEN_MARGIN) ||
+    if ((active_index != s_selected_message &&
+         !message_image_near_viewport(active_index, IMAGE_KEEP_SCREEN_MARGIN)) ||
         (selected_message_needs_image() && active_index != s_selected_message)) {
+      IMAGE_DIAG("PGIMG watch active cleared msg=%s active=%d selected=%d selectedNeeds=%d",
+                 s_image_message_id, active_index, s_selected_message,
+                 selected_message_needs_image() ? 1 : 0);
       clear_active_image_request();
     } else {
       return;
@@ -2828,6 +2970,9 @@ static void request_next_image(void) {
   }
 
   Message *message = &s_messages[image_index];
+  IMAGE_DIAG("PGIMG watch candidate msg=%s index=%d selected=%d loaded=%d failed=%d heap=%u",
+             message->image_token, image_index, s_selected_message, s_loaded_image_count,
+             message->image_failed ? 1 : 0, image_diag_heap_free());
   if (image_index == s_selected_message && s_loaded_image_count > 0) {
     destroy_other_message_images(message);
   }
@@ -3236,6 +3381,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_message_stream_mode = mode;
     char *stream_flag = tuple_cstring(iter, MESSAGE_KEY_Text);
     s_message_stream_silent = stream_flag && strcmp(stream_flag, "silent") == 0;
+    IMAGE_DIAG("PGIMG watch messages_start mode=%d count=%d transfer=%d initial=%d silent=%d",
+               mode, count, transfer_id, initial ? 1 : 0, s_message_stream_silent ? 1 : 0);
     if (initial) {
       clear_message_stage();
       clear_message_rows();
@@ -3496,6 +3643,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     } else if (s_message_count > count) {
       s_message_count = count;
     }
+    IMAGE_DIAG("PGIMG watch messages_done count=%d staged=%d visible=%d selected=%d rows=%d",
+               count, staged_load ? 1 : 0, chat_visible ? 1 : 0,
+               s_selected_message, s_message_count);
     if (!staged_load) {
       clear_message_stage();
     }
@@ -3716,41 +3866,76 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 	    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
 	    int image_size = tuple_int(iter, MESSAGE_KEY_ImageSize, 0);
 	    int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
-	    Message *message = find_message_by_image_token(message_id);
+    int image_width = tuple_int(iter, MESSAGE_KEY_ImageWidth, 0);
+    int image_height = tuple_int(iter, MESSAGE_KEY_ImageHeight, 0);
+    char *image_format = tuple_cstring(iter, MESSAGE_KEY_Text);
+    Message *message = find_message_by_image_token(message_id);
     bool is_active_image = message_id && strcmp(message_id, s_image_message_id) == 0;
+    IMAGE_DIAG("PGIMG watch image_start msg=%s active=%d transfer=%d bytes=%d dims=%dx%d fmt=%s heap=%u",
+               message_id ? message_id : "(null)", is_active_image ? 1 : 0,
+               transfer_id, image_size, image_width, image_height,
+               image_format && image_format[0] ? image_format : "png",
+               image_diag_heap_free());
     if (!message || !is_active_image) {
       request_next_image();
       return;
     }
     int image_index = message_index_from_ptr(message);
     if (!message_id || transfer_id <= 0 || image_size <= 0 || image_size > MAX_IMAGE_BYTES) {
-      message->image_requested = false;
-      message->image_failed = true;
-      set_message_image_error(message, image_size > MAX_IMAGE_BYTES ? "Photo over watch limit" : "Photo start failed");
+      bool retrying_image = image_size > MAX_IMAGE_BYTES &&
+                             retry_active_image_request(message, "Resizing");
+      IMAGE_DIAG("PGIMG watch image_start rejected msg=%s size=%d retry=%d",
+                 message_id ? message_id : "(null)", image_size, retrying_image ? 1 : 0);
+      if (!retrying_image) {
+        message->image_requested = false;
+        message->image_failed = true;
+        set_message_image_error(message, image_size > MAX_IMAGE_BYTES ? "Photo too large" : "Photo start failed");
+      }
       if (s_messages_root) {
         layer_mark_dirty(s_messages_root);
       }
-      if (message_id && strcmp(message_id, s_image_message_id) == 0) {
+      if (!retrying_image && message_id && strcmp(message_id, s_image_message_id) == 0) {
         reset_image_transfer_state();
       }
-      request_next_image();
+      if (!retrying_image) {
+        request_next_image();
+      }
       return;
+    }
+    if (image_width > 0 && image_height > 0 &&
+        image_width <= IMAGE_DECODE_MAX_DIMENSION && image_height <= IMAGE_DECODE_MAX_DIMENSION) {
+      bool dimensions_changed = message->image_width != image_width || message->image_height != image_height;
+      message->image_width = (uint16_t)image_width;
+      message->image_height = (uint16_t)image_height;
+      if (dimensions_changed) {
+        recalc_message_layout();
+      }
     }
 	    if (image_index == s_selected_message || message_needs_decode_headroom(message, image_size)) {
 	      destroy_other_message_images(message);
 	    }
+    reset_avatar_transfer_state();
+    free_full_text_body();
     if (!ensure_image_transfer_buffer(image_size)) {
       destroy_other_message_images(message);
     }
     if (!ensure_image_transfer_buffer(image_size)) {
-      message->image_requested = false;
-      message->image_failed = true;
-      set_message_image_error(message, "Photo memory low");
-      reset_image_transfer_state();
+      bool retrying_image = retry_active_image_request(message, "Resizing");
+      IMAGE_DIAG("PGIMG watch image_start buffer_fail msg=%s size=%d retry=%d heap=%u",
+                 message_id ? message_id : "(null)", image_size, retrying_image ? 1 : 0,
+                 image_diag_heap_free());
+      if (!retrying_image) {
+        message->image_requested = false;
+        message->image_failed = true;
+        set_message_image_error(message, "Photo too large");
+        reset_image_transfer_state();
+      }
       if (s_messages_root) {
         layer_mark_dirty(s_messages_root);
       }
-      request_next_image();
+      if (!retrying_image) {
+        request_next_image();
+      }
       return;
     }
     copy_cstr(s_image_message_id, sizeof(s_image_message_id), message_id);
@@ -3758,6 +3943,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 	    s_image_received = 0;
 	    s_image_expected_offset = 0;
 	    s_image_transfer_id = transfer_id;
+    s_image_is_pbi = image_format && strcmp(image_format, "pbi") == 0;
 	    copy_cstr(message->image_error, sizeof(message->image_error), "Receiving");
 	    set_message_image_progress(message, 25);
 	    schedule_image_transfer_timeout();
@@ -3772,9 +3958,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 	    char *detail = tuple_cstring(iter, MESSAGE_KEY_Error);
 	    Message *message = find_message_by_image_token(message_id);
 	    bool is_active_image = message_id && strcmp(message_id, s_image_message_id) == 0;
+    IMAGE_DIAG("PGIMG watch image_status msg=%s active=%d detail=%s",
+               message_id ? message_id : "(null)", is_active_image ? 1 : 0,
+               detail && detail[0] ? detail : "");
 	    if (message && is_active_image && message->image_requested && !message->image_failed) {
 	      copy_cstr(message->image_error, sizeof(message->image_error), detail && detail[0] ? detail : "Preparing");
 	      set_message_image_progress(message, image_loading_phase_percent(message->image_error));
+      if (!s_image_buffer) {
+        schedule_image_prepare_timeout();
+      }
 	      if (s_messages_root) {
 	        layer_mark_dirty(s_messages_root);
 	      }
@@ -3817,6 +4009,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (message) {
       set_message_image_progress(message, 25 + ((progress_percent(s_image_received, s_image_size) * 75) / 100));
     }
+    if (offset == 0 || s_image_received == s_image_size) {
+      IMAGE_DIAG("PGIMG watch image_chunk msg=%s transfer=%d offset=%d len=%d received=%d/%d",
+                 message_id ? message_id : "(null)", transfer_id, offset, data_len,
+                 s_image_received, s_image_size);
+    }
     schedule_image_transfer_timeout();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
@@ -3829,53 +4026,91 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, 0);
     Message *message = find_message_by_image_token(message_id);
     int image_index = message_index_from_ptr(message);
+    bool transfer_complete = s_image_received == s_image_size && s_image_buffer;
     bool should_keep_image = message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN);
     bool is_active_image = message_id && strcmp(message_id, s_image_message_id) == 0 &&
                            transfer_id == s_image_transfer_id;
+    bool retrying_image = false;
+    IMAGE_DIAG("PGIMG watch image_done msg=%s active=%d transfer=%d complete=%d received=%d/%d pbi=%d keep=%d heap=%u",
+               message_id ? message_id : "(null)", is_active_image ? 1 : 0, transfer_id,
+               transfer_complete ? 1 : 0, s_image_received, s_image_size,
+               s_image_is_pbi ? 1 : 0, should_keep_image ? 1 : 0,
+               image_diag_heap_free());
     if (message && is_active_image) {
-      if (should_keep_image && s_image_received == s_image_size && s_image_buffer) {
+      if (transfer_complete) {
+        bool attempted_decode = false;
         destroy_message_bitmap(message);
-        if (s_loaded_image_count > 0 &&
-            (image_index == s_selected_message || message_needs_decode_headroom(message, s_image_size))) {
-          destroy_other_message_images(message);
+        destroy_other_message_images(message);
+        reset_avatar_transfer_state();
+        free_full_text_body();
+        if (s_image_is_pbi) {
+          attempted_decode = true;
+          message->image_bitmap = gbitmap_create_with_data(s_image_buffer);
+          if (message->image_bitmap) {
+            message->image_data = s_image_buffer;
+            s_image_buffer = NULL;
+            s_image_buffer_capacity = 0;
+          }
+        } else if (message_image_decode_has_headroom(message)) {
+          attempted_decode = true;
+          message->image_bitmap = gbitmap_create_from_png_data(s_image_buffer, s_image_size);
         }
-        message->image_bitmap = gbitmap_create_from_png_data(s_image_buffer, s_image_size);
-        if (!message->image_bitmap && s_loaded_image_count > 0) {
+        if (!s_image_is_pbi && !message->image_bitmap && s_loaded_image_count > 0) {
           destroy_other_message_images(message);
           message->image_bitmap = gbitmap_create_from_png_data(s_image_buffer, s_image_size);
         }
         if (message->image_bitmap) {
+          message->image_failed = false;
+          message->image_error[0] = '\0';
           s_loaded_image_count++;
           sync_message_images();
+          IMAGE_DIAG("PGIMG watch decode_success msg=%s pbi=%d loaded=%d heap=%u",
+                     message_id ? message_id : "(null)", s_image_is_pbi ? 1 : 0,
+                     s_loaded_image_count, image_diag_heap_free());
         } else {
-          message->image_failed = true;
-          message->image_error[0] = '\0';
+          retrying_image = retry_active_image_request(message, "Resizing");
+          IMAGE_DIAG("PGIMG watch decode_fail msg=%s attempted=%d retry=%d heap=%u",
+                     message_id ? message_id : "(null)", attempted_decode ? 1 : 0,
+                     retrying_image ? 1 : 0, image_diag_heap_free());
+          if (!retrying_image) {
+            message->image_failed = true;
+            set_message_image_error(message, attempted_decode ? "Photo decode failed" : "Photo too large");
+          }
         }
       } else if (should_keep_image) {
-        message->image_failed = true;
-        set_message_image_error(message, "Photo transfer incomplete");
+        retrying_image = retry_active_image_request(message, "Retrying");
+        IMAGE_DIAG("PGIMG watch incomplete msg=%s retry=%d",
+                   message_id ? message_id : "(null)", retrying_image ? 1 : 0);
+        if (!retrying_image) {
+          message->image_failed = true;
+          set_message_image_error(message, "Photo transfer incomplete");
+        }
       } else {
         message->image_failed = false;
         message->image_error[0] = '\0';
         message->image_progress = 0;
       }
-      message->image_requested = false;
+      if (!retrying_image) {
+        message->image_requested = false;
+      }
       if (s_messages_root) {
         layer_mark_dirty(s_messages_root);
       }
     }
-    if (is_active_image) {
+    if (is_active_image && !retrying_image) {
       if (s_image_retry_timer) {
         app_timer_cancel(s_image_retry_timer);
         s_image_retry_timer = NULL;
       }
       reset_image_transfer_state();
     }
-    request_next_image();
+    if (!retrying_image) {
+      request_next_image();
+    }
     return;
   }
 
-  if (strcmp(type, "image_error") == 0) {
+	  if (strcmp(type, "image_error") == 0) {
     char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
     char *detail = tuple_cstring(iter, MESSAGE_KEY_Error);
     int transfer_id = tuple_int(iter, MESSAGE_KEY_ImageTransferId, s_image_transfer_id);
@@ -3883,6 +4118,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int image_index = message_index_from_ptr(message);
     bool is_active_image = message_id && strcmp(message_id, s_image_message_id) == 0 &&
                            transfer_id == s_image_transfer_id;
+    IMAGE_DIAG("PGIMG watch image_error msg=%s active=%d transfer=%d detail=%s",
+               message_id ? message_id : "(null)", is_active_image ? 1 : 0,
+               transfer_id, detail && detail[0] ? detail : "");
     if (message && is_active_image) {
       message->image_requested = false;
       message->image_failed = message_image_near_viewport(image_index, IMAGE_KEEP_SCREEN_MARGIN);

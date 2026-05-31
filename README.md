@@ -37,7 +37,8 @@ Pebblegram 3.2 is the current live Telegram build.
 - Added the Emery touch keyboard for composing short replies directly on the watch.
 - Kept the keyboard compact with bordered keys, one-key shift, symbol mode, and optimistic outgoing bubbles that become the sent message when Telegram confirms delivery.
 - Made message deletes update the open chat in place instead of reloading the whole thread.
-- Updated the bundled release PBW for 3.2.
+- Fixed portrait photo previews on Emery so tall images use the safe packed-image path on the first load instead of failing once, retrying, or rendering as a blank block.
+- Updated the bundled release PBW and GitHub release download for 3.2.
 
 ## Quick Start
 

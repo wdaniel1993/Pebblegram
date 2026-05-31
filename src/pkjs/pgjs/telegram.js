@@ -1,5 +1,6 @@
 var auth = require('./auth');
 var gram = require('./gramjs.bundle');
+var codecs = null;
 var readOutboxByChatId = {};
 var MEDIA_DOWNLOAD_TIMEOUT_MS = 3000;
 var FULL_MEDIA_DOWNLOAD_TIMEOUT_MS = 18000;
@@ -15,6 +16,13 @@ function debugLog(message) {
   if (DEBUG_LOGS) {
     console.log(message);
   }
+}
+
+function imageCodecs() {
+  if (!codecs) {
+    codecs = require('./codecs.bundle');
+  }
+  return codecs;
 }
 
 function toUint8Array(value) {
@@ -309,13 +317,14 @@ function arrayBufferFromBytes(bytes) {
 }
 
 function previewDecodeError(bytes) {
+  var image = imageCodecs();
   try {
-    if (isJpegBytes(bytes) && gram.JPEG && gram.JPEG.decode) {
-      gram.JPEG.decode(bytes, {useTArray: true});
+    if (isJpegBytes(bytes) && image.JPEG && image.JPEG.decode) {
+      image.JPEG.decode(bytes, {useTArray: true});
       return null;
     }
-    if (isPngBytes(bytes) && gram.UPNG && gram.UPNG.decode) {
-      gram.UPNG.decode(arrayBufferFromBytes(bytes));
+    if (isPngBytes(bytes) && image.UPNG && image.UPNG.decode) {
+      image.UPNG.decode(arrayBufferFromBytes(bytes));
       return null;
     }
   } catch (err) {
@@ -1288,16 +1297,21 @@ function mergeDialogRows(groups) {
 function chats(limit, options) {
   options = options || {};
   return auth.getClient().then(function(client) {
-    return client.getDialogs({limit: limit, folder: 0}).then(function(mainDialogs) {
+    var mainDialogsPromise = client.getDialogs({limit: limit, folder: 0});
+    var archiveDialogsPromise = options.fast ? Promise.resolve([]) : client.getDialogs({limit: limit, folder: 1}).catch(function() {
+      return [];
+    });
+    var filtersPromise = options.fast ? Promise.resolve([]) : dialogFilters(client);
+    return mainDialogsPromise.then(function(mainDialogs) {
       if (options.fast) {
         return mergeDialogRows([dialogRows(mainDialogs, '', 0)]);
       }
-      return dialogFilters(client).then(function(filters) {
+      return filtersPromise.then(function(filters) {
         var groups = [dialogRows(mainDialogs, '', 0)];
         var requests = [];
-        requests.push(client.getDialogs({limit: limit, folder: 1}).then(function(dialogs) {
+        requests.push(archiveDialogsPromise.then(function(dialogs) {
           groups.push(dialogRows(dialogs, 'Archive', 1));
-        }).catch(function() {}));
+        }));
         (filters || []).forEach(function(filter, index) {
           var folderId = filter && filter.id;
           var name = dialogFilterTitle(filter);

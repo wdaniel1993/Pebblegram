@@ -1,6 +1,20 @@
 var auth = require('./auth');
-var telegram = require('./telegram');
-var image = require('./image');
+var telegram = null;
+var image = null;
+
+function telegramApi() {
+  if (!telegram) {
+    telegram = require('./telegram');
+  }
+  return telegram;
+}
+
+function imageApi() {
+  if (!image) {
+    image = require('./image');
+  }
+  return image;
+}
 
 function create(options) {
   auth.setStatusHandler(options.status);
@@ -28,26 +42,62 @@ function create(options) {
     ready: function() {
       return auth.getClient();
     },
-    chats: telegram.chats,
-    messages: telegram.messages,
-    olderMessages: function(chatId, limit, beforeId) {
-      return telegram.messages(chatId, limit, beforeId);
+    chats: function(limit, options) {
+      return telegramApi().chats(limit, options);
     },
-    newerMessages: telegram.newerMessages,
-    keepalive: telegram.keepalive,
-    sendMessage: telegram.sendMessage,
-    editMessage: telegram.editMessage,
-    sendReaction: telegram.sendReaction,
-    message: telegram.message,
-    deleteMessage: telegram.deleteMessage,
-    markRead: telegram.markRead,
-    archiveChat: telegram.archiveChat,
-    deleteChat: telegram.deleteChat,
-    muteChat: telegram.muteChat,
-    markUnread: telegram.markUnread,
-    imageBytes: image.imageBytes,
-    avatarBytes: image.avatarBytes,
-    cancelImageRequests: image.cancelImageRequests
+    messages: function(chatId, limit, beforeId) {
+      return telegramApi().messages(chatId, limit, beforeId);
+    },
+    olderMessages: function(chatId, limit, beforeId) {
+      return telegramApi().messages(chatId, limit, beforeId);
+    },
+    newerMessages: function(chatId, limit, afterId) {
+      return telegramApi().newerMessages(chatId, limit, afterId);
+    },
+    keepalive: function() {
+      return telegramApi().keepalive();
+    },
+    sendMessage: function(chatId, text, replyTo) {
+      return telegramApi().sendMessage(chatId, text, replyTo);
+    },
+    editMessage: function(chatId, messageId, text) {
+      return telegramApi().editMessage(chatId, messageId, text);
+    },
+    sendReaction: function(chatId, messageId, token) {
+      return telegramApi().sendReaction(chatId, messageId, token);
+    },
+    message: function(chatId, messageId) {
+      return telegramApi().message(chatId, messageId);
+    },
+    deleteMessage: function(chatId, messageId) {
+      return telegramApi().deleteMessage(chatId, messageId);
+    },
+    markRead: function(chatId) {
+      return telegramApi().markRead(chatId);
+    },
+    archiveChat: function(chatId) {
+      return telegramApi().archiveChat(chatId);
+    },
+    deleteChat: function(chatId) {
+      return telegramApi().deleteChat(chatId);
+    },
+    muteChat: function(chatId) {
+      return telegramApi().muteChat(chatId);
+    },
+    markUnread: function(chatId) {
+      return telegramApi().markUnread(chatId);
+    },
+    imageBytes: function(chatId, messageId, width, height, colors, maxBytes, maxPixels, retryLevel, maxCost, forceTall, status) {
+      return imageApi().imageBytes(chatId, messageId, width, height, colors, maxBytes, maxPixels, retryLevel, maxCost, forceTall, status);
+    },
+    avatarBytes: function(chatId, width, height, colors, maxBytes) {
+      return imageApi().avatarBytes(chatId, width, height, colors, maxBytes);
+    },
+    cancelImageRequests: function() {
+      if (image) {
+        image.cancelImageRequests();
+      }
+    }
   };
 }
 

@@ -1,17 +1,28 @@
 var telegram = require('./telegram');
-var codecs = require('./gramjs.bundle');
+var codecs = require('./codecs.bundle');
 var imageCache = {};
 var imageCacheOrder = [];
 var imageInflight = {};
 var MAX_IMAGE_CACHE_ITEMS = 64;
 var MAX_PERSISTENT_IMAGE_CACHE_ITEMS = 32;
 var PERSISTENT_IMAGE_CACHE_ORDER_KEY = 'pgjs.imageCacheOrder';
-var IMAGE_CACHE_VERSION = 'v18';
+var IMAGE_CACHE_VERSION = 'v22';
 var MEDIA_PIPELINE_TIMEOUT_MS = 22000;
 var TALL_IMAGE_ASPECT = 1.85;
 var TALL_IMAGE_WATCH_MAX_BYTES = 9000;
+var EMERY_TALL_IMAGE_WATCH_MAX_BYTES = 14000;
+var GABBRO_TALL_IMAGE_WATCH_MAX_BYTES = 11000;
 var DEBUG_LOGS = false;
 var foregroundImageGeneration = 0;
+var IMAGE_RETRY_PROFILES = [
+  {maxBytes: 18000, maxPixels: 36000},
+  {maxBytes: 12000, maxPixels: 30000},
+  {maxBytes: 9000, maxPixels: 24000}
+];
+var EMERY_TALL_PBI_MAX_BYTES = 18000;
+var EMERY_TALL_PBI_MAX_PIXELS = 36000;
+var GABBRO_TALL_PBI_MAX_BYTES = 12000;
+var GABBRO_TALL_PBI_MAX_PIXELS = 24000;
 
 function debugLog(message) {
   if (DEBUG_LOGS) {
@@ -81,6 +92,45 @@ function byteSummary(bytes) {
     sig.push((bytes[i] < 16 ? '0' : '') + bytes[i].toString(16));
   }
   return sig.length ? summary + ' sig ' + sig.join('') : summary;
+}
+
+function readUint32BE(bytes, offset) {
+  return ((bytes[offset] << 24) >>> 0) +
+         (bytes[offset + 1] << 16) +
+         (bytes[offset + 2] << 8) +
+         bytes[offset + 3];
+}
+
+function pngDimensions(bytes) {
+  if (!bytes || bytes.length < 24 || !isPng(bytes)) {
+    return null;
+  }
+  return {
+    width: readUint32BE(bytes, 16),
+    height: readUint32BE(bytes, 20)
+  };
+}
+
+function bitmapHeapEstimate(width, height) {
+  return (((width + 3) & ~3) * height);
+}
+
+function encodedDecodeCost(encoded) {
+  var dimensions = pngDimensions(encoded);
+  if (!dimensions) {
+    return encoded ? encoded.length : 0;
+  }
+  return encoded.length + bitmapHeapEstimate(dimensions.width, dimensions.height);
+}
+
+function encodedFits(encoded, maxBytes, maxCost) {
+  if (maxBytes && encoded.length > maxBytes) {
+    return false;
+  }
+  if (maxCost && encodedDecodeCost(encoded) > maxCost) {
+    return false;
+  }
+  return true;
 }
 
 function rgbaBuffer(bytes) {
@@ -226,6 +276,177 @@ function encodePng(source, width, height, colors, maskCircle, liftColors, fitMod
   return new Uint8Array(codecs.UPNG.encode([arrayBufferFromBytes(resized)], width, height, colors));
 }
 
+function writeUint16LE(bytes, offset, value) {
+  bytes[offset] = value & 255;
+  bytes[offset + 1] = (value >> 8) & 255;
+}
+
+function pebbleChannel(value) {
+  return Math.max(0, Math.min(3, Math.round(value / 85)));
+}
+
+function argb8FromRgba(r, g, b, a) {
+  if (a < 64) {
+    return 0;
+  }
+  return (3 << 6) | (pebbleChannel(r) << 4) | (pebbleChannel(g) << 2) | pebbleChannel(b);
+}
+
+function argb8Distance(a, b) {
+  var ar = ((a >> 4) & 3) * 85;
+  var ag = ((a >> 2) & 3) * 85;
+  var ab = (a & 3) * 85;
+  var br = ((b >> 4) & 3) * 85;
+  var bg = ((b >> 2) & 3) * 85;
+  var bb = (b & 3) * 85;
+  var dr = ar - br;
+  var dg = ag - bg;
+  var db = ab - bb;
+  return dr * dr + dg * dg + db * db;
+}
+
+function pbiPalette(colors) {
+  var forced = [0xff, 0xc0, 0xea, 0xd5];
+  var counts = {};
+  var ranked = [];
+  var palette = [];
+  var i;
+  for (i = 0; i < colors.length; i += 1) {
+    counts[colors[i]] = (counts[colors[i]] || 0) + 1;
+  }
+  for (i = 0; i < forced.length; i += 1) {
+    palette.push(forced[i]);
+  }
+  Object.keys(counts).forEach(function(key) {
+    ranked.push({color: parseInt(key, 10), count: counts[key]});
+  });
+  ranked.sort(function(a, b) {
+    return b.count - a.count;
+  });
+  for (i = 0; i < ranked.length && palette.length < 16; i += 1) {
+    if (palette.indexOf(ranked[i].color) < 0) {
+      palette.push(ranked[i].color);
+    }
+  }
+  while (palette.length < 16) {
+    palette.push(0);
+  }
+  return palette;
+}
+
+function nearestPaletteIndex(color, palette) {
+  var best = 0;
+  var bestDistance = 2147483647;
+  for (var i = 0; i < palette.length; i += 1) {
+    var distance = argb8Distance(color, palette[i]);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+      if (distance === 0) {
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+function encodePbi4(resized) {
+  var width = resized.width;
+  var height = resized.height;
+  var rowSize = Math.ceil(width / 2);
+  var dataSize = rowSize * height;
+  var output = new Uint8Array(12 + dataSize + 16);
+  var colors = new Uint8Array(width * height);
+  var palette;
+  var x;
+  var y;
+  var srcIndex;
+  var color;
+  var high;
+  var low;
+
+  for (var i = 0; i < width * height; i += 1) {
+    srcIndex = i * 4;
+    colors[i] = argb8FromRgba(resized.data[srcIndex], resized.data[srcIndex + 1],
+                              resized.data[srcIndex + 2], resized.data[srcIndex + 3]);
+  }
+  palette = pbiPalette(colors);
+
+  writeUint16LE(output, 0, rowSize);
+  writeUint16LE(output, 2, (1 << 12) | (4 << 1));
+  writeUint16LE(output, 4, 0);
+  writeUint16LE(output, 6, 0);
+  writeUint16LE(output, 8, width);
+  writeUint16LE(output, 10, height);
+
+  for (y = 0; y < height; y += 1) {
+    for (x = 0; x < width; x += 2) {
+      color = colors[(y * width) + x];
+      high = nearestPaletteIndex(color, palette);
+      low = 0;
+      if (x + 1 < width) {
+        low = nearestPaletteIndex(colors[(y * width) + x + 1], palette);
+      }
+      output[12 + (y * rowSize) + Math.floor(x / 2)] = (high << 4) | low;
+    }
+  }
+  for (i = 0; i < 16; i += 1) {
+    output[12 + dataSize + i] = palette[i];
+  }
+  return output;
+}
+
+function compactPbi4(source, width, height, maxBytes, maxPixels, options) {
+  var encodeBox = fitEncodeBoxForPixelBudget(source, width, height, maxPixels);
+  var scaleSteps = [1, 0.94, 0.88, 0.8, 0.72, 0.64, 0.56, 0.48, 0.4];
+  var best = null;
+  for (var step = 0; step < scaleSteps.length; step += 1) {
+    throwIfCancelled(options);
+    var resized = resizeContain(source,
+                                Math.max(32, Math.floor(encodeBox.width * scaleSteps[step])),
+                                Math.max(32, Math.floor(encodeBox.height * scaleSteps[step])),
+                                true);
+    var encoded = encodePbi4(resized);
+    if (!best || encoded.length < best.length) {
+      best = encoded;
+    }
+    if (!maxBytes || encoded.length <= maxBytes) {
+      return encoded;
+    }
+  }
+  if (best && (!maxBytes || best.length <= maxBytes)) {
+    return best;
+  }
+  throw new Error('phone pbi encode over budget: best ' + (best ? best.length : 0) + 'b > ' + maxBytes + 'b');
+}
+
+function tallPbiBudget(maxBytes, maxPixels, options) {
+  var platformMaxBytes = options && options.platformMaxBytes || maxBytes;
+  var platformMaxPixels = options && options.platformMaxPixels || maxPixels;
+  if (options && options.retryLevel > 0) {
+    return {
+      maxBytes: maxBytes,
+      maxPixels: maxPixels
+    };
+  }
+  if (platformMaxBytes >= 24000 || platformMaxPixels >= 40000) {
+    return {
+      maxBytes: Math.min(maxBytes, EMERY_TALL_PBI_MAX_BYTES),
+      maxPixels: maxPixels ? Math.min(maxPixels, EMERY_TALL_PBI_MAX_PIXELS) : EMERY_TALL_PBI_MAX_PIXELS
+    };
+  }
+  if (platformMaxBytes >= 14000 || platformMaxPixels >= 28000) {
+    return {
+      maxBytes: Math.min(maxBytes, GABBRO_TALL_PBI_MAX_BYTES),
+      maxPixels: maxPixels ? Math.min(maxPixels, GABBRO_TALL_PBI_MAX_PIXELS) : GABBRO_TALL_PBI_MAX_PIXELS
+    };
+  }
+  return {
+    maxBytes: Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES),
+    maxPixels: maxPixels ? Math.min(maxPixels, 20000) : 20000
+  };
+}
+
 function imageStats(source) {
   var pixels = source.width * source.height;
   var step = Math.max(1, Math.floor(pixels / 1200));
@@ -292,7 +513,7 @@ function imageStatus(options, text) {
   }
 }
 
-function compactPng(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode) {
+function compactPng(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode, maxCost) {
   var colorSteps = [colors, 32, 16, 8, 4, 2];
   scaleSteps = scaleSteps || [1, 0.9, 0.8, 0.7, 0.6];
   var best = null;
@@ -317,20 +538,21 @@ function compactPng(source, width, height, colors, maxBytes, maskCircle, liftCol
         best = encoded;
         bestDetail = nextWidth + 'x' + nextHeight + '/' + nextColors + 'c';
       }
-      if (!maxBytes || encoded.length <= maxBytes) {
+      if (encodedFits(encoded, maxBytes, maxCost)) {
         return encoded;
       }
     }
   }
-  if (best && (!maxBytes || best.length <= maxBytes)) {
+  if (best && encodedFits(best, maxBytes, maxCost)) {
     return best;
   }
   throw new Error('phone png encode over budget: best ' + (best ? best.length : 0) +
-                  'b at ' + bestDetail + ' > ' + maxBytes + 'b from ' +
+                  'b cost ' + (best ? encodedDecodeCost(best) : 0) + ' at ' + bestDetail +
+                  ' > ' + maxBytes + 'b/' + (maxCost || 0) + 'c from ' +
                   source.width + 'x' + source.height);
 }
 
-function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode, options) {
+function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, liftColors, scaleSteps, fitMode, options, maxCost) {
   var colorSteps = [colors, 32, 16, 8, 4, 2];
   var best = null;
   var bestDetail = '';
@@ -338,7 +560,8 @@ function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, li
 
   function failOverBudget() {
     throw new Error('phone png encode over budget: best ' + (best ? best.length : 0) +
-                    'b at ' + bestDetail + ' > ' + maxBytes + 'b from ' +
+                    'b cost ' + (best ? encodedDecodeCost(best) : 0) + ' at ' + bestDetail +
+                    ' > ' + maxBytes + 'b/' + (maxCost || 0) + 'c from ' +
                     source.width + 'x' + source.height);
   }
 
@@ -347,7 +570,7 @@ function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, li
     var nextHeight;
     var nextColors;
     if (step >= scaleSteps.length) {
-      if (best && (!maxBytes || best.length <= maxBytes)) {
+      if (best && encodedFits(best, maxBytes, maxCost)) {
         return Promise.resolve(best);
       }
       return Promise.resolve().then(failOverBudget);
@@ -370,7 +593,7 @@ function compactPngAsync(source, width, height, colors, maxBytes, maskCircle, li
         best = encoded;
         bestDetail = nextWidth + 'x' + nextHeight + '/' + nextColors + 'c';
       }
-      if (!maxBytes || encoded.length <= maxBytes) {
+      if (encodedFits(encoded, maxBytes, maxCost)) {
         return encoded;
       }
       return attempt(step, colorIndex + 1);
@@ -412,8 +635,9 @@ function safeCompactPng(source, width, height, colors, maxBytes, maskCircle) {
   throw new Error('Photo encoded as blank.');
 }
 
-function cacheKey(chatId, messageId, width, height, colors, maxBytes) {
-  return [IMAGE_CACHE_VERSION, chatId, messageId, width, height, colors, maxBytes].join(':');
+function cacheKey(chatId, messageId, width, height, colors, maxBytes, maxPixels, maxCost, forceTall) {
+  return [IMAGE_CACHE_VERSION, chatId, messageId, width, height, colors, maxBytes, maxPixels || 0,
+          maxCost || 0, forceTall ? 1 : 0].join(':');
 }
 
 function removeArrayValue(items, value) {
@@ -432,28 +656,83 @@ function isTallSource(source) {
   return source && source.width > 0 && source.height / source.width >= TALL_IMAGE_ASPECT;
 }
 
-function compactMessagePngAsync(source, width, height, colors, maxBytes, options) {
+function applyImageRetryProfile(maxBytes, maxPixels, retryLevel) {
+  retryLevel = Math.max(0, Math.min(IMAGE_RETRY_PROFILES.length, retryLevel || 0));
+  if (retryLevel <= 0) {
+    return {
+      maxBytes: maxBytes,
+      maxPixels: maxPixels
+    };
+  }
+  var profile = IMAGE_RETRY_PROFILES[retryLevel - 1];
+  return {
+    maxBytes: Math.min(maxBytes, profile.maxBytes),
+    maxPixels: maxPixels ? Math.min(maxPixels, profile.maxPixels) : profile.maxPixels
+  };
+}
+
+function containPixelCount(source, width, height) {
+  if (!source || source.width <= 0 || source.height <= 0 || width <= 0 || height <= 0) {
+    return width * height;
+  }
+  var scale = Math.min(width / source.width, height / source.height);
+  var outputWidth = Math.max(1, Math.floor(source.width * scale));
+  var outputHeight = Math.max(1, Math.floor(source.height * scale));
+  return outputWidth * outputHeight;
+}
+
+function fitEncodeBoxForPixelBudget(source, width, height, maxPixels) {
+  var pixels = containPixelCount(source, width, height);
+  var scale;
+  if (!maxPixels || pixels <= maxPixels) {
+    return {
+      width: width,
+      height: height
+    };
+  }
+  scale = Math.sqrt(maxPixels / pixels);
+  return {
+    width: Math.max(32, Math.floor(width * scale)),
+    height: Math.max(32, Math.floor(height * scale))
+  };
+}
+
+function tallWatchMaxBytes(maxBytes, maxPixels) {
+  if (maxBytes >= 24000 && maxPixels >= 40000) {
+    return EMERY_TALL_IMAGE_WATCH_MAX_BYTES;
+  }
+  if (maxBytes >= 14000 && maxPixels >= 28000) {
+    return GABBRO_TALL_IMAGE_WATCH_MAX_BYTES;
+  }
+  return TALL_IMAGE_WATCH_MAX_BYTES;
+}
+
+function compactMessagePngAsync(source, width, height, colors, maxBytes, options, maxPixels, maxCost) {
+  var encodeBox = fitEncodeBoxForPixelBudget(source, width, height, maxPixels);
   var tall = isTallSource(source);
-  var watchSafeMaxBytes = tall ? Math.min(maxBytes, TALL_IMAGE_WATCH_MAX_BYTES) : maxBytes;
+  var costLimit = tall || (options && options.retryLevel > 0) ? maxCost : 0;
+  var watchSafeMaxBytes = tall ? Math.min(maxBytes, tallWatchMaxBytes(maxBytes, maxPixels || 0)) : maxBytes;
   var normalScaleSteps = maxBytes >= 24000 ?
                          [1, 0.96, 0.92, 0.88, 0.82, 0.75, 0.67, 0.58, 0.5, 0.42] :
                          [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.42];
+  width = encodeBox.width;
+  height = encodeBox.height;
   if (tall && watchSafeMaxBytes < maxBytes) {
     if (DEBUG_LOGS) {
-      debugLog('tall image watch-safe budget ' + watchSafeMaxBytes + 'b');
+      debugLog('tall image watch-safe budget ' + watchSafeMaxBytes + 'b/' + (costLimit || 0) + 'c at ' + width + 'x' + height);
     }
     return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
-                           [1, 0.85, 0.7, 0.56, 0.45, 0.36, 0.32], 'contain', options).catch(function(tallErr) {
+                           [1, 0.85, 0.7, 0.56, 0.45, 0.36, 0.32], 'contain', options, costLimit).catch(function(tallErr) {
       if (DEBUG_LOGS) {
         debugLog('tall image compact path: ' + (tallErr && tallErr.message ? tallErr.message : tallErr));
       }
       throwIfCancelled(options);
       return compactPngAsync(source, width, height, 16, watchSafeMaxBytes, false, true,
-                             [0.5, 0.42, 0.35, 0.3, 0.26], 'contain', options);
+                             [0.5, 0.42, 0.35, 0.3, 0.26], 'contain', options, costLimit);
     });
   }
   return compactPngAsync(source, width, height, colors, watchSafeMaxBytes, false, true,
-                         normalScaleSteps, 'contain', options).catch(function(err) {
+                         normalScaleSteps, 'contain', options, costLimit).catch(function(err) {
     if (!tall) {
       throw err;
     }
@@ -463,7 +742,7 @@ function compactMessagePngAsync(source, width, height, colors, maxBytes, options
     throwIfCancelled(options);
     return compactPngAsync(source, width, height, Math.min(colors, 32), watchSafeMaxBytes, false, true,
                            [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4, 0.35, 0.32],
-                           'contain', options);
+                           'contain', options, costLimit);
   });
 }
 
@@ -555,7 +834,7 @@ function persistentCacheSet(key, bytes) {
   }
 }
 
-function cachedBytes(key, label, downloader, width, height, colors, maxBytes, maskCircle, options) {
+function cachedBytes(key, label, downloader, width, height, colors, maxBytes, maskCircle, options, maxPixels, maxCost) {
   var pipeline;
   var wrapped;
   options = options || {};
@@ -601,10 +880,37 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
     imageStatus(options, 'Decoding');
     source = rgbaBuffer(bytes);
     throwIfCancelled(options);
-    imageStatus(options, 'Encoding');
-    return (maskCircle ?
-      Promise.resolve(safeCompactPng(source, width, height, colors, maxBytes, true)) :
-      compactMessagePngAsync(source, width, height, colors, maxBytes, options)).then(function(encoded) {
+    var tall = options && options.forceTall || isTallSource(source);
+    imageStatus(options, tall && !maskCircle ? 'Packing' : 'Encoding');
+    if (maskCircle) {
+      return Promise.resolve(safeCompactPng(source, width, height, colors, maxBytes, true)).then(function(encoded) {
+        throwIfCancelled(options);
+        if (DEBUG_LOGS) {
+          logDuration('image encode ' + label, encodeStartedAt);
+        }
+        imageStatus(options, 'Caching');
+        cacheSet(key, encoded);
+        return encoded;
+      });
+    }
+    if (tall) {
+      var pbiBudget = tallPbiBudget(maxBytes, maxPixels, options);
+      maxBytes = pbiBudget.maxBytes;
+      maxPixels = pbiBudget.maxPixels;
+      if (DEBUG_LOGS) {
+        debugLog('tall pbi budget ' + maxBytes + 'b/' + (maxPixels || 0) + 'px');
+      }
+      return Promise.resolve(compactPbi4(source, width, height, maxBytes, maxPixels, options)).then(function(encoded) {
+        throwIfCancelled(options);
+        if (DEBUG_LOGS) {
+          logDuration('image encode ' + label, encodeStartedAt);
+        }
+        imageStatus(options, 'Caching');
+        cacheSet(key, encoded);
+        return encoded;
+      });
+    }
+    return compactMessagePngAsync(source, width, height, colors, maxBytes, options, maxPixels, maxCost).then(function(encoded) {
       throwIfCancelled(options);
       if (DEBUG_LOGS) {
         logDuration('image encode ' + label, encodeStartedAt);
@@ -629,18 +935,44 @@ function cachedBytes(key, label, downloader, width, height, colors, maxBytes, ma
   return wrapped;
 }
 
-function imageBytes(chatId, messageId, width, height, colors, maxBytes, status) {
+function imageBytes(chatId, messageId, width, height, colors, maxBytes, maxPixels, retryLevel, maxCost, forceTall, status) {
   var key;
   var generation = ++foregroundImageGeneration;
   function isCancelled() {
     return generation !== foregroundImageGeneration;
   }
+  if (typeof maxPixels === 'function') {
+    status = maxPixels;
+    maxPixels = 0;
+    retryLevel = 0;
+    maxCost = 0;
+  } else if (typeof retryLevel === 'function') {
+    status = retryLevel;
+    retryLevel = 0;
+    maxCost = 0;
+  } else if (typeof maxCost === 'function') {
+    status = maxCost;
+    maxCost = 0;
+    forceTall = false;
+  } else if (typeof forceTall === 'function') {
+    status = forceTall;
+    forceTall = false;
+  }
   width = width || 120;
   height = height || 120;
   colors = colors || 64;
   maxBytes = maxBytes || 10000;
+  var platformMaxBytes = maxBytes;
+  var platformMaxPixels = maxPixels;
+  maxCost = maxCost || 0;
+  if (maxCost > 0) {
+    maxCost = Math.max(12000, Math.floor(maxCost / 2048) * 2048);
+  }
+  var retryProfile = applyImageRetryProfile(maxBytes, maxPixels, retryLevel);
+  maxBytes = retryProfile.maxBytes;
+  maxPixels = retryProfile.maxPixels;
   height = height * 2;
-  key = cacheKey(chatId, messageId, width, height, colors, maxBytes);
+  key = cacheKey(chatId, messageId, width, height, colors, maxBytes, maxPixels, maxCost, forceTall);
   return cachedBytes(key, messageId, function() {
     if (status) {
       status('Downloading');
@@ -650,7 +982,17 @@ function imageBytes(chatId, messageId, width, height, colors, maxBytes, status) 
       targetHeight: height,
       cancelled: isCancelled
     });
-  }, width, height, colors, maxBytes, false, {noInflightReuse: true, isCancelled: isCancelled, status: status});
+  }, width, height, colors, maxBytes, false,
+  {
+    noInflightReuse: true,
+    isCancelled: isCancelled,
+    status: status,
+    retryLevel: retryLevel,
+    forceTall: !!forceTall,
+    platformMaxBytes: platformMaxBytes,
+    platformMaxPixels: platformMaxPixels
+  },
+  maxPixels, maxCost);
 }
 
 function avatarBytes(chatId, width, height, colors, maxBytes) {

@@ -20,6 +20,7 @@ var IMAGE_SIZE = 120;
 var IMAGE_WIDTH = 130;
 var IMAGE_COLORS = 64;
 var IMAGE_MAX_BYTES = 10000;
+var IMAGE_MAX_PIXELS = 36000;
 var IMAGE_CHUNK_SIZE = 500;
 var AVATAR_SIZE = 28;
 var AVATAR_COLORS = 16;
@@ -59,6 +60,9 @@ var messageStreamTimer = null;
 var topPrefetchSeq = 0;
 var sendFailureDelay = 250;
 var cancelledImageTransferSeq = 0;
+var watchReady = false;
+var phonePrewarmStarted = false;
+var launchStartedAt = Date.now();
 var IMAGE_PREPARE_TIMEOUT_MS = 25000;
 var MESSAGE_FETCH_TIMEOUT_MS = 25000;
 var MESSAGE_CACHE_ORDER_KEY = 'pebblegram.messageCache.v4.order';
@@ -111,6 +115,7 @@ function configureForPlatform() {
     IMAGE_SIZE = 176;
     IMAGE_WIDTH = 176;
     IMAGE_MAX_BYTES = 30000;
+    IMAGE_MAX_PIXELS = 43000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 9;
@@ -123,12 +128,14 @@ function configureForPlatform() {
     IMAGE_SIZE = 118;
     IMAGE_WIDTH = 128;
     IMAGE_MAX_BYTES = 15000;
+    IMAGE_MAX_PIXELS = 28000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'diorite') {
     IMAGE_SIZE = 96;
     IMAGE_WIDTH = 102;
     IMAGE_COLORS = 4;
     IMAGE_MAX_BYTES = 6000;
+    IMAGE_MAX_PIXELS = 18000;
     AVATAR_SIZE = 24;
     AVATAR_COLORS = 4;
     AVATAR_MAX_BYTES = 2200;
@@ -137,6 +144,7 @@ function configureForPlatform() {
     IMAGE_WIDTH = 104;
     IMAGE_COLORS = 16;
     IMAGE_MAX_BYTES = 6500;
+    IMAGE_MAX_PIXELS = 20000;
   }
 }
 
@@ -149,6 +157,12 @@ function debugLog(message) {
 function logDuration(label, startedAt) {
   if (DEBUG_LOGS) {
     console.log(label + ' took ' + (Date.now() - startedAt) + 'ms');
+  }
+}
+
+function logLaunch(label) {
+  if (DEBUG_LOGS) {
+    console.log('launch +' + (Date.now() - launchStartedAt) + 'ms ' + label);
   }
 }
 
@@ -181,6 +195,22 @@ function withTimeout(promise, label, timeoutMs) {
     throw err;
   });
 }
+
+function prewarmPhoneBackend() {
+  if (phonePrewarmStarted) {
+    return;
+  }
+  phonePrewarmStarted = true;
+  logLaunch('telegram prewarm start');
+  timed('telegram prewarm', activePgjs().ready()).then(function() {
+    logLaunch('telegram prewarm ready');
+  }).catch(function(err) {
+    phonePrewarmStarted = false;
+    debugLog('Phone prewarm failed: ' + (err && err.message ? err.message : err));
+  });
+}
+
+prewarmPhoneBackend();
 
 // AppMessage delivery is serialized. Older phones can drop messages if image
 // chunks and rows are pushed in parallel.
@@ -340,6 +370,10 @@ function flushQueue() {
 }
 
 function status(text) {
+  if (!watchReady) {
+    debugLog('Status before watch ready: ' + text);
+    return;
+  }
   var payload = {};
   payload[MessageKeys.Type] = 'status';
   payload[MessageKeys.Status] = text;
@@ -1917,14 +1951,46 @@ function chatAction(kind, chatId) {
   });
 }
 
-function sendImage(chatId, messageId) {
+function imageRequestOptions(value) {
+  var text = String(value || '');
+  var parts = text.split(':');
+  var level = parseInt(parts[0], 10);
+  var maxCost = parseInt(parts[1], 10);
+  if (!isFinite(level) || level < 0) {
+    level = 0;
+  }
+  if (!isFinite(maxCost) || maxCost <= 0) {
+    maxCost = 0;
+  }
+  return {
+    retryLevel: Math.min(3, level),
+    maxCost: Math.min(65000, maxCost)
+  };
+}
+
+function messageNeedsSafeImagePath(message) {
+  return message && message.image_width > 0 && message.image_height > 0 &&
+    message.image_height > message.image_width &&
+    message.image_height / message.image_width >= 1.2;
+}
+
+function sendImage(chatId, messageId, requestText) {
   var startedAt = DEBUG_LOGS ? Date.now() : 0;
+  var requestOptions = imageRequestOptions(requestText);
+  var message = storedMessage(chatId, messageId);
+  var forceTall = messageNeedsSafeImagePath(message);
+  debugLog('PGIMG phone request chat=' + chatId + ' msg=' + messageId +
+           ' retry=' + requestOptions.retryLevel +
+           ' maxCost=' + requestOptions.maxCost +
+           ' forceTall=' + (forceTall ? 1 : 0));
   cancelQueuedAvatarTransfers();
   cancelQueuedImageTransfers();
   imageTransferActive = true;
   var requestSeq = imageRequestSeq;
-  sendImageStatus(messageId, 'Preparing');
-  withTimeout(activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES, function(text) {
+  sendImageStatus(messageId, requestOptions.retryLevel > 0 ? 'Resizing' : 'Preparing');
+  withTimeout(activePgjs().imageBytes(chatId, messageId, IMAGE_WIDTH, IMAGE_SIZE, IMAGE_COLORS, IMAGE_MAX_BYTES,
+                                      IMAGE_MAX_PIXELS, requestOptions.retryLevel, requestOptions.maxCost, forceTall,
+                                      function(text) {
                 if (requestSeq === imageRequestSeq && currentChatId === chatId) {
                   sendImageStatus(messageId, text);
                 }
@@ -1961,14 +2027,72 @@ function sendImageStatus(messageId, text) {
   sendToWatch(payload);
 }
 
+function readUint32BE(bytes, offset) {
+  return ((bytes[offset] << 24) >>> 0) +
+         (bytes[offset + 1] << 16) +
+         (bytes[offset + 2] << 8) +
+         bytes[offset + 3];
+}
+
+function readUint16LE(bytes, offset) {
+  return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function pngDimensions(bytes) {
+  if (!bytes || bytes.length < 24 ||
+      bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    return null;
+  }
+  return {
+    width: readUint32BE(bytes, 16),
+    height: readUint32BE(bytes, 20)
+  };
+}
+
+function pbiDimensions(bytes) {
+  if (!bytes || bytes.length < 12 || pngDimensions(bytes)) {
+    return null;
+  }
+  var flags = readUint16LE(bytes, 2);
+  var format = (flags >> 1) & 31;
+  var width = readUint16LE(bytes, 8);
+  var height = readUint16LE(bytes, 10);
+  if (format > 4 || width <= 0 || height <= 0 || width > 512 || height > 512) {
+    return null;
+  }
+  return {
+    width: width,
+    height: height
+  };
+}
+
 function sendImageBytes(messageId, bytes) {
   var start = {};
+  var dimensions = pngDimensions(bytes);
+  var isPbi = false;
+  if (!dimensions) {
+    dimensions = pbiDimensions(bytes);
+    isPbi = !!dimensions;
+  }
   var transferId = ++imageTransferSeq;
   imageTransferActive = true;
   start[MessageKeys.Type] = 'image_start';
   start[MessageKeys.MessageId] = String(messageId || '');
   start[MessageKeys.ImageSize] = bytes.length;
   start[MessageKeys.ImageTransferId] = transferId;
+  if (isPbi) {
+    start[MessageKeys.Text] = 'pbi';
+  }
+  if (dimensions && dimensions.width > 0 && dimensions.height > 0) {
+    start[MessageKeys.ImageWidth] = dimensions.width;
+    start[MessageKeys.ImageHeight] = dimensions.height;
+  }
+  debugLog('PGIMG phone image_start msg=' + messageId +
+           ' transfer=' + transferId +
+           ' bytes=' + bytes.length +
+           ' format=' + (isPbi ? 'pbi' : 'png') +
+           ' dims=' + (dimensions ? dimensions.width + 'x' + dimensions.height : 'unknown') +
+           ' chunks=' + Math.ceil(bytes.length / IMAGE_CHUNK_SIZE));
   sendToWatch(start);
 
   // PNGs are chunked through AppMessage and reassembled by the C app.
@@ -1991,6 +2115,8 @@ function sendImageBytes(messageId, bytes) {
   donePayload[MessageKeys.Type] = 'image_done';
   donePayload[MessageKeys.MessageId] = String(messageId || '');
   donePayload[MessageKeys.ImageTransferId] = transferId;
+  debugLog('PGIMG phone image_done queued msg=' + messageId +
+           ' transfer=' + transferId);
   sendToWatch(donePayload);
 }
 
@@ -2073,9 +2199,12 @@ function sendChatAvatars() {
 }
 
 Pebble.addEventListener('ready', function() {
+  watchReady = true;
+  logLaunch('Pebble ready event');
   configureForPlatform();
   debugLog('Pebblegram JS ready, backend=pgjs, canned=' + cannedReplies());
   sendSettings();
+  prewarmPhoneBackend();
   startConnectionKeepalive();
   getChats(false);
   startTelegramUpdates();
@@ -2126,7 +2255,7 @@ Pebble.addEventListener('appmessage', function(event) {
   } else if (command === 'mark_unread') {
     chatAction('markUnread', chatId);
   } else if (command === 'get_image') {
-    sendImage(chatId, messageId);
+    sendImage(chatId, messageId, text);
   } else if (command === 'cancel_image') {
     cancelQueuedImageTransfers();
   } else {
