@@ -1,4 +1,5 @@
 #include <pebble.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -115,6 +116,7 @@ typedef enum {
   ActionItemReplyDictate,
   ActionItemReplyCanned,
   ActionItemReplyEmoji,
+  ActionItemEmoji,
   ActionItemReact,
   ActionItemEdit,
   ActionItemDelete,
@@ -125,7 +127,9 @@ typedef enum {
   ActionItemDeleteChat,
   ActionItemMuteChat,
   ActionItemMarkUnread,
-  ActionItemGoBack
+  ActionItemGoBack,
+  ActionItemConfirmSend,
+  ActionItemConfirmCancel
 } ActionItem;
 
 typedef struct {
@@ -223,11 +227,16 @@ static PropertyAnimation *s_messages_animation;
 
 static Window *s_action_window;
 static Layer *s_action_layer;
+static ActionMenu *s_native_action_menu;
+static ActionMenuLevel *s_native_action_root;
 static ActionMenuMode s_action_mode;
+static ActionMenuMode s_native_deferred_mode;
 static int s_action_selected;
 static int s_full_text_scroll_offset;
 static int s_full_text_height;
 static bool s_full_text_context;
+static bool s_native_has_deferred_mode;
+static bool s_native_deferred_dictation;
 static char s_full_text_title[MAX_SENDER + 10];
 static char *s_full_text_body;
 
@@ -363,6 +372,8 @@ static bool send_command_with_status(const char *command, const char *chat_id, c
 static void show_loading_text(const char *message, bool is_error);
 static void click_config_provider(void *context);
 static void copy_cstr(char *dest, size_t dest_size, const char *src);
+static void show_action_window(ActionMenuMode mode);
+static void start_dictation(void);
 static void action_click_config_provider(void *context);
 static void action_window_unload(Window *window);
 #if TOUCH_KEYBOARD_AVAILABLE
@@ -988,6 +999,7 @@ static unsigned image_request_decode_cost_budget(void) {
 #endif
 }
 
+#if IMAGE_DIAG_LOGS
 static unsigned image_diag_heap_free(void) {
 #ifdef _PBL_API_EXISTS_heap_bytes_free
   return (unsigned)heap_bytes_free();
@@ -995,6 +1007,7 @@ static unsigned image_diag_heap_free(void) {
   return 0;
 #endif
 }
+#endif
 
 static bool message_is_gif(const Message *message) {
   return message && strncmp(message->text, "[GIF", 4) == 0;
@@ -4240,6 +4253,10 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
 }
 
 static void close_action_window(void) {
+  if (s_native_action_menu) {
+    action_menu_close(s_native_action_menu, true);
+    return;
+  }
   if (s_action_window) {
     window_stack_remove(s_action_window, true);
     s_action_window = NULL;
@@ -4274,134 +4291,12 @@ static int action_item_count(void) {
   return 0;
 }
 
-static ActionItem action_item_at(int index) {
-  if (!has_selected_message()) {
-    static const ActionItem compose_items[] = {
-      ActionItemCompose,
-      ActionItemCanned,
-      ActionItemReplyEmoji,
-      ActionItemGoToBottom
-    };
-    return compose_items[index];
-  }
+static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem *action,
+                                  void *context);
 
-  int target = 0;
-  if (index == target++) {
-    return ActionItemReply;
-  }
-  if (index == target++) {
-    return ActionItemReact;
-  }
-  if (selected_message_has_context() && index == target++) {
-    return ActionItemFullContext;
-  }
-  if (s_messages[s_selected_message].outgoing) {
-    if (index == target) {
-      return ActionItemEdit;
-    }
-    target++;
-  }
-  if (selected_message_is_truncated() && index == target++) {
-    return ActionItemFullText;
-  }
-  if (index == target++) {
-    return ActionItemDelete;
-  }
-  return ActionItemGoToBottom;
-}
+#define NATIVE_ACTION_INDEX_NONE 0xffff
 
-static bool action_item_has_chevron(int index) {
-  if (s_action_mode == ActionMenuMain) {
-    ActionItem item = action_item_at(index);
-    return item == ActionItemReact || item == ActionItemReplyEmoji;
-  }
-  if (s_action_mode == ActionMenuReply) {
-    return index == 2;
-  }
-  return false;
-}
-
-static bool action_item_has_separator_before(int index) {
-  if (s_action_mode == ActionMenuMain) {
-    ActionItem item = action_item_at(index);
-    return item == ActionItemDelete || (!has_selected_message() && item == ActionItemGoToBottom);
-  }
-  return false;
-}
-
-static const char *action_item_title(int index) {
-  static const char *confirm_items[] = {
-    "Send",
-    "Cancel"
-  };
-  static const char *delete_confirm_items[] = {
-    "Delete",
-    "Cancel"
-  };
-
-  if (s_action_mode == ActionMenuChat) {
-    static const char *chat_items[] = {
-      "Archive Chat",
-      "Delete Chat",
-      "Mute Chat",
-      "Mark as Unread",
-      "Go Back"
-    };
-    return chat_items[index];
-  }
-  if (s_action_mode == ActionMenuReply) {
-    static const char *reply_items[] = {
-      "Dictate Reply",
-      "Canned Message",
-      "Emoji"
-    };
-    return reply_items[index];
-  }
-  if (s_action_mode == ActionMenuMain) {
-    ActionItem item = action_item_at(index);
-    switch (item) {
-      case ActionItemCompose:
-        return "Voice";
-      case ActionItemCanned:
-        return "Canned Message";
-      case ActionItemReply:
-        return "Reply";
-      case ActionItemReact:
-        return "React";
-      case ActionItemEdit:
-        return "Edit Message";
-      case ActionItemDelete:
-        return "Delete Message";
-      case ActionItemFullText:
-        return "View Full Message";
-      case ActionItemFullContext:
-        return selected_message_context_is_forward() ? "View Forward" : "View Quote";
-      case ActionItemReplyEmoji:
-        return "Emoji";
-      case ActionItemGoToBottom:
-        return "Go to Bottom";
-      case ActionItemReplyDictate:
-      case ActionItemReplyCanned:
-      case ActionItemArchiveChat:
-      case ActionItemDeleteChat:
-      case ActionItemMuteChat:
-      case ActionItemMarkUnread:
-      case ActionItemGoBack:
-        return "";
-    }
-  }
-  if (s_action_mode == ActionMenuCanned) {
-    return s_canned[index][0] ? s_canned[index] : "Canned message";
-  }
-  if (s_action_mode == ActionMenuConfirm && s_pending_chat_command[0]) {
-    return delete_confirm_items[index];
-  }
-  return confirm_items[index];
-}
-
-// Custom action sheet instead of ActionMenu: it keeps behavior identical across
-// the SDK targets this app supports.
-static void action_layer_update_proc(Layer *layer, GContext *ctx) {
+static void full_text_layer_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, ACTION_BG);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
@@ -4418,152 +4313,431 @@ static void action_layer_update_proc(Layer *layer, GContext *ctx) {
     graphics_fill_circle(ctx, GPoint(rail_w / 2, 10), 2);
   }
 
-  int count = action_item_count();
-  int row_h = ROUND_UI ? 32 : 48;
-  int top = ROUND_UI ? PG_MAX(0, (bounds.size.h - (count * row_h)) / 2) : 0;
+  char title[MAX_SENDER + 10];
+  const char *text = "";
+  const char *heading = NULL;
+  GFont full_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GFont heading_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
+  int text_w = content_w - 12;
+  int heading_h = 0;
 
-  if (s_action_mode == ActionMenuConfirm) {
-    graphics_context_set_text_color(ctx, ACTION_TEXT);
-    graphics_draw_text(ctx, s_pending_text, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(content_x + 6, 10, content_w - 12, 70),
-                       GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
-    top = bounds.size.h - (count * row_h) - 8;
+  title[0] = '\0';
+  if (s_selected_message >= 0 && s_selected_message < s_message_count) {
+    if (s_full_text_context) {
+      copy_cstr(title, sizeof(title), s_full_text_title);
+      heading = title;
+      text = s_full_text_body ? s_full_text_body : "";
+    } else {
+      text = s_messages[s_selected_message].text;
+    }
   }
 
-  if (s_action_mode == ActionMenuFullText) {
-    char title[MAX_SENDER + 10];
-    const char *text = "";
-    const char *heading = NULL;
-    GFont full_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-    GFont heading_font = fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
-    int text_w = content_w - 12;
-    int heading_h = 0;
-    GSize text_size;
-
-    title[0] = '\0';
-    if (s_selected_message >= 0 && s_selected_message < s_message_count) {
-      if (s_full_text_context) {
-        copy_cstr(title, sizeof(title), s_full_text_title);
-        heading = title;
-        text = s_full_text_body ? s_full_text_body : "";
-      } else {
-        text = s_messages[s_selected_message].text;
-      }
-    }
-
-    if (heading && heading[0]) {
-      GSize heading_size = graphics_text_layout_get_content_size(
-        heading, heading_font, GRect(0, 0, text_w, 2000),
-        GTextOverflowModeWordWrap, GTextAlignmentLeft
-      );
-      heading_h = heading_size.h + 4;
-    }
-    text_size = graphics_text_layout_get_content_size(
-      text, full_font, GRect(0, 0, text_w, 2000),
+  if (heading && heading[0]) {
+    GSize heading_size = graphics_text_layout_get_content_size(
+      heading, heading_font, GRect(0, 0, text_w, 2000),
       GTextOverflowModeWordWrap, GTextAlignmentLeft
     );
-    s_full_text_height = heading_h + text_size.h + 20;
-    int max_scroll = PG_MAX(0, s_full_text_height - bounds.size.h + 8);
-    s_full_text_scroll_offset = PG_MIN(s_full_text_scroll_offset, max_scroll);
+    heading_h = heading_size.h + 4;
+  }
+  GSize text_size = graphics_text_layout_get_content_size(
+    text, full_font, GRect(0, 0, text_w, 2000),
+    GTextOverflowModeWordWrap, GTextAlignmentLeft
+  );
+  s_full_text_height = heading_h + text_size.h + 20;
+  int max_scroll = PG_MAX(0, s_full_text_height - bounds.size.h + 8);
+  s_full_text_scroll_offset = PG_MIN(s_full_text_scroll_offset, max_scroll);
 
-    graphics_context_set_text_color(ctx, ACTION_TEXT_SELECTED);
-    if (heading && heading[0]) {
-      graphics_draw_text(ctx, heading, heading_font,
-                         GRect(content_x + 6, 8 - s_full_text_scroll_offset, text_w, heading_h),
-                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
-    }
-    graphics_draw_text(ctx, text, full_font,
-                       GRect(content_x + 6, 8 + heading_h - s_full_text_scroll_offset,
-                             text_w, text_size.h + 16),
+  graphics_context_set_text_color(ctx, ACTION_TEXT_SELECTED);
+  if (heading && heading[0]) {
+    graphics_draw_text(ctx, heading, heading_font,
+                       GRect(content_x + 6, 8 - s_full_text_scroll_offset, text_w, heading_h),
                        GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+  }
+  graphics_draw_text(ctx, text, full_font,
+                     GRect(content_x + 6, 8 + heading_h - s_full_text_scroll_offset,
+                           text_w, text_size.h + 16),
+                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+}
+
+static void *native_action_data(ActionItem item, int index) {
+  uintptr_t packed_index = index < 0 ? NATIVE_ACTION_INDEX_NONE : (uint16_t)index;
+  uintptr_t packed = (((uintptr_t)item & 0xffff) << 16) | (packed_index & 0xffff);
+  return (void *)packed;
+}
+
+static ActionItem native_action_data_item(void *data) {
+  return (ActionItem)((((uintptr_t)data) >> 16) & 0xffff);
+}
+
+static int native_action_data_index(void *data) {
+  uint16_t index = (uint16_t)(((uintptr_t)data) & 0xffff);
+  return index == NATIVE_ACTION_INDEX_NONE ? -1 : (int)index;
+}
+
+static bool native_add_action(ActionMenuLevel *level, const char *label,
+                              ActionItem item, int index) {
+  return action_menu_level_add_action(level, label, native_action_perform,
+                                      native_action_data(item, index)) != NULL;
+}
+
+static void native_add_child(ActionMenuLevel *parent, ActionMenuLevel *child,
+                             const char *label) {
+  if (!child) {
     return;
   }
-
-  if (s_action_mode == ActionMenuReactionGrid || s_action_mode == ActionMenuEmojiReplyGrid) {
-    int cols = 3;
-    int cell_h = ROUND_UI ? 40 : 44;
-    int cell_w = content_w / cols;
-    int rows = (count + cols - 1) / cols;
-    int selected_row = s_action_selected / cols;
-    int visible_rows = PG_MAX(1, bounds.size.h / cell_h);
-    int first_row = selected_row - (visible_rows / 2);
-    int max_first_row = PG_MAX(0, rows - visible_rows);
-    int visible_h;
-    int top;
-
-    first_row = PG_MAX(0, PG_MIN(first_row, max_first_row));
-    visible_h = PG_MIN(rows, visible_rows) * cell_h;
-    top = PG_MAX(0, (bounds.size.h - visible_h) / 2);
-
-    for (int i = 0; i < count; i++) {
-      int row_index = i / cols;
-      int col_index = i % cols;
-      int y = top + ((row_index - first_row) * cell_h);
-      GRect cell = GRect(content_x + (col_index * cell_w), y, cell_w, cell_h);
-      bool selected = i == s_action_selected;
-
-      if (y + cell_h < 0 || y > bounds.size.h) {
-        continue;
-      }
-      if (selected) {
-        graphics_context_set_fill_color(ctx, APP_COLOR);
-        graphics_fill_rect(ctx, cell, 4, GCornersAll);
-      }
-      graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorLightGray);
-      if (s_action_mode == ActionMenuReactionGrid &&
-          strcmp(reaction_grid_choices()[i].token, "remove") == 0) {
-        graphics_draw_text(ctx, reaction_grid_choices()[i].glyph,
-                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                           GRect(cell.origin.x, cell.origin.y + 10, cell.size.w, cell.size.h - 10),
-                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-      } else {
-        const char *glyph = s_action_mode == ActionMenuEmojiReplyGrid ?
-                            emoji_reply_glyph_at(i) : reaction_grid_choices()[i].glyph;
-        graphics_draw_text(ctx, glyph,
-                           fonts_get_system_font(FONT_KEY_GOTHIC_28),
-                           GRect(cell.origin.x, cell.origin.y + 4, cell.size.w, cell.size.h - 4),
-                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-      }
-    }
-    return;
+  if (!action_menu_level_add_child(parent, child, label)) {
+    action_menu_hierarchy_destroy(child, NULL, NULL);
   }
+}
 
-  if (s_action_mode != ActionMenuConfirm) {
-    int list_h = count * row_h;
-    if (list_h > bounds.size.h) {
-      int visible_rows = PG_MAX(1, bounds.size.h / row_h);
-      int first_row = s_action_selected - (visible_rows / 2);
-      int max_first_row = PG_MAX(0, count - visible_rows);
-      first_row = PG_MAX(0, PG_MIN(first_row, max_first_row));
-      top = -(first_row * row_h);
-    }
+static void native_defer_action_mode(ActionMenuMode mode) {
+  s_native_deferred_mode = mode;
+  s_native_has_deferred_mode = true;
+}
+
+static ActionMenuLevel *native_create_canned_level(bool as_reply) {
+  int count = canned_reply_count();
+  ActionMenuLevel *level = action_menu_level_create((uint16_t)PG_MAX(1, count));
+  if (!level) {
+    return NULL;
   }
-
+  if (count <= 0) {
+    native_add_action(level, "No canned messages", ActionItemConfirmCancel, -1);
+    return level;
+  }
   for (int i = 0; i < count; i++) {
-    GRect row = GRect(content_x, top + (i * row_h), content_w, row_h);
-    bool selected = i == s_action_selected;
+    native_add_action(level, s_canned[i][0] ? s_canned[i] : "Canned message",
+                      as_reply ? ActionItemReplyCanned : ActionItemCanned, i);
+  }
+  return level;
+}
 
-    if (action_item_has_separator_before(i)) {
-      int line_y = row.origin.y - 3;
-      graphics_context_set_stroke_color(ctx, GColorLightGray);
-      graphics_draw_line(ctx, GPoint(row.origin.x + 8, line_y),
-                         GPoint(row.origin.x + row.size.w - 1, line_y));
-    }
+static ActionMenuLevel *native_create_emoji_level(bool as_reply) {
+  int count = emoji_reply_count();
+  ActionMenuLevel *level = action_menu_level_create((uint16_t)PG_MAX(1, count));
+  if (!level) {
+    return NULL;
+  }
+  action_menu_level_set_display_mode(level, ActionMenuLevelDisplayModeThin);
+  for (int i = 0; i < count; i++) {
+    native_add_action(level, emoji_reply_glyph_at(i),
+                      as_reply ? ActionItemReplyEmoji : ActionItemEmoji, i);
+  }
+  return level;
+}
 
-    graphics_context_set_text_color(ctx, selected ? ACTION_TEXT_SELECTED : ACTION_TEXT);
-    graphics_draw_text(ctx, action_item_title(i), fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                       GRect(row.origin.x + 1, row.origin.y + 1,
-                             row.size.w - (action_item_has_chevron(i) ? 34 : 4), row.size.h - 3),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    if (action_item_has_chevron(i)) {
-      graphics_draw_text(ctx, ">>", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                         GRect(row.origin.x + row.size.w - 32, row.origin.y + 1, 30, row.size.h - 3),
-                         GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
-    }
+static ActionMenuLevel *native_create_reaction_level(void) {
+  int count = reaction_grid_count();
+  ActionMenuLevel *level = action_menu_level_create((uint16_t)PG_MAX(1, count));
+  if (!level) {
+    return NULL;
+  }
+  action_menu_level_set_display_mode(level, ActionMenuLevelDisplayModeThin);
+  for (int i = 0; i < count; i++) {
+    native_add_action(level, reaction_grid_choices()[i].glyph, ActionItemReact, i);
+  }
+  return level;
+}
+
+static ActionMenuLevel *native_create_reply_level(void) {
+  ActionMenuLevel *level = action_menu_level_create(3);
+  if (!level) {
+    return NULL;
+  }
+  native_add_action(level, "Dictate Reply", ActionItemReplyDictate, -1);
+  native_add_child(level, native_create_canned_level(true), "Canned Message");
+  native_add_child(level, native_create_emoji_level(true), "Emoji");
+  return level;
+}
+
+static ActionMenuLevel *native_build_main_level(void) {
+  ActionMenuLevel *level = action_menu_level_create((uint16_t)PG_MAX(1, action_item_count()));
+  if (!level) {
+    return NULL;
+  }
+
+  if (!has_selected_message()) {
+    native_add_action(level, "Voice", ActionItemCompose, -1);
+    native_add_child(level, native_create_canned_level(false), "Canned Message");
+    native_add_child(level, native_create_emoji_level(false), "Emoji");
+    native_add_action(level, "Go to Bottom", ActionItemGoToBottom, -1);
+    return level;
+  }
+
+  native_add_child(level, native_create_reply_level(), "Reply");
+  native_add_child(level, native_create_reaction_level(), "React");
+  if (selected_message_has_context()) {
+    native_add_action(level, selected_message_context_is_forward() ? "View Forward" : "View Quote",
+                      ActionItemFullContext, -1);
+  }
+  if (s_messages[s_selected_message].outgoing) {
+    native_add_action(level, "Edit Message", ActionItemEdit, -1);
+  }
+  if (selected_message_is_truncated()) {
+    native_add_action(level, "View Full Message", ActionItemFullText, -1);
+  }
+  native_add_action(level, "Delete Message", ActionItemDelete, -1);
+  native_add_action(level, "Go to Bottom", ActionItemGoToBottom, -1);
+  return level;
+}
+
+static ActionMenuLevel *native_build_chat_level(void) {
+  ActionMenuLevel *level = action_menu_level_create(5);
+  if (!level) {
+    return NULL;
+  }
+  native_add_action(level, "Archive Chat", ActionItemArchiveChat, -1);
+  native_add_action(level, "Delete Chat", ActionItemDeleteChat, -1);
+  native_add_action(level, "Mute Chat", ActionItemMuteChat, -1);
+  native_add_action(level, "Mark as Unread", ActionItemMarkUnread, -1);
+  native_add_action(level, "Go Back", ActionItemGoBack, -1);
+  return level;
+}
+
+static ActionMenuLevel *native_build_confirm_level(void) {
+  ActionMenuLevel *level = action_menu_level_create(2);
+  if (!level) {
+    return NULL;
+  }
+  native_add_action(level, s_pending_chat_command[0] ? "Delete" : "Send",
+                    ActionItemConfirmSend, -1);
+  native_add_action(level, "Cancel", ActionItemConfirmCancel, -1);
+  return level;
+}
+
+static ActionMenuLevel *native_build_action_level(ActionMenuMode mode) {
+  switch (mode) {
+    case ActionMenuMain:
+      return native_build_main_level();
+    case ActionMenuChat:
+      return native_build_chat_level();
+    case ActionMenuCanned:
+      return native_create_canned_level(s_pending_send_as_reply);
+    case ActionMenuConfirm:
+      return native_build_confirm_level();
+    case ActionMenuReply:
+      return native_create_reply_level();
+    case ActionMenuReactionGrid:
+      return native_create_reaction_level();
+    case ActionMenuEmojiReplyGrid:
+      return native_create_emoji_level(s_pending_send_as_reply);
+    case ActionMenuFullText:
+      return NULL;
+  }
+  return NULL;
+}
+
+static void native_action_menu_did_close(ActionMenu *menu, const ActionMenuItem *performed_action,
+                                         void *context) {
+  ActionMenuLevel *root = s_native_action_root;
+  bool start_dictation_after_close = s_native_deferred_dictation;
+  bool show_next = s_native_has_deferred_mode;
+  ActionMenuMode next_mode = s_native_deferred_mode;
+
+  s_native_action_menu = NULL;
+  s_native_action_root = NULL;
+  s_native_deferred_dictation = false;
+  s_native_has_deferred_mode = false;
+
+  if (root) {
+    action_menu_hierarchy_destroy(root, NULL, NULL);
+  }
+
+  if (start_dictation_after_close) {
+    start_dictation();
+  } else if (show_next) {
+    show_action_window(next_mode);
+  }
+}
+
+static bool show_native_action_menu(ActionMenuMode mode) {
+  close_touch_keyboard();
+  if (s_view_state == ViewStateChat) {
+    show_status(s_current_chat_title);
+  } else {
+    show_status("Pebblegram");
+  }
+
+  if (s_native_action_menu) {
+    action_menu_close(s_native_action_menu, false);
+    return false;
+  }
+
+  s_action_mode = mode;
+  s_action_selected = 0;
+  s_native_action_root = native_build_action_level(mode);
+  if (!s_native_action_root) {
+    return false;
+  }
+
+  ActionMenuConfig config = {
+    .root_level = s_native_action_root,
+    .context = NULL,
+    .colors = {
+      .background = APP_COLOR,
+      .foreground = GColorWhite
+    },
+    .will_close = NULL,
+    .did_close = native_action_menu_did_close,
+    .align = ActionMenuAlignCenter
+  };
+  s_native_action_menu = action_menu_open(&config);
+  if (!s_native_action_menu) {
+    action_menu_hierarchy_destroy(s_native_action_root, NULL, NULL);
+    s_native_action_root = NULL;
+    return false;
+  }
+  return true;
+}
+
+static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem *action,
+                                  void *context) {
+  void *data = action_menu_item_get_action_data(action);
+  ActionItem item = native_action_data_item(data);
+  int index = native_action_data_index(data);
+
+  switch (item) {
+    case ActionItemCompose:
+      s_pending_edit_message_id[0] = '\0';
+      s_pending_chat_command[0] = '\0';
+      s_pending_send_as_reply = false;
+      s_native_deferred_dictation = true;
+      break;
+    case ActionItemCanned:
+    case ActionItemReplyCanned:
+      if (index >= 0 && index < canned_reply_count()) {
+        s_pending_edit_message_id[0] = '\0';
+        s_pending_chat_command[0] = '\0';
+        s_pending_send_as_reply = item == ActionItemReplyCanned;
+        copy_cstr(s_pending_text, sizeof(s_pending_text), s_canned[index]);
+        native_defer_action_mode(ActionMenuConfirm);
+      }
+      break;
+    case ActionItemReply:
+      native_defer_action_mode(ActionMenuReply);
+      break;
+    case ActionItemReplyDictate:
+      s_pending_edit_message_id[0] = '\0';
+      s_pending_chat_command[0] = '\0';
+      s_pending_send_as_reply = true;
+      s_native_deferred_dictation = true;
+      break;
+    case ActionItemReplyEmoji:
+      if (index >= 0 && index < emoji_reply_count()) {
+        send_text_message(emoji_reply_glyph_at(index), true);
+        s_pending_send_as_reply = false;
+      }
+      break;
+    case ActionItemEmoji:
+      if (index >= 0 && index < emoji_reply_count()) {
+        send_text_message(emoji_reply_glyph_at(index), false);
+        s_pending_send_as_reply = false;
+      }
+      break;
+    case ActionItemReact:
+      if (index >= 0 && index < reaction_grid_count()) {
+        send_selected_reaction(reaction_grid_token_at(index));
+      }
+      break;
+    case ActionItemEdit:
+      if (has_selected_message() && s_messages[s_selected_message].outgoing) {
+        copy_cstr(s_pending_edit_message_id, sizeof(s_pending_edit_message_id),
+                  s_messages[s_selected_message].id);
+        s_pending_chat_command[0] = '\0';
+        s_pending_send_as_reply = false;
+        s_native_deferred_dictation = true;
+      }
+      break;
+    case ActionItemDelete:
+      delete_selected_message();
+      break;
+    case ActionItemFullText:
+      s_full_text_context = true;
+      if (!has_selected_message() || !ensure_full_text_body()) {
+        show_status("Memory low");
+        break;
+      }
+      s_full_text_title[0] = '\0';
+      copy_cstr(s_full_text_body, MAX_FULL_TEXT, s_messages[s_selected_message].text);
+      send_command_with_status("get_message_text", s_current_chat_id, NULL, NULL,
+                               s_messages[s_selected_message].id, false);
+      s_full_text_scroll_offset = 0;
+      native_defer_action_mode(ActionMenuFullText);
+      break;
+    case ActionItemFullContext:
+      s_full_text_context = true;
+      if (!has_selected_message() || !ensure_full_text_body()) {
+        show_status("Memory low");
+        break;
+      }
+      char body[MAX_CONTEXT_TEXT];
+      message_context_strings(&s_messages[s_selected_message], s_full_text_title,
+                              sizeof(s_full_text_title), body, sizeof(body));
+      copy_cstr(s_full_text_body, MAX_FULL_TEXT, body);
+      send_command_with_status("get_context", s_current_chat_id, NULL, NULL,
+                               s_messages[s_selected_message].id, false);
+      s_full_text_scroll_offset = 0;
+      native_defer_action_mode(ActionMenuFullText);
+      break;
+    case ActionItemGoToBottom:
+      go_to_bottom();
+      break;
+    case ActionItemArchiveChat:
+      send_selected_chat_action("archive_chat");
+      break;
+    case ActionItemDeleteChat:
+      copy_cstr(s_pending_chat_command, sizeof(s_pending_chat_command), "delete_chat");
+      if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+        snprintf(s_pending_text, sizeof(s_pending_text), "Delete %s?",
+                 s_chats[s_selected_chat].title);
+      } else {
+        copy_cstr(s_pending_text, sizeof(s_pending_text), "Delete chat?");
+      }
+      native_defer_action_mode(ActionMenuConfirm);
+      break;
+    case ActionItemMuteChat:
+      send_selected_chat_action("mute_chat");
+      break;
+    case ActionItemMarkUnread:
+      if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
+        s_chats[s_selected_chat].unread = true;
+        s_chats[s_selected_chat].unread_count = 0;
+        if (s_chat_menu) {
+          menu_layer_reload_data(s_chat_menu);
+          select_chat_row(s_selected_chat, false);
+        }
+      }
+      send_selected_chat_action("mark_unread");
+      break;
+    case ActionItemConfirmSend:
+      if (s_pending_chat_command[0]) {
+        send_selected_chat_action(s_pending_chat_command);
+        s_pending_chat_command[0] = '\0';
+      } else if (s_pending_edit_message_id[0]) {
+        edit_selected_message(s_pending_text);
+      } else {
+        send_text_message(s_pending_text, s_pending_send_as_reply);
+      }
+      s_pending_send_as_reply = false;
+      break;
+    case ActionItemConfirmCancel:
+      s_pending_edit_message_id[0] = '\0';
+      s_pending_chat_command[0] = '\0';
+      s_pending_send_as_reply = false;
+      break;
+    case ActionItemGoBack:
+      break;
   }
 }
 
 static void show_action_window(ActionMenuMode mode) {
+  if (mode != ActionMenuFullText) {
+    if (!show_native_action_menu(mode)) {
+      show_status("Menu unavailable");
+    }
+    return;
+  }
+
   close_touch_keyboard();
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
@@ -4582,7 +4756,7 @@ static void show_action_window(ActionMenuMode mode) {
   Layer *window_layer = window_get_root_layer(s_action_window);
   GRect bounds = layer_get_bounds(window_layer);
   s_action_layer = layer_create(bounds);
-  layer_set_update_proc(s_action_layer, action_layer_update_proc);
+  layer_set_update_proc(s_action_layer, full_text_layer_update_proc);
   layer_add_child(window_layer, s_action_layer);
 
   window_stack_push(s_action_window, true);
@@ -4618,212 +4792,6 @@ static void action_window_unload(Window *window) {
   }
 }
 
-static void action_select_click_handler(ClickRecognizerRef recognizer, void *context) {
-  int selected = s_action_selected;
-
-  if (s_action_mode == ActionMenuChat) {
-    switch (selected) {
-      case 0:
-        close_action_window();
-        send_selected_chat_action("archive_chat");
-        break;
-      case 1:
-        copy_cstr(s_pending_chat_command, sizeof(s_pending_chat_command), "delete_chat");
-        if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
-          snprintf(s_pending_text, sizeof(s_pending_text), "Delete %s?", s_chats[s_selected_chat].title);
-        } else {
-          copy_cstr(s_pending_text, sizeof(s_pending_text), "Delete chat?");
-        }
-        s_action_mode = ActionMenuConfirm;
-        s_action_selected = 1;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case 2:
-        close_action_window();
-        send_selected_chat_action("mute_chat");
-        break;
-      case 3:
-        if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
-          s_chats[s_selected_chat].unread = true;
-          s_chats[s_selected_chat].unread_count = 0;
-          if (s_chat_menu) {
-            menu_layer_reload_data(s_chat_menu);
-            select_chat_row(s_selected_chat, false);
-          }
-        }
-        close_action_window();
-        send_selected_chat_action("mark_unread");
-        break;
-      case 4:
-      default:
-        close_action_window();
-        break;
-    }
-    return;
-  }
-
-  if (s_action_mode == ActionMenuMain) {
-    ActionItem item = action_item_at(selected);
-    switch (item) {
-      case ActionItemCompose:
-        close_action_window();
-        s_pending_edit_message_id[0] = '\0';
-        s_pending_chat_command[0] = '\0';
-        s_pending_send_as_reply = false;
-        start_dictation();
-        break;
-      case ActionItemCanned:
-        s_pending_edit_message_id[0] = '\0';
-        s_pending_chat_command[0] = '\0';
-        s_pending_send_as_reply = false;
-        s_action_mode = ActionMenuCanned;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemReply:
-        s_action_mode = ActionMenuReply;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemReact:
-        s_action_mode = ActionMenuReactionGrid;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemReplyEmoji:
-        s_pending_edit_message_id[0] = '\0';
-        s_pending_chat_command[0] = '\0';
-        s_pending_send_as_reply = false;
-        s_action_mode = ActionMenuEmojiReplyGrid;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemEdit:
-        if (has_selected_message() && s_messages[s_selected_message].outgoing) {
-          copy_cstr(s_pending_edit_message_id, sizeof(s_pending_edit_message_id), s_messages[s_selected_message].id);
-          s_pending_send_as_reply = false;
-          close_action_window();
-          start_dictation();
-        }
-        break;
-      case ActionItemDelete:
-        close_action_window();
-        delete_selected_message();
-        break;
-      case ActionItemFullText:
-        s_full_text_context = true;
-        if (!has_selected_message() || !ensure_full_text_body()) {
-          show_status("Memory low");
-          break;
-        }
-        s_full_text_title[0] = '\0';
-        copy_cstr(s_full_text_body, MAX_FULL_TEXT, s_messages[s_selected_message].text);
-        send_command_with_status("get_message_text", s_current_chat_id, NULL, NULL,
-                                 s_messages[s_selected_message].id, false);
-        s_action_mode = ActionMenuFullText;
-        s_full_text_scroll_offset = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemFullContext:
-        s_full_text_context = true;
-        if (!has_selected_message() || !ensure_full_text_body()) {
-          show_status("Memory low");
-          break;
-        }
-        char body[MAX_CONTEXT_TEXT];
-        message_context_strings(&s_messages[s_selected_message], s_full_text_title,
-                                sizeof(s_full_text_title), body, sizeof(body));
-        copy_cstr(s_full_text_body, MAX_FULL_TEXT, body);
-        send_command_with_status("get_context", s_current_chat_id, NULL, NULL,
-                                 s_messages[s_selected_message].id, false);
-        s_action_mode = ActionMenuFullText;
-        s_full_text_scroll_offset = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case ActionItemGoToBottom:
-        close_action_window();
-        go_to_bottom();
-        break;
-      case ActionItemReplyDictate:
-      case ActionItemReplyCanned:
-      case ActionItemArchiveChat:
-      case ActionItemDeleteChat:
-      case ActionItemMuteChat:
-      case ActionItemMarkUnread:
-      case ActionItemGoBack:
-        break;
-    }
-    return;
-  }
-
-  if (s_action_mode == ActionMenuReply) {
-    s_pending_edit_message_id[0] = '\0';
-    s_pending_chat_command[0] = '\0';
-    s_pending_send_as_reply = true;
-    switch (selected) {
-      case 0:
-        close_action_window();
-        start_dictation();
-        break;
-      case 1:
-        s_action_mode = ActionMenuCanned;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-      case 2:
-      default:
-        s_action_mode = ActionMenuEmojiReplyGrid;
-        s_action_selected = 0;
-        layer_mark_dirty(s_action_layer);
-        break;
-    }
-    return;
-  }
-
-  if (s_action_mode == ActionMenuReactionGrid) {
-    const char *token = reaction_grid_token_at(selected);
-    close_action_window();
-    send_selected_reaction(token);
-    return;
-  }
-
-  if (s_action_mode == ActionMenuEmojiReplyGrid) {
-    const char *token = emoji_reply_glyph_at(selected);
-    close_action_window();
-    send_text_message(token, s_pending_send_as_reply);
-    s_pending_send_as_reply = false;
-    return;
-  }
-
-  if (s_action_mode == ActionMenuCanned) {
-    copy_cstr(s_pending_text, sizeof(s_pending_text), s_canned[selected]);
-    s_pending_chat_command[0] = '\0';
-    s_action_mode = ActionMenuConfirm;
-    s_action_selected = 0;
-    layer_mark_dirty(s_action_layer);
-    return;
-  }
-
-  if (s_action_mode == ActionMenuConfirm) {
-    close_action_window();
-    if (selected == 0) {
-      if (s_pending_chat_command[0]) {
-        send_selected_chat_action(s_pending_chat_command);
-        s_pending_chat_command[0] = '\0';
-      } else if (s_pending_edit_message_id[0]) {
-        edit_selected_message(s_pending_text);
-      } else {
-        send_text_message(s_pending_text, s_pending_send_as_reply);
-      }
-      s_pending_send_as_reply = false;
-    } else {
-      s_pending_edit_message_id[0] = '\0';
-      s_pending_chat_command[0] = '\0';
-      s_pending_send_as_reply = false;
-    }
-  }
-}
-
 static void action_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_action_mode == ActionMenuFullText) {
     s_full_text_scroll_offset = PG_MAX(0, s_full_text_scroll_offset - CHAT_SCROLL_DELTA);
@@ -4853,6 +4821,11 @@ static void action_down_click_handler(ClickRecognizerRef recognizer, void *conte
 }
 
 static void action_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  if (s_action_mode == ActionMenuFullText) {
+    free_full_text_body();
+    close_action_window();
+    return;
+  }
   if (s_action_mode == ActionMenuCanned || s_action_mode == ActionMenuConfirm ||
       s_action_mode == ActionMenuReply || s_action_mode == ActionMenuReactionGrid ||
       s_action_mode == ActionMenuEmojiReplyGrid || s_action_mode == ActionMenuFullText) {
@@ -4868,7 +4841,6 @@ static void action_back_click_handler(ClickRecognizerRef recognizer, void *conte
 }
 
 static void action_click_config_provider(void *context) {
-  window_single_click_subscribe(BUTTON_ID_SELECT, action_select_click_handler);
   window_single_repeating_click_subscribe(BUTTON_ID_UP, REPEAT_SCROLL_MS, action_up_click_handler);
   window_single_repeating_click_subscribe(BUTTON_ID_DOWN, REPEAT_SCROLL_MS, action_down_click_handler);
   window_single_click_subscribe(BUTTON_ID_BACK, action_back_click_handler);
