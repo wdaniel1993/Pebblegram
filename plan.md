@@ -367,6 +367,106 @@ Latest media/keyboard pass:
 - [done] Copied the keyboard test build to `I:\My Drive\Pebblegram.pbw`;
   the GitHub 3.1 release asset remains the tested no-keyboard photo build.
 
+## 3.5 Experimental Message Storage
+
+Branch: `experiment/3.5-message-arena`
+
+Goal:
+
+- Reduce fixed resident message memory before returning to media tuning.
+- Keep visible behavior and row count unchanged for the first pass.
+- Improve chat refresh speed by copying and clearing less worst-case text data.
+
+Implemented first pass:
+
+- Updated package version to `3.5.0`.
+- Replaced fixed `Message` arrays for `sender`, `text`, `reactions`, `meta`,
+  and `context` with pointers into one packed string block per message row.
+- Replaced fixed `Chat` arrays for title and preview/snippet with one packed
+  string block per chat row.
+- Kept fixed IDs, image token, image error, image bitmap pointers, and image
+  transfer state inside the row struct.
+- Added row string initialization, packed string allocation, and cleanup helpers.
+- Preserved the current shallow struct move behavior for prepend, append,
+  delete, and staged message commit by treating those copies as ownership
+  moves.
+- Preserved the current shallow chat row move behavior for refreshed chat-list
+  rows and deleted chat rows by treating those copies as ownership moves.
+- Deferred chat-list menu reload while chat rows stream in; the list now reloads
+  once on `chats_done` instead of after every incoming chat row.
+- Added early chat-list reveal: the first received chat row now exits the
+  loading view and renders immediately, while the remaining chat rows continue
+  streaming and the final list cleanup still happens on `chats_done`.
+- Replaced first-row-only reveal with progressive chat-list reveal: every new
+  streamed chat row that increases the visible list count reloads the menu
+  immediately, while existing-row refreshes still wait for `chats_done`.
+- Split initial chat-list transfer into a title-first pass and a snippet pass.
+  Chat rows now become visible without waiting for preview text bytes, then the
+  preview snippets are filled in by a second non-reordering update pass.
+- Deferred nonessential startup work until after first paint. The watch reports
+  first paint after 5 visible chat rows on Emery/Gabbro and after 3 visible rows
+  on Basalt/Diorite/smaller platforms; only then does the phone send settings,
+  start Telegram update handlers, start keepalive, queue avatars, and prefetch
+  top chat histories. A 2.5 second fallback still starts that work if the
+  first-paint signal is missed.
+- Removed the `Sending chats...` status AppMessage from the critical path so
+  chat rows are not queued behind it.
+- Raised media budgets to spend part of the recovered heap without consuming all
+  of it:
+  Basalt 6500 -> 8500 bytes at 112x104, Diorite 6000 -> 7500 bytes at 108x104,
+  Gabbro 15000 -> 20000 bytes at 144x136, Emery 30000 -> 36000 bytes at
+  190x190.
+- Bumped the phone image cache version to `v25` and raised tall-photo/PBI
+  budgets plus high-budget encode quality steps to match the larger platform
+  media ceilings.
+- Kept `MAX_MESSAGES` and phone-side `MAX_MESSAGE_ROWS` at 9 for this milestone
+  so any regressions are isolated to storage, not layout or pagination.
+
+Build result versus clean 3.3 baseline from this worktree:
+
+- Baseline Basalt: 48,629 byte RAM footprint, 16,907 bytes free heap.
+- 3.5 message-only Basalt: 43,781 byte RAM footprint, 21,755 bytes free heap.
+- 3.5 deferred startup/media bump Basalt: 42,125 byte RAM footprint,
+  23,411 bytes free heap.
+- Baseline Diorite: 48,605 / 16,931.
+- 3.5 message-only Diorite: 43,793 / 21,743.
+- 3.5 deferred startup/media bump Diorite: 42,137 / 23,399.
+- Baseline Emery: 51,161 / 79,911.
+- 3.5 message-only Emery: 46,193 / 84,879.
+- 3.5 deferred startup/media bump Emery: 44,501 / 86,571.
+- Baseline Gabbro: 49,921 / 81,151.
+- 3.5 message-only Gabbro: 45,045 / 86,027.
+- 3.5 deferred startup/media bump Gabbro: 43,429 / 87,643.
+
+Interpretation:
+
+- Static/resident footprint improved by roughly 6.7 KB on every platform after
+  extending packed strings to the chat list.
+- Short-message chats should now use materially less heap than long-message
+  chats, instead of every row reserving worst-case text storage.
+- Chat-list launch should do less UI work because streaming rows no longer
+  trigger one menu reload per row.
+- Initial launch should feel faster because the first usable chat row is drawn
+  before the complete chat list finishes streaming.
+- Startup should feel smoother because rows can appear incrementally instead of
+  row 1 appearing first and rows 2-20 appearing only after `chats_done`.
+- Startup should spend less work before first visible rows because settings,
+  update registration, keepalive, avatars, top-chat prefetch, and snippet text
+  all move behind the first-paint threshold.
+- Long-message chats can still allocate several KB of row string storage at
+  runtime, so this is not free media budget in the worst case.
+- The next experimental step is to add phone-planned row and arena budgets, then
+  raise row count only for short-message chats.
+
+Test focus:
+
+- Open chats with short messages, long messages, replies/forwards, reactions,
+  media placeholders, and GIF/photo previews.
+- Send, edit, delete, and react to messages to test row ownership moves.
+- Page older/newer messages to test staged commit and image-state preservation.
+- Watch for text corruption, missing sender/meta/context text, and image bitmap
+  state being lost across refreshes.
+
 ## Manual Test Matrix
 
 - Chat message with one long `https://` URL.
@@ -395,3 +495,120 @@ Latest media/keyboard pass:
 - Keep watch-side UI changes compact; memory pressure is real.
 - Prefer fixing sanitization at the phone/bridge boundary so the C watch app only
   receives safe, short text.
+
+## 2026-06-08 Experimental 3.5 Refinement
+
+Status: implementation complete; build passed. Needs live/on-device confirmation
+for chat-list snippet timing, dark screenshots, and sharper small text in photos.
+
+Changes:
+
+- Restored snippets to the first chat-row payload so names and previews arrive
+  together while the list still streams progressively.
+- Kept deferred background startup work after first paint; settings, keepalive,
+  update subscription, avatar loading, and prefetch remain behind the visible
+  row threshold.
+- Disabled the Emery touch keyboard at compile time. The previous measured cost
+  was about 1.1 KB RAM footprint on Emery, and the feature was not usable enough
+  to justify the space.
+- Raised media ceilings another notch:
+  - Basalt/Chalk: 108 px tile target, 116 px phone width, 9.5 KB watch cap.
+  - Diorite: 108 px tile target, 112 px phone width, 8.5 KB watch cap.
+  - Emery: 198 px tile target, 198 px phone width, 40 KB watch cap.
+  - Gabbro: 144 px phone tile target, 152 px phone width, 23 KB watch cap.
+- Raised phone-side image pixel budgets and tall-photo/PBI retry budgets to match
+  the larger watch caps.
+- Bumped image cache version to `v26` so old lower-quality cached images are not
+  reused against the new settings.
+- Disabled the brightness-lift/tone curve for message photos and PBI output. The
+  previous curve made dark-mode screenshots look gray by lifting near-black
+  pixels; preserving source contrast should keep small dark UI text sharper.
+
+Build result after this pass:
+
+- Basalt: 42,125 byte RAM footprint, 23,411 bytes free heap.
+- Diorite: 42,137 byte RAM footprint, 23,399 bytes free heap.
+- Emery: 43,361 byte RAM footprint, 87,711 bytes free heap.
+- Gabbro: 43,429 byte RAM footprint, 87,643 bytes free heap.
+
+Photo pipeline note:
+
+- The watch requests an image by chat/message token and sends its current retry
+  and decode budget.
+- The phone chooses platform-specific dimensions and byte/pixel limits, downloads
+  or reads the Telegram media source, decodes it, resizes it, quantizes/encodes it
+  into a watch-friendly PNG or PBI payload, and sends the bytes in chunks.
+- The watch reassembles those chunks, creates a `GBitmap`, and draws it at the
+  bitmap dimensions within the chat bubble. For normal previews this is close to
+  1:1; tall images use contained dimensions so they do not overrun the bubble or
+  memory budget.
+- More readable screenshots therefore come from requesting a bigger encoded
+  bitmap, allowing more bytes/pixels, preserving contrast, and avoiding retries
+  that downscale too aggressively.
+
+## 2026-06-08 Tall Photo Focus and Dark Screenshot Pass
+
+Status: implementation complete; build passed. Copied PBW to
+`I:\My Drive\Pebblegram.pbw`.
+
+Changes:
+
+- Reworked tall-photo selection to align against the image rectangle rather than
+  the whole message bubble.
+- When scrolling up into a tall photo, the selected photo starts at its bottom.
+- When scrolling down into a tall photo, the selected photo starts at its top.
+- If the phone later reports real encoded dimensions that change the selected
+  photo height, the watch re-anchors the selected photo to the same intended
+  edge instead of snapping to the top.
+- Continued scrolling inside a selected tall photo now uses the photo bounds,
+  not caption/reaction/bubble bounds.
+- Bumped image cache version to `v27`.
+- Added a dark-screenshot-aware tone mode on the phone encoder. It is targeted
+  at low-luminance, low-saturation images so dark app screenshots keep near-black
+  backgrounds instead of quantizing upward into washed gray.
+- Applied that dark tone path to both normal message PNG encodes and tall-photo
+  PBI encodes.
+
+Build result after this pass:
+
+- Basalt: 42,673 byte RAM footprint, 22,863 bytes free heap.
+- Diorite: 42,685 byte RAM footprint, 22,851 bytes free heap.
+- Emery: 43,989 byte RAM footprint, 87,083 bytes free heap.
+- Gabbro: 44,073 byte RAM footprint, 86,999 bytes free heap.
+
+## 2026-06-08 Light Screenshot Contrast Pass
+
+Status: implementation complete; build passed. Copied PBW to
+`I:\My Drive\Pebblegram.pbw`.
+
+Changes:
+
+- Added a targeted light-screenshot tone mode for pale, low-saturation UI
+  screenshots.
+- Pure white is preserved, while near-white greys and antialiased text are pulled
+  darker before PNG/PBI encoding so they survive Pebble palette quantization.
+- Bumped image cache version to `v28` so previously washed light screenshots are
+  regenerated.
+- This pass changes phone-side encoding only, so watch RAM footprint is unchanged
+  from the previous build.
+
+## 2026-06-08 Tall Photo Follow-Up Scroll Stabilization
+
+Status: implementation complete; build passed. Copied PBW to
+`I:\My Drive\Pebblegram.pbw`.
+
+Changes:
+
+- Fixed the second-scroll jank after entering a tall photo.
+- Up/down button handling now completes any in-flight chat scroll animation to
+  its intended target before calculating the next photo pan step.
+- The next pan step is calculated from that stable target offset, not a random
+  intermediate animation frame, so repeated scrolling inside a tall photo should
+  move by a consistent amount.
+
+Build result after this pass:
+
+- Basalt: 42,729 byte RAM footprint, 22,807 bytes free heap.
+- Diorite: 42,741 byte RAM footprint, 22,795 bytes free heap.
+- Emery: 44,045 byte RAM footprint, 87,027 bytes free heap.
+- Gabbro: 44,129 byte RAM footprint, 86,943 bytes free heap.

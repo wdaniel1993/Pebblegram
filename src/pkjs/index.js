@@ -62,6 +62,9 @@ var sendFailureDelay = 250;
 var cancelledImageTransferSeq = 0;
 var watchReady = false;
 var phonePrewarmStarted = false;
+var postFirstPaintStarted = false;
+var postFirstPaintTimer = null;
+var deferredStartupChats = null;
 var launchStartedAt = Date.now();
 var IMAGE_PREPARE_TIMEOUT_MS = 25000;
 var MESSAGE_FETCH_TIMEOUT_MS = 25000;
@@ -112,10 +115,10 @@ function configureForPlatform() {
     MAX_MESSAGE_TEXT = 460;
     MAX_CONTEXT_VIEW_TEXT = 1200;
     MESSAGE_WINDOW_BUDGET = 5400;
-    IMAGE_SIZE = 176;
-    IMAGE_WIDTH = 176;
-    IMAGE_MAX_BYTES = 30000;
-    IMAGE_MAX_PIXELS = 43000;
+    IMAGE_SIZE = 198;
+    IMAGE_WIDTH = 198;
+    IMAGE_MAX_BYTES = 40000;
+    IMAGE_MAX_PIXELS = 56000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'gabbro') {
     INITIAL_MESSAGE_ROWS = 9;
@@ -125,26 +128,26 @@ function configureForPlatform() {
     MAX_MESSAGE_TEXT = 460;
     MAX_CONTEXT_VIEW_TEXT = 1200;
     MESSAGE_WINDOW_BUDGET = 5400;
-    IMAGE_SIZE = 118;
-    IMAGE_WIDTH = 128;
-    IMAGE_MAX_BYTES = 15000;
-    IMAGE_MAX_PIXELS = 28000;
+    IMAGE_SIZE = 144;
+    IMAGE_WIDTH = 152;
+    IMAGE_MAX_BYTES = 23000;
+    IMAGE_MAX_PIXELS = 40000;
     IMAGE_CHUNK_SIZE = 500;
   } else if (info && info.platform === 'diorite') {
-    IMAGE_SIZE = 96;
-    IMAGE_WIDTH = 102;
+    IMAGE_SIZE = 108;
+    IMAGE_WIDTH = 112;
     IMAGE_COLORS = 4;
-    IMAGE_MAX_BYTES = 6000;
-    IMAGE_MAX_PIXELS = 18000;
+    IMAGE_MAX_BYTES = 8500;
+    IMAGE_MAX_PIXELS = 24000;
     AVATAR_SIZE = 24;
     AVATAR_COLORS = 4;
     AVATAR_MAX_BYTES = 2200;
   } else if (info && info.platform === 'basalt') {
-    IMAGE_SIZE = 96;
-    IMAGE_WIDTH = 104;
+    IMAGE_SIZE = 108;
+    IMAGE_WIDTH = 116;
     IMAGE_COLORS = 16;
-    IMAGE_MAX_BYTES = 6500;
-    IMAGE_MAX_PIXELS = 20000;
+    IMAGE_MAX_BYTES = 9500;
+    IMAGE_MAX_PIXELS = 27000;
   }
 }
 
@@ -784,9 +787,6 @@ function chatPayload(chat, index, total) {
 
 function sendChatRows(chats, silent) {
   var rows = (chats || []).slice(0, MAX_ROWS);
-  if (!silent) {
-    status('Sending chats...');
-  }
   for (var index = 0; index < rows.length; index += 1) {
     sendToWatch(chatPayload(rows[index], index, rows.length));
   }
@@ -1454,6 +1454,39 @@ function startTelegramUpdates() {
   });
 }
 
+function runPostFirstPaintWork(chats) {
+  if (postFirstPaintTimer) {
+    clearTimeout(postFirstPaintTimer);
+    postFirstPaintTimer = null;
+  }
+  if (!postFirstPaintStarted) {
+    postFirstPaintStarted = true;
+    sendSettings();
+    startConnectionKeepalive();
+    startTelegramUpdates();
+  }
+  chats = chats || deferredStartupChats || [];
+  deferredStartupChats = null;
+  if (chats.length > 0) {
+    queueChatAvatars(chats);
+    prefetchTopChats(chats);
+  }
+}
+
+function deferPostFirstPaintWork(chats) {
+  if (postFirstPaintStarted) {
+    runPostFirstPaintWork(chats);
+    return;
+  }
+  deferredStartupChats = chats || [];
+  if (!postFirstPaintTimer) {
+    postFirstPaintTimer = setTimeout(function() {
+      postFirstPaintTimer = null;
+      runPostFirstPaintWork();
+    }, 2500);
+  }
+}
+
 function getChats(silent) {
   if (chatLoadPromise) {
     if (!silent) {
@@ -1472,8 +1505,7 @@ function getChats(silent) {
   }).then(function(chats) {
     chats = chats || [];
     sendChatRows(chats, silent);
-    queueChatAvatars(chats);
-    prefetchTopChats(chats);
+    deferPostFirstPaintWork(chats);
   }).catch(function(err) {
     if (silent) {
       debugLog('Silent chats failed: ' + (err && err.message ? err.message : err));
@@ -2203,11 +2235,8 @@ Pebble.addEventListener('ready', function() {
   logLaunch('Pebble ready event');
   configureForPlatform();
   debugLog('Pebblegram JS ready, backend=pgjs, canned=' + cannedReplies());
-  sendSettings();
   prewarmPhoneBackend();
-  startConnectionKeepalive();
   getChats(false);
-  startTelegramUpdates();
 });
 
 Pebble.addEventListener('appmessage', function(event) {
@@ -2220,6 +2249,8 @@ Pebble.addEventListener('appmessage', function(event) {
 
   if (command === 'wake') {
     wakePhoneBackend();
+  } else if (command === 'chat_first_paint') {
+    runPostFirstPaintWork();
   } else if (command === 'get_chats') {
     getChats(false);
   } else if (command === 'get_messages') {

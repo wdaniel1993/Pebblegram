@@ -9,7 +9,7 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 
 ## Download
 
-- [Download Pebblegram 3.3 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.3.0/Pebblegram.pbw)
+- [Download Pebblegram 3.5 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.5.0/Pebblegram.pbw)
 
 ## What It Does
 
@@ -18,7 +18,6 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Displays incoming and outgoing chat bubbles
 - Loads inline photo previews, GIF/video still previews, and text link previews
 - Sends replies with Pebble dictation
-- Sends replies with the Emery touch keyboard
 - Sends configurable canned replies
 - Sends emoji replies
 - Sends, updates, and removes Telegram reactions
@@ -29,20 +28,22 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Includes a black-and-white optimized Diorite image path
 - Includes round-screen layout handling for Gabbro
 
-## Changes Since 3.2
+## Changes Since 3.3
 
-Pebblegram 3.3 is the current live Telegram build.
+Pebblegram 3.5 is the current live Telegram build.
 
-- Replaced Pebblegram's custom action sheet with the native PebbleOS `ActionMenu` API.
-- Moved Reply, Canned Message, Emoji, and React choices into native PebbleOS submenus.
-- Switched emoji and reaction pickers to the native thin grid action menu layout.
-- Kept the long message and quote reader as a lightweight scrollable view after selecting the native menu action.
-- Preserved the 3.2 Emery photo quality improvements and touch keyboard build.
-- Updated the bundled release PBW and GitHub release download for 3.3.
+- Reworked resident message and chat-list text storage to reduce fixed RAM use.
+- Made the chat list appear progressively so the UI becomes usable much sooner on launch.
+- Deferred nonessential startup work until the first visible chats are drawn.
+- Raised media size and quality limits, especially on Emery and Gabbro.
+- Added screenshot-aware photo contrast handling for both dark and light app screenshots.
+- Improved tall-photo navigation so entering and panning through long images is consistent.
+- Disabled the experimental Emery touch keyboard to reclaim RAM for media and speed.
+- Updated the bundled release PBW and GitHub release download for 3.5.
 
 ## Quick Start
 
-1. Install [Pebblegram 3.3 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.3.0/Pebblegram.pbw) with the Pebble/Rebble mobile app.
+1. Install [Pebblegram 3.5 PBW](https://github.com/TomBolger/Pebblegram/releases/download/v3.5.0/Pebblegram.pbw) with the Pebble/Rebble mobile app.
 2. Open Pebblegram settings in the Pebble mobile app.
 3. Enter your Telegram API ID, API hash, and phone number.
 4. Save once to request a Telegram login code.
@@ -86,4 +87,4 @@ For local testing with embedded API credentials, keep them in an ignored environ
 
 ## Status
 
-Pebblegram 3.3 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.
+Pebblegram 3.5 is the current direct Telegram build. The core flows work, but this is still community software for an unsupported watch platform.

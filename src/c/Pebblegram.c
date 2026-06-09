@@ -16,10 +16,10 @@
 #define MAX_CONTEXT_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 60, 60, 60, 56, 72, 72, 64)
 #define MAX_ID 24
 #define MAX_IMAGE_ERROR 32
-#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10000, 6500, 6500, 6000, 30000, 15000, 15000)
+#define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 13000, 9500, 9500, 8500, 40000, 23000, 23000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
 #define MAX_LOADED_IMAGES 1
-#define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 120, 96, 96, 96, 176, 156, 118)
+#define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 108, 108, 108, 198, 164, 144)
 #define IMAGE_FRAME_EXTRA_W PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10, 8, 8, 6, 14, 14, 10)
 #define APP_INBOX_SIZE 2048
 #define APP_OUTBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 512, 512, 512, 512, 1024, 1024, 1024)
@@ -62,6 +62,7 @@
 #define IMAGE_TRANSFER_STALL_MS 12000
 #define CHAT_COMMAND_WAKE_RETRY_MS 700
 #define CHAT_COMMAND_MAX_ATTEMPTS 4
+#define CHAT_FIRST_PAINT_ROWS PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3, 3, 3, 3, 5, 5, 5)
 #define PHONE_WAKE_DELAY_MS 180
 #define IMAGE_KEEP_SCREEN_MARGIN 48
 #define IMAGE_LOAD_SCREEN_MARGIN 24
@@ -74,7 +75,7 @@
 #define IMAGE_DIAG_LOGS 0
 #define STATUS_CLEAR_MS 1000
 #define VIEW_TRANSITION_MS 120
-#define TOUCH_KEYBOARD_ENABLED PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 1, 0, 0)
+#define TOUCH_KEYBOARD_ENABLED 0
 #define TOUCH_KEYBOARD_MAX_TEXT 120
 #define TOUCH_KEYBOARD_INPUT_H 30
 #define TOUCH_KEYBOARD_ROW_H 21
@@ -134,8 +135,9 @@ typedef enum {
 
 typedef struct {
   char id[MAX_ID];
-  char title[48];
-  char preview[72];
+  char *string_storage;
+  char *title;
+  char *preview;
   bool unread;
   int unread_count;
   GBitmap *avatar_bitmap;
@@ -143,11 +145,12 @@ typedef struct {
 
 typedef struct {
   char id[MAX_ID];
-  char sender[MAX_SENDER];
-  char text[MAX_TEXT];
-  char reactions[MAX_REACTIONS];
-  char meta[MAX_META];
-  char context[MAX_CONTEXT_TEXT];
+  char *string_storage;
+  char *sender;
+  char *text;
+  char *reactions;
+  char *meta;
+  char *context;
   char image_token[MAX_ID];
   char image_error[MAX_IMAGE_ERROR];
   bool outgoing;
@@ -309,6 +312,7 @@ static int s_message_scroll_direction;
 static ViewState s_view_state;
 static bool s_bridge_ready;
 static bool s_chats_loading;
+static bool s_chat_first_paint_reported;
 static bool s_loading_error;
 static bool s_chat_view_pending;
 static bool s_loading_messages;
@@ -490,6 +494,95 @@ static void copy_cstr(char *dest, size_t dest_size, const char *src) {
   strncpy(dest, src, dest_size - 1);
   dest[dest_size - 1] = '\0';
   trim_incomplete_utf8(dest);
+}
+
+static char s_empty_message_string[] = "";
+
+static void release_message_strings(Message *message);
+
+static size_t bounded_string_len(const char *src, size_t max_size) {
+  size_t len;
+  if (!src || !src[0] || max_size == 0) {
+    return 0;
+  }
+  len = strlen(src);
+  if (len >= max_size) {
+    len = max_size - 1;
+  }
+  return len;
+}
+
+static char *pack_message_string(char **cursor, const char *src, size_t len) {
+  char *dest;
+  if (!cursor || !*cursor || !src || !src[0] || len == 0) {
+    return s_empty_message_string;
+  }
+  dest = *cursor;
+  memcpy(dest, src, len);
+  dest[len] = '\0';
+  trim_incomplete_utf8(dest);
+  *cursor += len + 1;
+  return dest[0] ? dest : s_empty_message_string;
+}
+
+static bool set_message_strings(Message *message, const char *sender, const char *text,
+                                const char *reactions, const char *meta, const char *context) {
+  size_t sender_len = bounded_string_len(sender, MAX_SENDER);
+  size_t text_len = bounded_string_len(text, MAX_TEXT);
+  size_t reactions_len = bounded_string_len(reactions, MAX_REACTIONS);
+  size_t meta_len = bounded_string_len(meta, MAX_META);
+  size_t context_len = bounded_string_len(context, MAX_CONTEXT_TEXT);
+  size_t total = (sender_len ? sender_len + 1 : 0) +
+                 (text_len ? text_len + 1 : 0) +
+                 (reactions_len ? reactions_len + 1 : 0) +
+                 (meta_len ? meta_len + 1 : 0) +
+                 (context_len ? context_len + 1 : 0);
+  char *storage = total ? malloc(total) : NULL;
+  char *cursor = storage;
+  if (!message) {
+    if (storage) {
+      free(storage);
+    }
+    return false;
+  }
+  release_message_strings(message);
+  if (total && !storage) {
+    return false;
+  }
+  message->string_storage = storage;
+  message->sender = pack_message_string(&cursor, sender, sender_len);
+  message->text = pack_message_string(&cursor, text, text_len);
+  message->reactions = pack_message_string(&cursor, reactions, reactions_len);
+  message->meta = pack_message_string(&cursor, meta, meta_len);
+  message->context = pack_message_string(&cursor, context, context_len);
+  return true;
+}
+
+static void init_message_strings(Message *message) {
+  if (!message) {
+    return;
+  }
+  message->string_storage = NULL;
+  message->sender = s_empty_message_string;
+  message->text = s_empty_message_string;
+  message->reactions = s_empty_message_string;
+  message->meta = s_empty_message_string;
+  message->context = s_empty_message_string;
+}
+
+static void release_message_strings(Message *message) {
+  if (!message) {
+    return;
+  }
+  if (message->string_storage) {
+    free(message->string_storage);
+    message->string_storage = NULL;
+  }
+  message->sender = s_empty_message_string;
+  message->text = s_empty_message_string;
+  message->reactions = s_empty_message_string;
+  message->meta = s_empty_message_string;
+  message->context = s_empty_message_string;
 }
 
 static void truncate_cstr_bytes(char *text, size_t size, size_t max_bytes, const char *suffix) {
@@ -725,11 +818,65 @@ static void free_full_text_body(void) {
   }
 }
 
+static void init_chat_strings(Chat *chat) {
+  if (!chat) {
+    return;
+  }
+  chat->string_storage = NULL;
+  chat->title = s_empty_message_string;
+  chat->preview = s_empty_message_string;
+}
+
+static void release_chat_strings(Chat *chat) {
+  if (!chat) {
+    return;
+  }
+  if (chat->string_storage) {
+    free(chat->string_storage);
+    chat->string_storage = NULL;
+  }
+  chat->title = s_empty_message_string;
+  chat->preview = s_empty_message_string;
+}
+
+static bool set_chat_strings(Chat *chat, const char *title, const char *preview) {
+  size_t title_len = bounded_string_len(title, 48);
+  size_t preview_len = bounded_string_len(preview, 72);
+  size_t total = (title_len ? title_len + 1 : 0) +
+                 (preview_len ? preview_len + 1 : 0);
+  char *storage = total ? malloc(total) : NULL;
+  char *cursor = storage;
+  if (!chat) {
+    if (storage) {
+      free(storage);
+    }
+    return false;
+  }
+  release_chat_strings(chat);
+  if (total && !storage) {
+    return false;
+  }
+  chat->string_storage = storage;
+  chat->title = pack_message_string(&cursor, title, title_len);
+  chat->preview = pack_message_string(&cursor, preview, preview_len);
+  return true;
+}
+
 static void destroy_chat_avatar(Chat *chat) {
   if (chat && chat->avatar_bitmap) {
     gbitmap_destroy(chat->avatar_bitmap);
     chat->avatar_bitmap = NULL;
   }
+}
+
+static void clear_chat_slot(Chat *chat) {
+  if (!chat) {
+    return;
+  }
+  destroy_chat_avatar(chat);
+  release_chat_strings(chat);
+  memset(chat, 0, sizeof(Chat));
+  init_chat_strings(chat);
 }
 
 static void preserve_chat_avatar(Chat *chat, const char *incoming_id) {
@@ -745,8 +892,9 @@ static void preserve_chat_avatar(Chat *chat, const char *incoming_id) {
 
 static void destroy_chat_avatars(void) {
   for (int i = 0; i < MAX_CHATS; i++) {
-    destroy_chat_avatar(&s_chats[i]);
+    clear_chat_slot(&s_chats[i]);
   }
+  s_chat_count = 0;
   reset_avatar_transfer_state();
 }
 
@@ -917,6 +1065,42 @@ static bool message_image_near_viewport(int index, int margin) {
 
 static bool message_image_visible(int index) {
   return message_image_near_viewport(index, 0);
+}
+
+static int visible_message_height(GRect bounds) {
+#if TOUCH_KEYBOARD_AVAILABLE
+  return s_touch_keyboard_open ? PG_MAX(1, bounds.size.h - touch_keyboard_height()) : bounds.size.h;
+#else
+  return bounds.size.h;
+#endif
+}
+
+static int message_image_top(int index, GRect bounds) {
+  if (index < 0 || index >= s_message_count || !s_messages[index].image_placeholder) {
+    return s_message_y[index];
+  }
+  int bubble_w = message_bubble_width(bounds);
+  int max_image_w = message_image_frame_width(bubble_w);
+  int image_h = message_image_display_height(&s_messages[index], max_image_w);
+  int reaction_h = (s_messages[index].reactions[0] || s_messages[index].meta[0]) ? 17 : 0;
+  return s_message_y[index] + s_message_h[index] - reaction_h - image_h - 4;
+}
+
+static bool message_image_scrolls_tall(int index, GRect bounds, int margin) {
+  if (index < 0 || index >= s_message_count || !s_messages[index].image_placeholder) {
+    return false;
+  }
+  int bubble_w = message_bubble_width(bounds);
+  int image_h = message_image_display_height(&s_messages[index], message_image_frame_width(bubble_w));
+  return image_h > visible_message_height(bounds) - (margin * 2);
+}
+
+static int message_image_edge_scroll_target(int index, GRect bounds, int margin, bool align_top) {
+  int bubble_w = message_bubble_width(bounds);
+  int image_h = message_image_display_height(&s_messages[index], message_image_frame_width(bubble_w));
+  int image_top = message_image_top(index, bounds);
+  int image_bottom = image_top + image_h;
+  return align_top ? image_top - margin : image_bottom + margin - visible_message_height(bounds);
 }
 
 static bool message_image_should_keep(int index) {
@@ -1548,25 +1732,29 @@ static void message_context_strings(Message *message, char *title, size_t title_
   copy_context_part(body, body_size, separator ? separator + 1 : "Message", NULL);
 }
 
-static void set_message_context(Message *message, const char *reply_sender, const char *reply_text,
-                                const char *forward_sender, const char *forward_text) {
+static void build_message_context(char *context, size_t context_size,
+                                  const char *reply_sender, const char *reply_text,
+                                  const char *forward_sender, const char *forward_text) {
   const char *sender;
   const char *text;
+  if (!context || context_size == 0) {
+    return;
+  }
+  context[0] = '\0';
   if ((reply_sender && reply_sender[0]) || (reply_text && reply_text[0])) {
     sender = reply_sender && reply_sender[0] ? reply_sender : "Reply";
     text = reply_text && reply_text[0] ? reply_text : "Message";
-    snprintf(message->context, sizeof(message->context), "%s\n%s", sender, text);
-    trim_incomplete_utf8(message->context);
+    snprintf(context, context_size, "%s\n%s", sender, text);
+    trim_incomplete_utf8(context);
     return;
   }
   if ((forward_sender && forward_sender[0]) || (forward_text && forward_text[0])) {
     sender = forward_sender && forward_sender[0] ? forward_sender : "Forwarded";
     text = forward_text && forward_text[0] ? forward_text : "Message";
-    snprintf(message->context, sizeof(message->context), "Fwd from %s\n%s", sender, text);
-    trim_incomplete_utf8(message->context);
+    snprintf(context, context_size, "Fwd from %s\n%s", sender, text);
+    trim_incomplete_utf8(context);
     return;
   }
-  message->context[0] = '\0';
 }
 
 
@@ -1578,7 +1766,9 @@ static void clear_message_slot(Message *message) {
     clear_active_image_request();
   }
   destroy_message_bitmap(message);
+  release_message_strings(message);
   memset(message, 0, sizeof(Message));
+  init_message_strings(message);
 }
 
 static void clear_message_rows(void) {
@@ -1621,6 +1811,9 @@ static bool prepare_message_stage(void) {
     return false;
   }
   memset(s_message_stage, 0, sizeof(Message) * MAX_MESSAGES);
+  for (int i = 0; i < MAX_MESSAGES; i++) {
+    init_message_strings(&s_message_stage[i]);
+  }
   s_message_stage_count = 0;
   return true;
 }
@@ -1669,6 +1862,9 @@ static void commit_message_stage(int count) {
     s_messages[i] = s_message_stage[i];
     memset(&s_message_stage[i], 0, sizeof(Message));
   }
+  for (int i = rows; i < MAX_MESSAGES; i++) {
+    clear_message_slot(&s_message_stage[i]);
+  }
   s_message_count = rows;
   free(s_message_stage);
   s_message_stage = NULL;
@@ -1682,6 +1878,7 @@ static bool message_transfer_matches(DictionaryIterator *iter) {
 }
 
 static void populate_message_from_tuple(Message *message, DictionaryIterator *iter) {
+  char context[MAX_CONTEXT_TEXT];
   char *incoming_message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
   char *incoming_image_token = tuple_cstring(iter, MESSAGE_KEY_ImageToken);
   bool preserve_image_state = incoming_message_id && incoming_image_token &&
@@ -1691,15 +1888,17 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
     destroy_message_bitmap(message);
   }
   copy_cstr(message->id, sizeof(message->id), incoming_message_id);
-  copy_cstr(message->sender, sizeof(message->sender), tuple_cstring(iter, MESSAGE_KEY_Sender));
-  copy_cstr(message->text, sizeof(message->text), tuple_cstring(iter, MESSAGE_KEY_Text));
-  copy_cstr(message->reactions, sizeof(message->reactions), tuple_cstring(iter, MESSAGE_KEY_Reactions));
-  copy_cstr(message->meta, sizeof(message->meta), tuple_cstring(iter, MESSAGE_KEY_MessageMeta));
-  set_message_context(message,
-                      tuple_cstring(iter, MESSAGE_KEY_ReplySender),
-                      tuple_cstring(iter, MESSAGE_KEY_ReplyText),
-                      tuple_cstring(iter, MESSAGE_KEY_ForwardSender),
-                      tuple_cstring(iter, MESSAGE_KEY_ForwardText));
+  build_message_context(context, sizeof(context),
+                        tuple_cstring(iter, MESSAGE_KEY_ReplySender),
+                        tuple_cstring(iter, MESSAGE_KEY_ReplyText),
+                        tuple_cstring(iter, MESSAGE_KEY_ForwardSender),
+                        tuple_cstring(iter, MESSAGE_KEY_ForwardText));
+  set_message_strings(message,
+                      tuple_cstring(iter, MESSAGE_KEY_Sender),
+                      tuple_cstring(iter, MESSAGE_KEY_Text),
+                      tuple_cstring(iter, MESSAGE_KEY_Reactions),
+                      tuple_cstring(iter, MESSAGE_KEY_MessageMeta),
+                      context);
   message->outgoing = tuple_int(iter, MESSAGE_KEY_IsOutgoing, 0) != 0;
   copy_cstr(message->image_token, sizeof(message->image_token), incoming_image_token);
   message->image_placeholder = message->image_token[0] != '\0';
@@ -1724,6 +1923,7 @@ static Message *prepend_message_slot(void) {
     s_messages[i] = s_messages[i - 1];
   }
   memset(&s_messages[0], 0, sizeof(Message));
+  init_message_strings(&s_messages[0]);
   s_message_count++;
   return &s_messages[0];
 }
@@ -1740,6 +1940,7 @@ static Message *append_message_slot(void) {
     }
   }
   memset(&s_messages[s_message_count], 0, sizeof(Message));
+  init_message_strings(&s_messages[s_message_count]);
   s_message_count++;
   return &s_messages[s_message_count - 1];
 }
@@ -1764,6 +1965,7 @@ static void remove_message_at(int index) {
     s_messages[i] = s_messages[i + 1];
   }
   memset(&s_messages[s_message_count - 1], 0, sizeof(Message));
+  init_message_strings(&s_messages[s_message_count - 1]);
   s_message_count--;
   if (s_message_count <= 0) {
     s_selected_message = s_at_newest ? s_message_count : -1;
@@ -2024,6 +2226,15 @@ static void set_chat_scroll_offset_quiet(int target) {
   s_chat_scroll_offset = clamp_scroll_offset(target);
 }
 
+static void finish_pending_chat_scroll(void) {
+  if (!s_chat_scroll_timer) {
+    return;
+  }
+  app_timer_cancel(s_chat_scroll_timer);
+  s_chat_scroll_timer = NULL;
+  s_chat_scroll_offset = clamp_scroll_offset(s_chat_scroll_target);
+}
+
 static void set_chat_scroll_offset(int target, bool animated) {
   target = clamp_scroll_offset(target);
   if (s_chat_scroll_timer) {
@@ -2067,8 +2278,15 @@ static void select_message_with_alignment(int index, bool align_top, bool animat
   int bottom = s_message_y[s_selected_message] + s_message_h[s_selected_message] + margin;
   int target = s_chat_scroll_offset;
 
-  if (s_message_h[s_selected_message] > bounds.size.h - (margin * 2)) {
-    target = align_top ? top : bottom - bounds.size.h;
+  if (message_image_scrolls_tall(s_selected_message, bounds, margin)) {
+    target = message_image_edge_scroll_target(s_selected_message, bounds, margin, align_top);
+    set_chat_scroll_offset(target, animated);
+    request_next_image();
+    return;
+  }
+
+  if (s_message_h[s_selected_message] > visible_message_height(bounds) - (margin * 2)) {
+    target = align_top ? top : bottom - visible_message_height(bounds);
     set_chat_scroll_offset(target, animated);
     request_next_image();
     return;
@@ -2081,8 +2299,8 @@ static void select_message_with_alignment(int index, bool align_top, bool animat
     return;
   }
 
-  if (!align_top && bottom > s_chat_scroll_offset + bounds.size.h) {
-    target = bottom - bounds.size.h;
+  if (!align_top && bottom > s_chat_scroll_offset + visible_message_height(bounds)) {
+    target = bottom - visible_message_height(bounds);
     set_chat_scroll_offset(target, animated);
     request_next_image();
     return;
@@ -2254,8 +2472,7 @@ static void send_touch_keyboard_text(void) {
   s_pending_text[0] = '\0';
   Message *slot = append_message_slot();
   copy_cstr(slot->id, sizeof(slot->id), "pending");
-  copy_cstr(slot->text, sizeof(slot->text), text);
-  copy_cstr(slot->meta, sizeof(slot->meta), "...");
+  set_message_strings(slot, NULL, text, NULL, "...", NULL);
   slot->outgoing = true;
   s_at_newest = true;
   s_user_scrolled_messages = false;
@@ -2693,15 +2910,35 @@ static void select_chat_row(int row, bool animated) {
   menu_layer_set_selected_index(s_chat_menu, MenuIndex(0, s_selected_chat), MenuRowAlignCenter, animated);
 }
 
+static void reveal_available_chat_rows(void) {
+  if (s_view_state == ViewStateChat || s_chat_count <= 0) {
+    return;
+  }
+  s_chats_loading = false;
+  s_loading_error = false;
+  s_selected_chat = PG_MAX(0, PG_MIN(s_selected_chat, s_chat_count - 1));
+  if (s_chat_menu) {
+    menu_layer_reload_data(s_chat_menu);
+    select_chat_row(s_selected_chat, false);
+  }
+  if (!s_chat_first_paint_reported &&
+      s_chat_count >= PG_MIN(CHAT_FIRST_PAINT_ROWS, s_expected_rows > 0 ? s_expected_rows : CHAT_FIRST_PAINT_ROWS)) {
+    s_chat_first_paint_reported = true;
+    send_command_with_status("chat_first_paint", NULL, NULL, NULL, NULL, false);
+  }
+  show_status("Pebblegram");
+}
+
 static void remove_chat_at(int row) {
   if (row < 0 || row >= s_chat_count) {
     return;
   }
-  destroy_chat_avatar(&s_chats[row]);
+  clear_chat_slot(&s_chats[row]);
   for (int i = row; i < s_chat_count - 1; i++) {
     s_chats[i] = s_chats[i + 1];
   }
   memset(&s_chats[s_chat_count - 1], 0, sizeof(Chat));
+  init_chat_strings(&s_chats[s_chat_count - 1]);
   s_chat_count--;
   if (s_selected_chat > row) {
     s_selected_chat--;
@@ -2732,6 +2969,7 @@ static void request_chats(void) {
   s_expected_rows = 0;
   s_bridge_ready = false;
   s_chats_loading = true;
+  s_chat_first_paint_reported = false;
   s_chat_request_attempts = 1;
   show_loading_text("Loading...", false);
   show_status("Pebblegram");
@@ -3363,8 +3601,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_bridge_ready = true;
     s_chats_loading = false;
     s_loading_error = false;
-    if (s_chat_count > count) {
-      s_chat_count = count;
+    int visible_count = PG_MAX(0, PG_MIN(count, MAX_CHATS));
+    for (int i = visible_count; i < s_chat_count; i++) {
+      clear_chat_slot(&s_chats[i]);
+    }
+    if (s_chat_count > visible_count) {
+      s_chat_count = visible_count;
     }
     int preserved_index = find_chat_index_by_id(selected_id);
     if (preserved_index >= 0) {
@@ -3757,20 +3999,19 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       preserve_chat_avatar(chat, incoming_id);
     }
     copy_cstr(chat->id, sizeof(chat->id), incoming_id);
-    copy_cstr(chat->title, sizeof(chat->title), tuple_cstring(iter, MESSAGE_KEY_Sender));
-    copy_cstr(chat->preview, sizeof(chat->preview), tuple_cstring(iter, MESSAGE_KEY_Text));
+    set_chat_strings(chat,
+                     tuple_cstring(iter, MESSAGE_KEY_Sender),
+                     tuple_cstring(iter, MESSAGE_KEY_Text));
     chat->unread = tuple_int(iter, MESSAGE_KEY_IsUnread, 0) != 0;
     chat->unread_count = tuple_int(iter, MESSAGE_KEY_UnreadCount, chat->unread ? 1 : 0);
-    if (index + 1 > s_chat_count) {
+    bool list_grew = index + 1 > s_chat_count;
+    if (list_grew) {
       s_chat_count = index + 1;
     }
     s_bridge_ready = true;
     s_loading_error = false;
-    if (s_chats_loading && s_chat_count > 0) {
-      s_chats_loading = false;
-    }
-    if (s_chat_menu) {
-      menu_layer_reload_data(s_chat_menu);
+    if (list_grew) {
+      reveal_available_chat_rows();
     }
     if (s_chat_count >= s_expected_rows) {
       show_status("Pebblegram");
@@ -3915,13 +4156,22 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       }
       return;
     }
-    if (image_width > 0 && image_height > 0 &&
+  if (image_width > 0 && image_height > 0 &&
         image_width <= IMAGE_DECODE_MAX_DIMENSION && image_height <= IMAGE_DECODE_MAX_DIMENSION) {
       bool dimensions_changed = message->image_width != image_width || message->image_height != image_height;
+      bool selected_image = image_index == s_selected_message;
       message->image_width = (uint16_t)image_width;
       message->image_height = (uint16_t)image_height;
       if (dimensions_changed) {
         recalc_message_layout();
+        if (selected_image && s_messages_root) {
+          GRect bounds = layer_get_bounds(s_messages_root);
+          int margin = 6;
+          if (message_image_scrolls_tall(image_index, bounds, margin)) {
+            bool align_top = s_message_scroll_direction >= 0;
+            set_chat_scroll_offset_quiet(message_image_edge_scroll_target(image_index, bounds, margin, align_top));
+          }
+        }
       }
     }
 	    if (image_index == s_selected_message || message_needs_decode_headroom(message, image_size)) {
@@ -4888,6 +5138,7 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
   s_user_scrolled_messages = true;
   bool reversed_direction = s_message_scroll_direction == 1;
   s_message_scroll_direction = -1;
+  finish_pending_chat_scroll();
   recalc_message_layout();
   if (repeating) {
     clear_active_image_request();
@@ -4903,9 +5154,12 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
 
   GRect bounds = layer_get_bounds(s_messages_root);
   int margin = 6;
-  int top = s_message_y[s_selected_message] - margin;
+  int current_offset = s_chat_scroll_offset;
+  bool selected_image_tall = message_image_scrolls_tall(s_selected_message, bounds, margin);
+  int top = selected_image_tall ? message_image_top(s_selected_message, bounds) - margin :
+                                  s_message_y[s_selected_message] - margin;
   int visible_top = clamp_scroll_offset(top);
-  if (s_selected_message == 0 && s_chat_scroll_offset <= visible_top + 2) {
+  if (s_selected_message == 0 && current_offset <= visible_top + 2) {
     if (s_loading_older_messages) {
       show_status("Loading older...");
     } else {
@@ -4913,9 +5167,10 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
     }
     return;
   }
-  if (!repeating && s_message_h[s_selected_message] > bounds.size.h - (margin * 2) &&
-      s_chat_scroll_offset > visible_top) {
-    set_chat_scroll_offset(PG_MAX(visible_top, s_chat_scroll_offset - LONG_MESSAGE_SCROLL_DELTA), true);
+  if (!repeating && (selected_image_tall ||
+      s_message_h[s_selected_message] > visible_message_height(bounds) - (margin * 2)) &&
+      current_offset > visible_top) {
+    set_chat_scroll_offset(PG_MAX(visible_top, current_offset - LONG_MESSAGE_SCROLL_DELTA), true);
     if (!reversed_direction) {
       maybe_prefetch_older_messages();
     }
@@ -4923,7 +5178,8 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
   }
   if (s_selected_message > 0) {
     int prev_index = s_selected_message - 1;
-    bool prev_is_tall = s_message_h[prev_index] > bounds.size.h - (margin * 2);
+    bool prev_is_tall = message_image_scrolls_tall(prev_index, bounds, margin) ||
+                        s_message_h[prev_index] > visible_message_height(bounds) - (margin * 2);
     select_message_with_alignment(prev_index, !prev_is_tall, !repeating);
     if (!reversed_direction) {
       maybe_prefetch_older_messages();
@@ -4957,6 +5213,7 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
   s_user_scrolled_messages = true;
   bool reversed_direction = s_message_scroll_direction == -1;
   s_message_scroll_direction = 1;
+  finish_pending_chat_scroll();
   recalc_message_layout();
   if (repeating) {
     clear_active_image_request();
@@ -4976,10 +5233,17 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
 
   GRect bounds = layer_get_bounds(s_messages_root);
   int margin = 6;
-  int bottom = s_message_y[s_selected_message] + s_message_h[s_selected_message] + margin;
-  if (!repeating && s_message_h[s_selected_message] > bounds.size.h - (margin * 2) &&
-      s_chat_scroll_offset + bounds.size.h < bottom) {
-    set_chat_scroll_offset(PG_MIN(bottom - bounds.size.h, s_chat_scroll_offset + LONG_MESSAGE_SCROLL_DELTA), true);
+  int current_offset = s_chat_scroll_offset;
+  bool selected_image_tall = message_image_scrolls_tall(s_selected_message, bounds, margin);
+  int bottom = selected_image_tall ?
+               message_image_edge_scroll_target(s_selected_message, bounds, margin, false) +
+               visible_message_height(bounds) :
+               s_message_y[s_selected_message] + s_message_h[s_selected_message] + margin;
+  if (!repeating && (selected_image_tall ||
+      s_message_h[s_selected_message] > visible_message_height(bounds) - (margin * 2)) &&
+      current_offset + visible_message_height(bounds) < bottom) {
+    set_chat_scroll_offset(PG_MIN(bottom - visible_message_height(bounds),
+                                  current_offset + LONG_MESSAGE_SCROLL_DELTA), true);
     if (!reversed_direction) {
       maybe_prefetch_newer_messages();
     }
@@ -4987,7 +5251,8 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
   }
   if (s_selected_message < s_message_count - 1) {
     int next_index = s_selected_message + 1;
-    bool next_is_tall = s_message_h[next_index] > bounds.size.h - (margin * 2);
+    bool next_is_tall = message_image_scrolls_tall(next_index, bounds, margin) ||
+                        s_message_h[next_index] > visible_message_height(bounds) - (margin * 2);
     select_message_with_alignment(next_index, next_is_tall, !repeating);
     if (!reversed_direction) {
       maybe_prefetch_newer_messages();
