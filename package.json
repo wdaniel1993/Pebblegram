@@ -54,7 +54,18 @@
       "ReplyText",
       "ForwardSender",
       "ForwardText",
-      "MessageMeta"
+      "MessageMeta",
+      "VoiceToken",
+      "VoiceDuration",
+      "VoiceSize",
+      "VoiceSampleRate",
+      "VoiceFormat",
+      "VoiceData",
+      "VoiceSeq",
+      "VoiceTransferId",
+      "VoiceDone",
+      "VoiceError",
+      "VoiceAction"
     ],
     "resources": {
       "media": [
