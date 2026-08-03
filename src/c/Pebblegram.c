@@ -60,6 +60,15 @@
 #define IMAGE_COMMAND_RETRY_MS 350
 #define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
+// Voice playback: PebbleOS speaker_stream_* owns the 8KB PCM ring; we just feed
+// it from the AppMessage inbox. Format is fixed to 8kHz/16bit/mono (PCM value
+// 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
+// verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
+#define VOICE_DEFAULT_VOLUME 70
+#define VOICE_EXPECTED_FORMAT 2
+#define VOICE_POLL_MS 50
+#define VOICE_DRAIN_RETRY_MS 8
+#define VOICE_STALL_MS 10000
 #define CHAT_COMMAND_WAKE_RETRY_MS 700
 #define CHAT_COMMAND_MAX_ATTEMPTS 4
 #define CHAT_FIRST_PAINT_ROWS PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3, 3, 3, 3, 5, 5, 5)
@@ -153,10 +162,14 @@ typedef struct {
   char *context;
   char image_token[MAX_ID];
   char image_error[MAX_IMAGE_ERROR];
+  char voice_token[MAX_ID];
+  uint16_t voice_duration_ms;
   bool outgoing;
   bool image_placeholder;
   bool image_requested;
   bool image_failed;
+  bool voice_placeholder;
+  bool voice_playing;
   uint8_t image_progress;
   uint8_t image_retry_level;
   uint16_t image_width;
@@ -263,6 +276,18 @@ static int s_image_received;
 static int s_image_expected_offset;
 static int s_image_transfer_id;
 static bool s_image_is_pbi;
+// Voice transfer state — mirrors s_image_* pattern. Only one voice is in flight
+// at a time (request/get_voice is single-message-driven from the UI).
+static char s_voice_message_id[MAX_ID];
+static char s_voice_token[MAX_ID];
+static int s_voice_transfer_id;
+static int s_voice_expected_seq;
+static int s_voice_received;
+static int s_voice_total;
+static int s_voice_format;
+static bool s_voice_active;
+static bool s_voice_playing;
+static bool s_voice_stream_open;
 static int s_avatar_size;
 static int s_avatar_received;
 static int s_avatar_expected_offset;
@@ -331,6 +356,8 @@ static AppTimer *s_chat_scroll_timer;
 static AppTimer *s_message_timeout_timer;
 static AppTimer *s_message_retry_timer;
 static AppTimer *s_image_retry_timer;
+static AppTimer *s_voice_drain_timer;
+static AppTimer *s_voice_poll_timer;
 static AppTimer *s_status_clear_timer;
 static AppTimer *s_chat_retry_timer;
 static AppTimer *s_startup_wake_timer;
@@ -345,6 +372,14 @@ static void chat_retry_timer_callback(void *data);
 static void clear_active_image_request(void);
 static bool selected_message_needs_image(void);
 static void image_retry_timer_callback(void *data);
+static void voice_drain_timer_callback(void *data);
+static void voice_poll_timer_callback(void *data);
+static void schedule_voice_drain_retry(void);
+static void schedule_voice_poll(void);
+static void reset_voice_transfer_state(void);
+static void cancel_active_voice(void);
+static bool send_voice_request(const char *message_id);
+static bool find_message_by_voice_token(const char *token, Message **out_message);
 static void request_older_messages(bool silent);
 static void request_newer_messages(bool silent);
 static void refresh_loaded_image_count(void);
@@ -986,6 +1021,218 @@ static void schedule_image_prepare_timeout(void) {
 
 static void schedule_image_transfer_timeout(void) {
   schedule_image_timeout(IMAGE_TRANSFER_STALL_MS);
+}
+
+// ---- Voice transfer state machine -------------------------------------------
+// Mirrors the image state machine at lines ~4119-4409. We don't allocate a
+// ring buffer in Pebblegram RAM — PebbleOS's PCM stream already owns an 8KB
+// ring (PCM_STREAM_DEFAULT_SIZE_BYTES, see coredevices/PebbleOS
+// src/fw/services/speaker/pcm_stream.h). We feed each chunk directly via
+// speaker_stream_write and let the OS absorb backpressure. On voice_done we
+// call speaker_stream_close which drains and finishes.
+
+static bool find_message_by_voice_token(const char *token, Message **out_message) {
+  if (out_message) {
+    *out_message = NULL;
+  }
+  if (!token || !token[0]) {
+    return false;
+  }
+  for (int i = 0; i < s_message_count; i++) {
+    if (s_messages[i].voice_placeholder && s_messages[i].voice_token[0] &&
+        strcmp(s_messages[i].voice_token, token) == 0) {
+      if (out_message) {
+        *out_message = &s_messages[i];
+      }
+      return true;
+    }
+  }
+  // Fall back to message id (Telegram uses the message id as the voice token)
+  for (int i = 0; i < s_message_count; i++) {
+    if (s_messages[i].id[0] && strcmp(s_messages[i].id, token) == 0 &&
+        s_messages[i].voice_placeholder) {
+      if (out_message) {
+        *out_message = &s_messages[i];
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// Re-feed any chunk tail the OS ring couldn't accept. The spill buffer holds
+// at most one chunk (≤ ~800B; the JS framing default in
+// DEFAULT_VOICE_CHUNK_BYTES). The drain timer fires at VOICE_DRAIN_RETRY_MS
+// when speaker_stream_write returned less than the chunk size.
+static uint8_t s_voice_spill[1024];
+static int s_voice_spill_len;
+static int s_voice_spill_offset;
+
+static void cancel_voice_drain_timer(void) {
+  if (s_voice_drain_timer) {
+    app_timer_cancel(s_voice_drain_timer);
+    s_voice_drain_timer = NULL;
+  }
+}
+
+static void voice_drain_timer_callback(void *data) {
+  s_voice_drain_timer = NULL;
+  if (!s_voice_active || !s_voice_stream_open || s_voice_spill_len <= 0) {
+    return;
+  }
+  const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+  uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
+  if (written == 0) {
+    schedule_voice_drain_retry();
+    return;
+  }
+  s_voice_spill_offset += (int)written;
+  s_voice_spill_len -= (int)written;
+  if (s_voice_spill_len > 0) {
+    schedule_voice_drain_retry();
+  } else {
+    s_voice_spill_offset = 0;
+  }
+}
+
+static void schedule_voice_drain_retry(void) {
+  if (s_voice_drain_timer) {
+    return;
+  }
+  s_voice_drain_timer = app_timer_register(VOICE_DRAIN_RETRY_MS,
+                                            voice_drain_timer_callback, NULL);
+}
+
+static void cancel_voice_poll_timer(void) {
+  if (s_voice_poll_timer) {
+    app_timer_cancel(s_voice_poll_timer);
+    s_voice_poll_timer = NULL;
+  }
+}
+
+static void close_voice_stream(void) {
+  cancel_voice_drain_timer();
+  if (s_voice_stream_open) {
+    speaker_stream_close();
+    s_voice_stream_open = false;
+  }
+  s_voice_playing = false;
+  s_voice_spill_len = 0;
+  s_voice_spill_offset = 0;
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void reset_voice_transfer_state(void) {
+  cancel_voice_drain_timer();
+  cancel_voice_poll_timer();
+  if (s_voice_stream_open) {
+    speaker_stream_close();
+    s_voice_stream_open = false;
+  }
+  s_voice_message_id[0] = '\0';
+  s_voice_token[0] = '\0';
+  s_voice_transfer_id = 0;
+  s_voice_expected_seq = 0;
+  s_voice_received = 0;
+  s_voice_total = 0;
+  s_voice_format = 0;
+  s_voice_active = false;
+  s_voice_playing = false;
+  s_voice_spill_len = 0;
+  s_voice_spill_offset = 0;
+  // Clear any voice_playing flags on messages so the UI returns to the
+  // idle "▶ voice" affordance.
+  for (int i = 0; i < s_message_count; i++) {
+    s_messages[i].voice_playing = false;
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void cancel_active_voice(void) {
+  if (!s_voice_active && !s_voice_playing && !s_voice_stream_open) {
+    return;
+  }
+  if (s_voice_stream_open) {
+    // Hard stop — flush anything already in the OS ring, then drop it.
+    speaker_stop();
+  }
+  reset_voice_transfer_state();
+}
+
+// Forward one chunk to the OS ring, spilling any partial-write tail into
+// s_voice_spill for the drain timer to re-feed.
+static void write_voice_chunk(const uint8_t *data, int len) {
+  if (!data || len <= 0) {
+    return;
+  }
+  uint32_t written = speaker_stream_write(data, (uint32_t)len);
+  if (written == (uint32_t)len) {
+    return;
+  }
+  int remaining = len - (int)written;
+  if (remaining > (int)sizeof(s_voice_spill)) {
+    // Chunk larger than the spill can hold; drop the tail. Should not happen
+    // with the JS default of 800B chunks.
+    remaining = (int)sizeof(s_voice_spill);
+  }
+  memcpy(s_voice_spill, data + written, remaining);
+  s_voice_spill_offset = 0;
+  s_voice_spill_len = remaining;
+  schedule_voice_drain_retry();
+}
+
+// Periodic poll of speaker_get_status() to detect when the OS has finished
+// draining the PCM ring so we can flip voice_playing off in the UI.
+static void voice_poll_timer_callback(void *data) {
+  s_voice_poll_timer = NULL;
+  if (!s_voice_playing) {
+    return;
+  }
+  SpeakerStatus status = speaker_get_status();
+  if (status == SpeakerStatusIdle) {
+    s_voice_playing = false;
+    for (int i = 0; i < s_message_count; i++) {
+      if (s_messages[i].voice_playing) {
+        s_messages[i].voice_playing = false;
+      }
+    }
+    cancel_voice_poll_timer();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+  // Keep polling while draining.
+  s_voice_poll_timer = app_timer_register(VOICE_POLL_MS,
+                                           voice_poll_timer_callback, NULL);
+}
+
+static void schedule_voice_poll(void) {
+  cancel_voice_poll_timer();
+  s_voice_poll_timer = app_timer_register(VOICE_POLL_MS,
+                                           voice_poll_timer_callback, NULL);
+}
+
+static bool send_voice_request(const char *message_id) {
+  if (!message_id || !message_id[0]) {
+    return false;
+  }
+  // Single in-flight voice: cancel any previous attempt.
+  if (s_voice_active || s_voice_stream_open) {
+    cancel_active_voice();
+  }
+  // Command only — no retries via the standard chat retry timer; voice is
+  // expected to be fast and JS drives the rest of the state machine.
+  if (!send_command_with_status("get_voice", s_current_chat_id, NULL, NULL,
+                                message_id, false)) {
+    show_status("Bridge busy");
+    return false;
+  }
+  return true;
 }
 
 static bool message_needs_image(Message *message) {
@@ -1765,6 +2012,10 @@ static void clear_message_slot(Message *message) {
   if (s_image_message_id[0] && strcmp(s_image_message_id, message->image_token) == 0) {
     clear_active_image_request();
   }
+  if (s_voice_message_id[0] && strcmp(s_voice_message_id, message->id) == 0) {
+    // The message being cleared owns the in-flight voice — cancel it.
+    cancel_active_voice();
+  }
   destroy_message_bitmap(message);
   release_message_strings(message);
   memset(message, 0, sizeof(Message));
@@ -1912,6 +2163,28 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
     message->image_retry_level = 0;
     message->image_bitmap = NULL;
   }
+  // Voice fields: prefer the dedicated VoiceToken when set (some platforms
+  // surface a separate voice id), else fall back to the message id (which
+  // is what the JS-side streamer uses today — see
+  // src/pkjs/pgjs/telegram.js, voice_token: String(message.id)).
+  char *incoming_voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+  const char *voice_src = (incoming_voice_token && incoming_voice_token[0])
+                              ? incoming_voice_token
+                              : (message->id[0] ? message->id : NULL);
+  if (voice_src) {
+    copy_cstr(message->voice_token, sizeof(message->voice_token), voice_src);
+  } else {
+    message->voice_token[0] = '\0';
+  }
+  message->voice_placeholder = message->voice_token[0] != '\0';
+  int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
+  if (voice_duration > 0) {
+    message->voice_duration_ms = (uint16_t)PG_MIN(voice_duration, 600000);
+  } else {
+    message->voice_duration_ms = 0;
+  }
+  // Don't reset voice_playing here — it's set/cleared by the voice state
+  // machine and poll timer, not by message stream updates.
 }
 
 static Message *prepend_message_slot(void) {
@@ -4408,6 +4681,157 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
 
+  // ---- Voice transfer AppMessage handlers ------------------------------------
+  // Mirrors the image state machine above: voice_start opens the PCM stream
+  // and primes state, voice appends one chunk, voice_done drains + closes,
+  // voice_error hard-cancels. We accept a format-mismatch by logging and
+  // attempting playback anyway — PebbleOS's PCM service will resample from
+  // whatever format we declared (see coredevices/PebbleOS
+  // src/fw/services/speaker/speaker_service.c, prv_read_and_convert_pcm).
+  if (strcmp(type, "voice_start") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    int voice_total = tuple_int(iter, MESSAGE_KEY_VoiceSize, 0);
+    int voice_format = tuple_int(iter, MESSAGE_KEY_VoiceFormat, VOICE_EXPECTED_FORMAT);
+    int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id <= 0) {
+      return;
+    }
+    if (s_voice_active) {
+      // A different transfer is already in flight — ignore the new one.
+      return;
+    }
+    if (voice_format != VOICE_EXPECTED_FORMAT) {
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "Voice format mismatch: got %d expected %d (msg=%s)",
+              voice_format, VOICE_EXPECTED_FORMAT, message_id);
+      // Accept-and-log per the design doc: try to play anyway, the OS
+      // resampler will handle it (with quality degradation if mismatched).
+    }
+    Message *message = NULL;
+    find_message_by_voice_token(token, &message);
+    s_voice_active = true;
+    copy_cstr(s_voice_message_id, sizeof(s_voice_message_id), message_id);
+    copy_cstr(s_voice_token, sizeof(s_voice_token), token);
+    s_voice_transfer_id = transfer_id;
+    s_voice_total = voice_total;
+    s_voice_format = voice_format;
+    s_voice_expected_seq = 0;
+    s_voice_received = 0;
+    s_voice_spill_len = 0;
+    s_voice_spill_offset = 0;
+    s_voice_stream_open = speaker_stream_open(
+        (SpeakerPcmFormat)voice_format, VOICE_DEFAULT_VOLUME);
+    if (!s_voice_stream_open) {
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "speaker_stream_open failed for msg=%s fmt=%d",
+              message_id, voice_format);
+      // Tear down — JS will see no further voice frames and may time out.
+      reset_voice_transfer_state();
+      return;
+    }
+    s_voice_playing = true;
+    if (message) {
+      message->voice_playing = true;
+      if (voice_duration > 0) {
+        message->voice_duration_ms = (uint16_t)PG_MIN(voice_duration, 600000);
+      }
+    }
+    schedule_voice_poll();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
+  if (strcmp(type, "voice") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    int seq = tuple_int(iter, MESSAGE_KEY_VoiceSeq, -1);
+    int index = tuple_int(iter, MESSAGE_KEY_Index, -1);
+    Tuple *data = dict_find(iter, MESSAGE_KEY_VoiceData);
+    int data_len = data ? data->length : 0;
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id != s_voice_transfer_id ||
+        !s_voice_active || !s_voice_stream_open || !data) {
+      return;
+    }
+    int expected = seq >= 0 ? seq : index;
+    if (expected < 0) {
+      return;
+    }
+    if (expected < s_voice_expected_seq) {
+      // Duplicate/out-of-order chunk — drop.
+      return;
+    }
+    if (expected > s_voice_expected_seq) {
+      // Gap — cancel the transfer and report a stall.
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "Voice transfer gap for %s: got seq=%d expected=%d",
+              token, expected, s_voice_expected_seq);
+      reset_voice_transfer_state();
+      return;
+    }
+    write_voice_chunk(data->value->data, data_len);
+    s_voice_expected_seq = expected + data_len;
+    s_voice_received += data_len;
+    return;
+  }
+
+  if (strcmp(type, "voice_done") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id != s_voice_transfer_id ||
+        !s_voice_active) {
+      return;
+    }
+    // Drain any pending spill into the OS ring before closing.
+    while (s_voice_spill_len > 0 && s_voice_stream_open) {
+      const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+      uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
+      if (written == 0) {
+        break;  // OS ring still full; let speaker_stream_close drain later
+      }
+      s_voice_spill_offset += (int)written;
+      s_voice_spill_len -= (int)written;
+      if (s_voice_spill_len == 0) {
+        s_voice_spill_offset = 0;
+      }
+    }
+    if (s_voice_stream_open) {
+      // speaker_stream_close drains the OS ring and finishes playback.
+      speaker_stream_close();
+      s_voice_stream_open = false;
+    }
+    s_voice_active = false;
+    // Keep s_voice_playing true until the OS reports idle — voice_poll_timer
+    // will flip it. Schedule a poll in case no timer is active yet.
+    schedule_voice_poll();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
+  if (strcmp(type, "voice_error") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *detail = tuple_cstring(iter, MESSAGE_KEY_Error);
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "voice_error msg=%s detail=%s",
+            message_id ? message_id : "(null)",
+            detail && detail[0] ? detail : "");
+    cancel_active_voice();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
   if (strcmp(type, "reacted") == 0) {
     show_status("Reacted");
   }
@@ -4494,6 +4918,20 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
       s_image_transfer_id = 0;
     }
     schedule_image_retry();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+  if (command && strcmp(command, "get_voice") == 0) {
+    // JS never received the request — the transfer will never start.
+    // Tear down any locally-primed voice state and surface a status.
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    cancel_active_voice();
+    show_status("Voice request failed");
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "get_voice send failed for msg=%s reason=%d",
+            message_id ? message_id : "(null)", (int)reason);
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -5425,6 +5863,10 @@ static void deinit(void) {
   free_image_transfer_buffer();
   free_avatar_transfer_buffer();
   free_full_text_body();
+  // Hard-stop any in-flight voice playback. The OS speaker may keep
+  // draining its ring briefly after speaker_stop() returns; that's fine —
+  // we're tearing down the app.
+  cancel_active_voice();
 #if TOUCH_KEYBOARD_AVAILABLE
   if (TOUCH_KEYBOARD_ENABLED) {
     touch_service_unsubscribe();
