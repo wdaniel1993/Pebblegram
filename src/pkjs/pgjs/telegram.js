@@ -210,6 +210,33 @@ function messageDocument(message) {
   return (message && message.document) || (media && media.document) || null;
 }
 
+// Telegram voice notes: the message's document carries a
+// DocumentAttributeAudio whose `.voice === true` and whose `.duration`
+// is the audio length in seconds. Used by the playback path (Phase A)
+// to identify a message as playable voice and to surface its duration
+// to the watch UI.
+function messageVoice(message) {
+  var doc = messageDocument(message);
+  if (!doc) {
+    return null;
+  }
+  var attrs = documentAttributes(doc);
+  for (var i = 0; i < attrs.length; i += 1) {
+    if (attrs[i] && attrs[i].voice) {
+      return {
+        document: doc,
+        durationSeconds: Number(attrs[i].duration) || 0,
+        waveform: attrs[i].waveform || null
+      };
+    }
+  }
+  return null;
+}
+
+function hasVoice(message) {
+  return !!messageVoice(message);
+}
+
 function attributeName(attribute) {
   return objectName(attribute);
 }
@@ -1174,6 +1201,7 @@ function normalizeMessage(message, readOutboxMaxId) {
   var previewable = hasPreviewableStill(message);
   var imageDimensions = hasDirectPhoto(message) ? photoDimensions(message) :
                         (previewable ? documentDimensions(message) : null);
+  var voice = messageVoice(message);
   return {
     id: String(message.id),
     sender: senderName(message),
@@ -1183,7 +1211,9 @@ function normalizeMessage(message, readOutboxMaxId) {
     outgoing: !!message.out,
     image_token: (hasDirectPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
-    image_height: imageDimensions ? imageDimensions.height : 0
+    image_height: imageDimensions ? imageDimensions.height : 0,
+    voice_token: voice ? String(message.id) : null,
+    voice_duration_ms: voice ? Math.round(voice.durationSeconds * 1000) : 0
   };
 }
 
@@ -1620,6 +1650,26 @@ function downloadMedia(chatId, messageId, options) {
   });
 }
 
+// Download the OGG Opus bytes for a voice message. Reuses GramJS's
+// client.downloadMedia, which honors MTProto file references and
+// handles progressive download for the document. Bypasses the
+// image-specific byte validation in downloadFullMediaBytes — voice
+// bytes are OGG Opus, not PNG/JPEG.
+function downloadVoiceBytes(chatId, messageId) {
+  return auth.getClient().then(function(client) {
+    return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
+      var message = rows && rows[0];
+      if (!message || !hasVoice(message)) {
+        throw new Error('message has no voice media');
+      }
+      return withTimeout(
+        client.downloadMedia(message, gramDownloadOptions({})),
+        'voice download timed out', FULL_MEDIA_DOWNLOAD_TIMEOUT_MS
+      );
+    });
+  });
+}
+
 module.exports = {
   chats: chats,
   messages: messages,
@@ -1636,5 +1686,6 @@ module.exports = {
   muteChat: muteChat,
   markUnread: markUnread,
   downloadProfilePhoto: downloadProfilePhoto,
-  downloadMedia: downloadMedia
+  downloadMedia: downloadMedia,
+  downloadVoiceBytes: downloadVoiceBytes
 };

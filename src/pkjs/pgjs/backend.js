@@ -97,6 +97,9 @@ function create(options) {
       if (image) {
         image.cancelImageRequests();
       }
+    },
+    voiceBytes: function(chatId, messageId) {
+      return telegramApi().downloadVoiceBytes(chatId, messageId);
     }
   };
 }
