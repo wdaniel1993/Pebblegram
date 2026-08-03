@@ -1,5 +1,6 @@
 var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
+var pebblegramVoice = require('./pebblegram-voice');
 
 var DEBUG_LOGS = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
@@ -27,6 +28,11 @@ var AVATAR_COLORS = 16;
 var AVATAR_MAX_BYTES = 3000;
 var AVATAR_CHUNK_SIZE = 500;
 var AVATAR_ROWS = MAX_ROWS;
+var VOICE_DOWNLOAD_TIMEOUT_MS = 60000;
+var VOICE_DECODE_TIMEOUT_MS = 15000;
+// 8kHz 16-bit = 16KB/s; default chunk = 50ms of audio (800 bytes).
+// Keep the value in sync with pebblegram-voice.js DEFAULT_VOICE_CHUNK_BYTES.
+var VOICE_CHUNK_BYTES = 800;
 var PREFETCH_CHAT_COUNT = 4;
 var sendQueue = [];
 var sending = false;
@@ -55,6 +61,10 @@ var imageTransferSeq = 0;
 var avatarTransferSeq = 0;
 var imageRequestSeq = 0;
 var imageTransferActive = false;
+var voiceTransferSeq = 0;
+var voiceRequestSeq = 0;
+var voiceTransferActive = false;
+var cancelledVoiceTransferSeq = 0;
 var messageStreamSeq = 0;
 var messageStreamTimer = null;
 var topPrefetchSeq = 0;
@@ -267,6 +277,12 @@ function isImageTransferPayload(payload) {
     type === 'image_error' || type === 'image_status';
 }
 
+function isVoiceTransferPayload(payload) {
+  var type = payloadType(payload);
+  return type === 'voice_start' || type === 'voice' || type === 'voice_done' ||
+    type === 'voice_error' || type === 'voice_status';
+}
+
 function isMessageTransferPayload(payload) {
   var type = payloadType(payload);
   return type === 'messages_start' || type === 'message' || type === 'message_prepend' || type === 'message_append' || type === 'messages_done';
@@ -302,8 +318,32 @@ function cancelQueuedImageTransfers() {
   pruneQueuedPayloads(isImageTransferPayload);
 }
 
+function cancelQueuedVoiceTransfers() {
+  voiceRequestSeq += 1;
+  cancelledVoiceTransferSeq = voiceTransferSeq;
+  voiceTransferActive = false;
+  if (pgjs && typeof pgjs.cancelVoiceRequests === 'function') {
+    pgjs.cancelVoiceRequests();
+  }
+  pruneQueuedPayloads(isVoiceTransferPayload);
+}
+
+// Cancel every in-flight image + voice transfer. Used on chat change
+// and chat teardown so a stale stream from the previous chat can't
+// land in the new one.
+function cancelAllQueuedTransfers() {
+  cancelQueuedImageTransfers();
+  cancelQueuedVoiceTransfers();
+}
+
 function transferId(payload) {
-  return payload && payload[MessageKeys.ImageTransferId] || 0;
+  if (!payload) {
+    return 0;
+  }
+  if (isVoiceTransferPayload(payload)) {
+    return payload[MessageKeys.VoiceTransferId] || 0;
+  }
+  return payload[MessageKeys.ImageTransferId] || 0;
 }
 
 function isObsoleteQueuedPayload(entry) {
@@ -314,6 +354,9 @@ function isObsoleteQueuedPayload(entry) {
   }
   if (isImageTransferPayload(payload)) {
     return id > 0 && id <= cancelledImageTransferSeq;
+  }
+  if (isVoiceTransferPayload(payload)) {
+    return id > 0 && id <= cancelledVoiceTransferSeq;
   }
   if (isMessageTransferPayload(payload)) {
     return id > 0 && id < messageStreamSeq;
@@ -342,12 +385,17 @@ function flushQueue() {
     sendFailureDelay = 250;
     if (DEBUG_LOGS && (entry.payload[MessageKeys.Type] === 'image_done' ||
         entry.payload[MessageKeys.Type] === 'chats_done' ||
-        entry.payload[MessageKeys.Type] === 'messages_done')) {
+        entry.payload[MessageKeys.Type] === 'messages_done' ||
+        entry.payload[MessageKeys.Type] === 'voice_done')) {
       logDuration('AppMessage ' + entry.payload[MessageKeys.Type] + ' queue', entry.queuedAt);
     }
     if (entry.payload[MessageKeys.Type] === 'image_done' ||
         entry.payload[MessageKeys.Type] === 'image_error') {
       imageTransferActive = false;
+    }
+    if (entry.payload[MessageKeys.Type] === 'voice_done' ||
+        entry.payload[MessageKeys.Type] === 'voice_error') {
+      voiceTransferActive = false;
     }
     sendQueue.shift();
     sending = false;
@@ -356,12 +404,15 @@ function flushQueue() {
     entry.attempts = (entry.attempts || 0) + 1;
     sending = false;
     debugLog('sendAppMessage failed: ' + JSON.stringify(error));
-    if (isObsoleteQueuedPayload(entry) || (entry.attempts >= 6 && (isImageTransferPayload(entry.payload) || isAvatarTransferPayload(entry.payload)))) {
+    if (isObsoleteQueuedPayload(entry) || (entry.attempts >= 6 && (isImageTransferPayload(entry.payload) || isAvatarTransferPayload(entry.payload) || isVoiceTransferPayload(entry.payload)))) {
       if (sendQueue[0] === entry) {
         sendQueue.shift();
       }
       if (isImageTransferPayload(entry.payload)) {
         imageTransferActive = false;
+      }
+      if (isVoiceTransferPayload(entry.payload)) {
+        voiceTransferActive = false;
       }
       sendFailureDelay = 250;
       flushQueue();
@@ -932,6 +983,15 @@ function messagePayload(message, type, index, count, transferId) {
       payload[MessageKeys.ImageHeight] = message.image_height;
     }
   }
+  if (message.voice_token) {
+    payload[MessageKeys.VoiceToken] = String(message.voice_token);
+    if (message.voice_duration_ms) {
+      // The watch uses this to render a duration hint next to the play
+      // affordance. Cap it to a sensible display range.
+      payload[MessageKeys.VoiceDuration] = message.voice_duration_ms > 0
+        ? Math.min(600000, Math.round(message.voice_duration_ms)) : 0;
+    }
+  }
   return payload;
 }
 
@@ -1365,7 +1425,7 @@ function scheduleUpdateRefresh(delay) {
   }
   updateRefreshTimer = setTimeout(function() {
     updateRefreshTimer = null;
-    if (imageTransferActive) {
+    if (imageTransferActive || voiceTransferActive) {
       scheduleUpdateRefresh(1500);
       return;
     }
@@ -1426,7 +1486,7 @@ function startConnectionKeepalive() {
   }
   connectionKeepaliveTimer = setInterval(function() {
     var keepalive;
-    if (imageTransferActive) {
+    if (imageTransferActive || voiceTransferActive) {
       return;
     }
     keepalive = activePgjs().keepalive || activePgjs().ready;
@@ -1531,7 +1591,7 @@ function getMessages(chatId) {
   cancelUpdateRefresh();
   cancelQueuedMessageTransfers();
   cancelQueuedAvatarTransfers();
-  cancelQueuedImageTransfers();
+  cancelAllQueuedTransfers();
   if (sendStoredMessages(chatId)) {
     return;
   }
@@ -1667,7 +1727,7 @@ function leaveChat(chatId) {
     currentChatId = null;
     currentChatSignature = '';
     cancelQueuedMessageTransfers();
-    cancelQueuedImageTransfers();
+    cancelAllQueuedTransfers();
     avatarIndex = 0;
     scheduleChatAvatars(300);
     if (chatListStale) {
@@ -2152,6 +2212,81 @@ function sendImageBytes(messageId, bytes) {
   sendToWatch(donePayload);
 }
 
+function sendVoice(chatId, messageId) {
+  var startedAt = DEBUG_LOGS ? Date.now() : 0;
+  var message = storedMessage(chatId, messageId);
+  if (!message || !message.voice_token) {
+    debugLog('PGVOICE chat=' + chatId + ' msg=' + messageId + ' no voice_token; ignoring');
+    return;
+  }
+  // Voice is a single-stream-per-watch resource. Cancel any prior voice
+  // transfer before we start a new one, and detach the image stream
+  // bookkeeping so a late image frame from a previous request can't
+  // interfere (the image pipeline is independent and will re-arm on
+  // the next sendImage() call).
+  cancelAllQueuedTransfers();
+  voiceTransferActive = true;
+  var requestSeq = voiceRequestSeq;
+  var transferId = ++voiceTransferSeq;
+  sendVoiceStatus(messageId, 'Preparing');
+  withTimeout(
+    activePgjs().voiceBytes(chatId, messageId),
+    'voice download timed out', VOICE_DOWNLOAD_TIMEOUT_MS
+  ).then(function(opusBytes) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return null;
+    }
+    if (DEBUG_LOGS) {
+      logDuration('voice download ' + messageId, startedAt);
+    }
+    if (!opusBytes || !opusBytes.length) {
+      throw new Error('empty voice bytes');
+    }
+    sendVoiceStatus(messageId, 'Decoding');
+    return withTimeout(
+      pebblegramVoice.createStreamer()(MessageKeys, message.voice_token, transferId, opusBytes, {
+        durationMs: message.voice_duration_ms || 0
+      }),
+      'voice decode timed out', VOICE_DECODE_TIMEOUT_MS
+    );
+  }).then(function(frames) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return;
+    }
+    if (!frames || !frames.length) {
+      voiceTransferActive = false;
+      return;
+    }
+    if (DEBUG_LOGS) {
+      logDuration('voice decode ' + messageId, startedAt);
+    }
+    sendVoiceStatus(messageId, 'Playing');
+    for (var i = 0; i < frames.length; i++) {
+      sendToWatch(frames[i]);
+    }
+  }).catch(function(err) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return;
+    }
+    var detail = err && err.message ? err.message : String(err || 'unknown voice error');
+    debugLog('Voice failed for ' + messageId + ': ' + detail);
+    voiceTransferActive = false;
+    var failed = {};
+    failed[MessageKeys.Type] = 'voice_error';
+    failed[MessageKeys.MessageId] = String(messageId || '');
+    failed[MessageKeys.Error] = diagnosticText(detail, 95);
+    sendToWatch(failed);
+  });
+}
+
+function sendVoiceStatus(messageId, text) {
+  var payload = {};
+  payload[MessageKeys.Type] = 'voice_status';
+  payload[MessageKeys.MessageId] = String(messageId || '');
+  payload[MessageKeys.Error] = diagnosticText(text || 'Preparing', 40);
+  sendToWatch(payload);
+}
+
 function sendAvatar(chatId, bytes) {
   var start = {};
   var transferId = ++avatarTransferSeq;
@@ -2289,6 +2424,10 @@ Pebble.addEventListener('appmessage', function(event) {
     sendImage(chatId, messageId, text);
   } else if (command === 'cancel_image') {
     cancelQueuedImageTransfers();
+  } else if (command === 'get_voice') {
+    sendVoice(chatId, messageId);
+  } else if (command === 'cancel_voice') {
+    cancelQueuedVoiceTransfers();
   } else {
     error('Command failed');
   }
