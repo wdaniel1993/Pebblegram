@@ -139,7 +139,9 @@ typedef enum {
   ActionItemMarkUnread,
   ActionItemGoBack,
   ActionItemConfirmSend,
-  ActionItemConfirmCancel
+  ActionItemConfirmCancel,
+  ActionItemPlayVoice,
+  ActionItemStopVoice
 } ActionItem;
 
 typedef struct {
@@ -2385,6 +2387,9 @@ static int message_bubble_height(Message *message, int text_w, int bubble_w) {
   int context_h = message_context_height(message);
   int image_h = message->image_placeholder ?
                 message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
+  // Voice bubble is a small pill; no text below it — it sits at the bottom of
+  // the bubble like a media attachment. +6 for the internal padding.
+  int voice_h = message->voice_placeholder ? 30 : 0;
   copy_cstr(display_text, sizeof(display_text), message->text);
   truncate_cstr_bytes(display_text, sizeof(display_text), MESSAGE_PREVIEW_TEXT, " ...");
   GSize size = GSize(0, 0);
@@ -2399,7 +2404,7 @@ static int message_bubble_height(Message *message, int text_w, int bubble_w) {
   }
   int text_h = display_text[0] ? size.h : 0;
   text_h = PG_MAX(0, PG_MIN(text_h, MAX_TEXT * 2));
-  return PG_MAX(28, text_h + name_h + context_h + image_h + reaction_h + 7);
+  return PG_MAX(28, text_h + name_h + context_h + image_h + voice_h + reaction_h + 7);
 }
 
 static void recalc_message_layout(void) {
@@ -2929,7 +2934,8 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_text_color(ctx, GColorBlack);
     int image_h = message->image_placeholder ?
                   message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
-    int text_rect_h = bubble_h - name_h - context_h - image_h - reaction_h - 6;
+    int voice_h = message->voice_placeholder ? 30 : 0;
+    int text_rect_h = bubble_h - name_h - context_h - image_h - voice_h - reaction_h - 6;
     if (display_text[0] && text_rect_h > 0 && text_w > 4) {
       graphics_draw_text(ctx, display_text, text_font,
                          GRect(x + 5, text_y, text_w, text_rect_h),
@@ -2978,6 +2984,38 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 	        }
 	      }
 	    }
+
+    if (message->voice_placeholder) {
+      // Compact play/stop pill at the bottom of the bubble. Acts as a
+      // visual affordance; the actual play/stop action is fired from the
+      // action menu (ActionItemPlayVoice / ActionItemStopVoice).
+      int vh = 22;
+      int voice_y = y + bubble_h - reaction_h - voice_h + 4;
+      GRect voice_rect = GRect(x + 5, voice_y, text_w, vh);
+      graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite :
+                                      (message->voice_playing ? APP_COLOR_LIGHT : GColorWhite));
+      graphics_fill_rect(ctx, voice_rect, 4, GCornersAll);
+      graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack :
+                                      (selected ? APP_COLOR : GColorLightGray));
+      graphics_draw_round_rect(ctx, voice_rect, 4);
+      char voice_label[24];
+      if (message->voice_duration_ms > 0) {
+        int total_seconds = (message->voice_duration_ms + 500) / 1000;
+        int minutes = total_seconds / 60;
+        int seconds = total_seconds % 60;
+        snprintf(voice_label, sizeof(voice_label), "%s %d:%02d",
+                 message->voice_playing ? "Stop" : "Play", minutes, seconds);
+      } else {
+        snprintf(voice_label, sizeof(voice_label), "%s Voice",
+                 message->voice_playing ? "Stop" : "Play");
+      }
+      graphics_context_set_text_color(ctx, GColorBlack);
+      graphics_draw_text(ctx, voice_label,
+                         fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                         GRect(voice_rect.origin.x + 6, voice_rect.origin.y + 1,
+                               voice_rect.size.w - 12, vh),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
 
     if (reaction_h > 0) {
       int meta_w = message->meta[0] ? PG_MIN(50, text_w) : 0;
@@ -3738,6 +3776,14 @@ static bool selected_message_is_truncated(void) {
 
 static bool selected_message_has_context(void) {
   return has_selected_message() && message_has_context(&s_messages[s_selected_message]);
+}
+
+static bool selected_message_has_voice(void) {
+  return has_selected_message() && s_messages[s_selected_message].voice_placeholder;
+}
+
+static bool selected_message_voice_is_playing(void) {
+  return selected_message_has_voice() && s_messages[s_selected_message].voice_playing;
 }
 
 static bool selected_message_context_is_forward(void) {
@@ -4960,7 +5006,8 @@ static int action_item_count(void) {
       return 4 +
              (s_messages[s_selected_message].outgoing ? 1 : 0) +
              (selected_message_has_context() ? 1 : 0) +
-             (selected_message_is_truncated() ? 1 : 0);
+             (selected_message_is_truncated() ? 1 : 0) +
+             (selected_message_has_voice() ? 1 : 0);
     case ActionMenuChat:
       return 5;
     case ActionMenuCanned:
@@ -5157,6 +5204,13 @@ static ActionMenuLevel *native_build_main_level(void) {
   if (selected_message_has_context()) {
     native_add_action(level, selected_message_context_is_forward() ? "View Forward" : "View Quote",
                       ActionItemFullContext, -1);
+  }
+  if (selected_message_has_voice()) {
+    if (selected_message_voice_is_playing()) {
+      native_add_action(level, "Stop Voice", ActionItemStopVoice, -1);
+    } else {
+      native_add_action(level, "Play Voice", ActionItemPlayVoice, -1);
+    }
   }
   if (s_messages[s_selected_message].outgoing) {
     native_add_action(level, "Edit Message", ActionItemEdit, -1);
@@ -5366,6 +5420,26 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
                                s_messages[s_selected_message].id, false);
       s_full_text_scroll_offset = 0;
       native_defer_action_mode(ActionMenuFullText);
+      break;
+    case ActionItemPlayVoice:
+      if (!selected_message_has_voice()) {
+        break;
+      }
+      send_voice_request(s_messages[s_selected_message].id);
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      break;
+    case ActionItemStopVoice:
+      // Tell JS to stop the upstream stream (cancel the inflight transfer
+      // and skip any further voice frames), then hard-stop the local PCM
+      // ring. cancel_active_voice() also resets voice_playing on the UI.
+      send_command("cancel_voice", s_current_chat_id, NULL, NULL,
+                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      cancel_active_voice();
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
       break;
     case ActionItemGoToBottom:
       go_to_bottom();
