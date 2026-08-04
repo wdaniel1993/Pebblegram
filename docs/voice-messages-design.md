@@ -2,6 +2,28 @@
 
 Status: Draft · Owner: Eve (orchestrator) + coder profile · Target: PR to TomBolger/Pebblegram
 
+## Implementation status (2026-08-03)
+
+- **JS side: DONE + COMMITTED** (5 commits on `feature/voice-messages`): message keys + `tools/gen-message-keys.py` + `src/c/message_keys.auto.h`; `src/pkjs/pebblegram-voice.js` (decoder interface, resampler, PCM converters, frame builder, streamer); `src/pkjs/pgjs/telegram.js` + `backend.js` (voice download + `voice_token`/`voice_duration_ms`); `src/pkjs/index.js` dispatcher wiring (`sendVoice`, `get_voice`/`cancel_voice`, `cancelAllQueuedTransfers`, `messagePayload` voice fields); `tools/test-voice.js` — **22/22 passing** (real ffmpeg-generated OGG Opus → 8kHz s16 → 800B frames, 0.3% drift).
+- **C side: DONE + COMMITTED** (2 commits, via OpenCode): `ff7fc41` voice playback state machine (fixed duplicate `write_voice_chunk` — kept void/spill version; forward decls for `schedule_voice_drain_retry` + `schedule_voice_poll`), `0c9cc51` play/stop UI (voice pill bubble with duration, `ActionItemPlayVoice`/`ActionItemStopVoice`, `cancel_voice` + `speaker_stop` wiring).
+- **No Pebble SDK locally** → no `.pbw` build, no on-device verification; C needs a reviewer with the SDK (`arm-none-eabi-gcc`) to confirm `speaker_stream_*` signatures (agent reports high confidence: open→bool, write→uint32 bytes-written).
+
+## Verified facts (2026-08-03, from coredevices/PebbleOS HEAD)
+
+- `SpeakerPcmFormat` enum: `8kHz_8bit`=0, `16kHz_8bit`=1, `8kHz_16bit`=2, `16kHz_16bit`=3 — all mono signed.
+- Default PCM ring buffer: 8KB (`PCM_STREAM_DEFAULT_SIZE_BYTES`). `speaker_stream_write` returns bytes-written (backpressure). Volume 0-100.
+- AppMessage inbox cap in Pebblegram: `APP_INBOX_SIZE = 2048` (Pebblegram.c:24). Image transfer uses 500B chunks; voice chosen at **800B chunks**.
+- PKJS runtime: `target: es2015`, shims for crypto/fs/net/tls/stream/events/util/path/os/assert/constants/socks/websocket — **no native fetch, no fs, no child_process** → WASM/asm.js decoder required. Production candidate: `opus-decoder` (eshaz/wasm-audio-decoders, ~200KB, MIT).
+- Chosen stream format: **8kHz_16bit mono** (16KB/s — fits transport + 8KB ring; voice intelligible at 8kHz; ~50ms per 800B chunk).
+
+## Open questions (PR stage)
+
+- C ring-buffer drain cadence (5-10ms timer?) — needs hardware measurement of `speaker_stream_write` consumption.
+- `voice_start` format-mismatch policy on the watch (accept/log/fail).
+- Voice+image coexistence under basalt RAM pressure (suspend image decode while playing?).
+- On-device playback verification (real Time 2 / Round 2 or emulator) + SDK build.
+
+
 ## Goal
 
 Bring Telegram voice messages to Pebblegram on the revival watches (Time 2 / `emery`, Round 2 / `gabbro` — both have mic + speaker):
