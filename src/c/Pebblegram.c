@@ -1083,6 +1083,7 @@ static void voice_drain_timer_callback(void *data) {
     return;
   }
   const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+  (void)p;  // basalt/diorite stub speaker_stream_write() to (0)
   uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
   if (written == 0) {
     schedule_voice_drain_retry();
@@ -1109,20 +1110,6 @@ static void cancel_voice_poll_timer(void) {
   if (s_voice_poll_timer) {
     app_timer_cancel(s_voice_poll_timer);
     s_voice_poll_timer = NULL;
-  }
-}
-
-static void close_voice_stream(void) {
-  cancel_voice_drain_timer();
-  if (s_voice_stream_open) {
-    speaker_stream_close();
-    s_voice_stream_open = false;
-  }
-  s_voice_playing = false;
-  s_voice_spill_len = 0;
-  s_voice_spill_offset = 0;
-  if (s_messages_root) {
-    layer_mark_dirty(s_messages_root);
   }
 }
 
@@ -4839,6 +4826,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     // Drain any pending spill into the OS ring before closing.
     while (s_voice_spill_len > 0 && s_voice_stream_open) {
       const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+      (void)p;  // basalt/diorite stub speaker_stream_write() to (0)
       uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
       if (written == 0) {
         break;  // OS ring still full; let speaker_stream_close drain later
