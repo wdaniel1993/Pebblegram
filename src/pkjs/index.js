@@ -47,6 +47,7 @@ var chatCacheOrder = [];
 var pgjs = null;
 var currentChatId = null;
 var currentChatSignature = '';
+var currentThreadId = null;
 var chatLoadPromise = null;
 var messageLoadPromises = {};
 var newerLoadPromises = {};
@@ -1609,6 +1610,7 @@ function getMessages(chatId) {
     status('Loading messages...');
     return;
   }
+  currentThreadId = null;
   status('Loading messages...');
   messageLoadPromises[key] = timed('messages load ' + chatId, withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
                                       'messages load timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(messages) {
@@ -1641,6 +1643,10 @@ function getThreadMessages(chatId, threadId) {
   if (threadLoadPromises[key]) {
     return;
   }
+  cancelUpdateRefresh();
+  cancelAllQueuedTransfers();
+  currentThreadId = threadId;
+  currentChatSignature = '';
   status('Loading thread...');
   threadLoadPromises[key] = timed('thread load ' + chatId,
       withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS, 0, threadId),
@@ -1653,10 +1659,12 @@ function getThreadMessages(chatId, threadId) {
       rows[i].thread_id = threadId;
     }
     currentChatId = chatId;
+    currentChatSignature = messageSignature(rows);
     markRead(chatId);
     sendMessageRows(rows, chatId, 'initial');
   }).catch(function(err) {
     delete threadLoadPromises[key];
+    currentThreadId = null;
     promiseError('Thread failed', err);
   });
 }
@@ -1666,7 +1674,7 @@ function refreshOpenChat() {
   if (!chatId) {
     return;
   }
-  withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
+  withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS, currentThreadId ? 0 : null, currentThreadId),
               'chat refresh timed out', MESSAGE_FETCH_TIMEOUT_MS).then(function(messages) {
     var signature;
     if (currentChatId !== chatId) {
@@ -1770,9 +1778,10 @@ function retryReactionAfterError(chatId, messageId, token, originalError) {
 }
 
 function leaveChat(chatId) {
-  if (!chatId || currentChatId === chatId) {
+  if (String(currentChatId) === String(chatId || '')) {
     currentChatId = null;
     currentChatSignature = '';
+    currentThreadId = null;
     cancelQueuedMessageTransfers();
     cancelAllQueuedTransfers();
     avatarIndex = 0;
@@ -2293,15 +2302,11 @@ function sendVoice(chatId, messageId) {
     return;
   }
   // Voice is a single-stream-per-watch resource. Cancel any prior voice
-  // transfer before we start a new one, and detach the image stream
-  // bookkeeping so a late image frame from a previous request can't
-  // interfere (the image pipeline is independent and will re-arm on
-  // the next sendImage() call).
-  cancelAllQueuedTransfers();
+  // transfer before starting a new one; leave image transfers alone.
+  cancelQueuedVoiceTransfers();
   voiceTransferActive = true;
   var requestSeq = voiceRequestSeq;
   var transferId = ++voiceTransferSeq;
-  sendVoiceStatus(messageId, 'Preparing');
   withTimeout(
     activePgjs().voiceBytes(chatId, messageId),
     'voice download timed out', VOICE_DOWNLOAD_TIMEOUT_MS
@@ -2315,7 +2320,6 @@ function sendVoice(chatId, messageId) {
     if (!opusBytes || !opusBytes.length) {
       throw new Error('empty voice bytes');
     }
-    sendVoiceStatus(messageId, 'Decoding');
     return withTimeout(
       pebblegramVoice.createStreamer()(MessageKeys, message.voice_token, transferId, opusBytes, {
         durationMs: message.voice_duration_ms || 0
@@ -2333,7 +2337,6 @@ function sendVoice(chatId, messageId) {
     if (DEBUG_LOGS) {
       logDuration('voice decode ' + messageId, startedAt);
     }
-    sendVoiceStatus(messageId, 'Playing');
     for (var i = 0; i < frames.length; i++) {
       sendToWatch(frames[i]);
     }
@@ -2350,14 +2353,6 @@ function sendVoice(chatId, messageId) {
     failed[MessageKeys.Error] = diagnosticText(detail, 95);
     sendToWatch(failed);
   });
-}
-
-function sendVoiceStatus(messageId, text) {
-  var payload = {};
-  payload[MessageKeys.Type] = 'voice_status';
-  payload[MessageKeys.MessageId] = String(messageId || '');
-  payload[MessageKeys.Error] = diagnosticText(text || 'Preparing', 40);
-  sendToWatch(payload);
 }
 
 function sendAvatar(chatId, bytes) {

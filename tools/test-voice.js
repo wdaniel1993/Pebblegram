@@ -177,16 +177,17 @@ function main() {
             assert(false, 'frame ' + i + ' has Type=' + f[MESSAGE_KEYS.Type]);
             continue;
           }
-          if (f[MESSAGE_KEYS.Index] !== lastOffset + 800 &&
-              f[MESSAGE_KEYS.Index] !== lastOffset + (lastOffset >= 0 ? dataFrames[i - 1][MESSAGE_KEYS.VoiceData].length : 0)) {
-            // Last chunk may be shorter
-          }
           if (f[MESSAGE_KEYS.VoiceSeq] !== f[MESSAGE_KEYS.Index]) {
             assert(false, 'frame ' + i + ' VoiceSeq (' + f[MESSAGE_KEYS.VoiceSeq] +
                    ') != Index (' + f[MESSAGE_KEYS.Index] + ')');
           }
           if (f[MESSAGE_KEYS.VoiceSeq] <= lastSeq) {
             assert(false, 'frame ' + i + ' VoiceSeq is not strictly increasing');
+          }
+          if (lastOffset >= 0 && f[MESSAGE_KEYS.Index] !== lastOffset + dataFrames[i - 1][MESSAGE_KEYS.VoiceData].length) {
+            assert(false, 'frame ' + i + ' Index has a gap (expected ' +
+                   (lastOffset + dataFrames[i - 1][MESSAGE_KEYS.VoiceData].length) +
+                   ', got ' + f[MESSAGE_KEYS.Index] + ')');
           }
           lastOffset = f[MESSAGE_KEYS.Index];
           lastSeq = f[MESSAGE_KEYS.VoiceSeq];

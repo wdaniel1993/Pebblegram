@@ -167,7 +167,7 @@ typedef struct {
   char image_token[MAX_ID];
   char image_error[MAX_IMAGE_ERROR];
   char voice_token[MAX_ID];
-  uint16_t voice_duration_ms;
+  uint32_t voice_duration_ms;
   bool outgoing;
   bool image_placeholder;
   bool image_requested;
@@ -2184,7 +2184,7 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
   message->voice_placeholder = message->voice_token[0] != '\0';
   int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
   if (voice_duration > 0) {
-    message->voice_duration_ms = (uint16_t)PG_MIN(voice_duration, 600000);
+    message->voice_duration_ms = (uint32_t)PG_MIN(voice_duration, 600000);
   } else {
     message->voice_duration_ms = 0;
   }
