@@ -262,36 +262,43 @@
     var data = {
       mode: 'pgjs',
       apiId: apiId.value.trim(),
-      apiHash: apiHash.value.trim(),
       phone: phone.value.trim(),
-      cannedReplies: replyValues()
+      // Pipe-joined like the default so localStorage round-trips stay
+      // parseable (arrays would be coerced to comma-separated strings).
+      cannedReplies: replyValues().join('|'),
+      resetSession: resetSession
     };
-    if (resetSession) {
-      data.resetSession = true;
+    if (!codeBlock.hidden) {
+      data.code = code.value.trim();
     }
-    if (!credentialsBlock.hidden) {
-      if (!codeBlock.hidden && !data.apiId) {
-        status.textContent = 'Enter the Telegram API ID.';
-        return;
-      }
-      if (!codeBlock.hidden && query.hasApiHash !== '1' && !data.apiHash) {
-        status.textContent = 'Enter the Telegram API hash.';
-        return;
-      }
-      if (!data.phone) {
-        status.textContent = 'Enter your phone number.';
-        return;
-      }
+    if (!passwordBlock.hidden) {
+      data.password = password.value;
+    }
+    // Only send apiHash when it has content — an empty field means "keep
+    // the saved hash" (placeholder shows 'Saved'), and sending '' would
+    // wipe it on the phone side.
+    if (apiHash.value.trim()) {
+      data.apiHash = apiHash.value.trim();
+    }
+    if (!credentialsBlock.hidden && query.hasSession !== '1' && !data.apiId) {
+      status.textContent = 'Enter the Telegram API ID.';
+      return;
+    }
+    if (!credentialsBlock.hidden && query.hasSession !== '1' && query.hasApiHash !== '1' && !data.apiHash) {
+      status.textContent = 'Enter the Telegram API hash.';
+      return;
+    }
+    if (!credentialsBlock.hidden && query.hasSession !== '1' && !data.phone) {
+      status.textContent = 'Enter your phone number.';
+      return;
     }
     if (!codeBlock.hidden && !data.code) {
       status.textContent = 'Enter the Telegram login code.';
       return;
     }
-    if (!codeBlock.hidden && data.code) {
-      data.code = code.value.trim();
-    }
-    if (password.value) {
-      data.password = password.value;
+    if (query.authStage === 'password' && !data.password) {
+      status.textContent = 'Enter your Telegram two-step password.';
+      return;
     }
     closeWith(data);
   });
