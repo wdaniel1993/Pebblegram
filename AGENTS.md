@@ -8,8 +8,10 @@ the voice-message feature protocol, and the pitfalls that cost real time.
 Pebblegram v3.5 (upstream: `TomBolger/Pebblegram`) — a Telegram client for
 Pebble smartwatches: C watch app (`src/c/Pebblegram.c`) ↔ AppMessage ↔
 PebbleKit JS on the phone (`src/pkjs/`) running GramJS (MTProto, user
-session; no companion app). This branch (`feature/voice-messages`) adds
-voice-message **playback** (Phase A).
+session; no companion app). This repo (fork `wdaniel1993/Pebblegram`) is the
+**Pebblegram AI** fork — voice-message playback, threaded bot chats, teleproto
+MTProto engine (layer 228), self-hosted settings page on GitHub Pages, and
+the AI-focused rebrand. All work happens on `main`.
 
 **License: upstream has NO license file. Never publish a fork as a standalone
 project. Contribute via issue first, then PR upstream.**
@@ -126,13 +128,13 @@ Install on device: `pebble install --emulator basalt` (QEMU) or
   voice_start format-mismatch policy; voice+image coexistence under RAM
   pressure.
 - Upstream issue/PR: draft in `docs/upstream-issue.md`; post the issue only
-  after Phase A proves out on hardware, linking this branch.
+  after Phase A proves out on hardware, linking this repo.
 
 ## Git workflow
 
 - `origin` = upstream `TomBolger/Pebblegram` (read-only; PRs go there).
-- `fork` = `wdaniel1993/Pebblegram` — push target for this branch.
-- Work on `feature/voice-messages`. Rebase-friendly; keep commits small and
-  message-verified.
+- `fork` = `wdaniel1993/Pebblegram` — push target; **work directly on `main`**
+  (feature branch merged 2026-08-06). Settings page served from `main` via
+  GitHub Pages (`pgjs/config.html`). Keep commits small and message-verified.
 - Design/status notes: `docs/voice-messages-design.md` (keep in sync when
   facts change).
