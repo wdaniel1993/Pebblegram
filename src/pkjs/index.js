@@ -89,7 +89,13 @@ function getSetting(name, fallback) {
 }
 
 function cannedReplies() {
-  return getSetting('cannedReplies', 'Yes|No|On my way|Call you later|Thanks');
+  var value = getSetting('cannedReplies', 'Yes|No|On my way|Call you later|Thanks');
+  // Legacy: a comma-joined string may have been stored when an array was
+  // coerced by localStorage. Normalize to the pipe-joined format.
+  if (value.indexOf('|') === -1 && value.indexOf(',') !== -1) {
+    value = value.split(',').join('|');
+  }
+  return value;
 }
 
 function settingsPageUrl() {
@@ -2649,7 +2655,12 @@ Pebble.addEventListener('webviewclosed', function(event) {
 
   activePgjs().applySettings(data);
   if (data.cannedReplies) {
-    localStorage.setItem('cannedReplies', data.cannedReplies);
+    // Normalize whatever the page sent (array or string) to pipe-joined.
+    var canned = data.cannedReplies;
+    if (Array.isArray(canned)) {
+      canned = canned.join('|');
+    }
+    localStorage.setItem('cannedReplies', canned);
   }
   sendSettings();
   status('Requesting Telegram login...');
