@@ -29,6 +29,7 @@ function create(options) {
         '&phone=' + encodeURIComponent(state.phone) +
         '&hasSession=' + encodeURIComponent(state.hasSession ? '1' : '0') +
         '&authStage=' + encodeURIComponent(state.authStage || '') +
+        '&hasCodeRequest=' + encodeURIComponent(state.hasCodeRequest ? '1' : '0') +
         '&cannedReplies=' + encodeURIComponent(options.cannedReplies());
     },
     applySettings: function(data) {

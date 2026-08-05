@@ -328,7 +328,11 @@ function authState() {
     hasApiHash: !!creds.apiHash,
     phone: creds.phone || '',
     hasSession: !!creds.session,
-    authStage: creds.authStage || ''
+    authStage: creds.authStage || '',
+    // A login code was requested from Telegram (phoneCodeHash pending) —
+    // the settings page shows the code input based on this, independent of
+    // authStage which can be cleared by saveSettings/clearSession.
+    hasCodeRequest: !!creds.phoneCodeHash
   };
 }
 
