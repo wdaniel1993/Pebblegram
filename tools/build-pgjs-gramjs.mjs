@@ -58,7 +58,14 @@ const commonOptions = {
     websocket: "./src/pkjs/pgjs/shims/websocket.js",
     zlib: "./src/pkjs/pgjs/shims/zlib.js",
     "node:zlib": "./src/pkjs/pgjs/shims/zlib.js",
-    "node:buffer": "buffer"
+    "node:buffer": "buffer",
+    // Node-only server session storage (store2/node-localstorage → graceful-fs
+    // reads process.cwd at load). Pebblegram persists sessions via its own
+    // cache module; StoreSession is never used in the WebView. Aliasing these
+    // empty keeps graceful-fs's top-level `process` access out of the bundle.
+    store2: "./src/pkjs/pgjs/shims/empty.js",
+    "node-localstorage": "./src/pkjs/pgjs/shims/empty.js",
+    "graceful-fs": "./src/pkjs/pgjs/shims/empty.js"
   }
 };
 

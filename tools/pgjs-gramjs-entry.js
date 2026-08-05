@@ -198,5 +198,7 @@ module.exports = {
   Api: telegram.Api,
   TelegramClient: client.TelegramClient,
   StringSession: stringSession.StringSession,
+  PromisedWebSockets: telegram.extensions.PromisedWebSockets,
+  engineVersion: 'teleproto ' + (telegram.version || 'unknown'),
   runtimeConfig: BUILTIN_CONFIG
 };

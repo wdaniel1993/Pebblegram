@@ -24,11 +24,22 @@ function loadGramJs() {
   if (root.PebblegramGramJS) {
     return root.PebblegramGramJS;
   }
-  var bundled = require('./gramjs.bundle');
+  var bundled;
+  try {
+    bundled = require('./gramjs.bundle');
+  } catch (loadErr) {
+    // Surface the real cause (missing API, bundle crash at load, etc.) so a
+    // broken engine build is diagnosable from the watch instead of a generic
+    // "not available" message.
+    var detail = loadErr && loadErr.message ? loadErr.message : String(loadErr || 'load error');
+    throw new Error('Telegram engine failed to load: ' + detail);
+  }
   if (bundled && bundled.TelegramClient && bundled.StringSession) {
     return bundled;
   }
-  throw new Error('Telegram engine is not available.');
+  var keys = bundled ? Object.keys(bundled).join(', ') : '(empty exports)';
+  var engineTag = bundled && bundled.engineVersion ? bundled.engineVersion : 'unknown engine';
+  throw new Error('Telegram engine incomplete (' + engineTag + '; missing TelegramClient/StringSession; got ' + keys + ')');
 }
 
 function runtimeConfig(gram, creds) {
@@ -171,6 +182,9 @@ function createClient(gram, config, sessionString) {
     connectionRetries: 5,
     requestRetries: 2,
     reconnectRetries: 8,
+    // teleproto ignores GramJS's useWSS flag; the WebView can only do
+    // WebSockets (no raw TCP), so force the websocket transport explicitly.
+    networkSocket: gram.PromisedWebSockets,
     useWSS: config.forceWSS === true,
     testServers: config.testServers === true,
     deviceModel: 'Pebblegram',
