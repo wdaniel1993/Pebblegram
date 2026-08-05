@@ -2,6 +2,14 @@ var root = typeof globalThis !== 'undefined' ? globalThis : typeof global !== 'u
 var buffer = require('buffer');
 var BUILTIN_CONFIG = __PGJS_BUILTIN_CONFIG__;
 
+// Force pure-JS implementations in js-sha1/js-sha256/js-sha512: the PebbleKit
+// WebView has no native crypto and no `process`, and in Node their UMD wrapper
+// would try to nodeWrap() into a buffer module that esbuild stubs out. This
+// makes the bundle behave identically everywhere (pure JS hash only).
+root.JS_SHA1_NO_NODE_JS = true;
+root.JS_SHA256_NO_NODE_JS = true;
+root.JS_SHA512_NO_NODE_JS = true;
+
 if (!root.self) {
   root.self = root;
 }
@@ -182,13 +190,15 @@ if (typeof root.WebSocket === 'function' && root.WebSocket.__pebblegramWrapped !
   })();
 }
 
-var client = require('telegram/client/TelegramClient');
-var stringSession = require('telegram/sessions/StringSession');
-var telegram = require('telegram');
+var client = require('teleproto/client/TelegramClient');
+var stringSession = require('teleproto/sessions/StringSession');
+var telegram = require('teleproto');
 
 module.exports = {
   Api: telegram.Api,
   TelegramClient: client.TelegramClient,
   StringSession: stringSession.StringSession,
+  PromisedWebSockets: telegram.extensions.PromisedWebSockets,
+  engineVersion: 'teleproto ' + (telegram.version || 'unknown'),
   runtimeConfig: BUILTIN_CONFIG
 };

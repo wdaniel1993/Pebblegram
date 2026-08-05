@@ -1,7 +1,7 @@
 {
-  "name": "Pebblegram",
-  "author": "Bolger Innovations",
-  "version": "3.5.0",
+  "name": "Pebblegram AI",
+  "author": "Daniel Wallner",
+  "version": "1.0.0",
   "keywords": [
     "pebble-app"
   ],
@@ -9,7 +9,7 @@
     "build:pgjs-gramjs": "node tools/build-pgjs-gramjs.mjs"
   },
   "pebble": {
-    "displayName": "Pebblegram",
+    "displayName": "Pebblegram AI",
     "uuid": "2430a9d0-5be9-4850-b259-821030705e46",
     "sdkVersion": "3",
     "enableMultiJS": true,
@@ -54,7 +54,21 @@
       "ReplyText",
       "ForwardSender",
       "ForwardText",
-      "MessageMeta"
+      "MessageMeta",
+      "VoiceToken",
+      "VoiceDuration",
+      "VoiceSize",
+      "VoiceSampleRate",
+      "VoiceFormat",
+      "VoiceData",
+      "VoiceSeq",
+      "VoiceTransferId",
+      "VoiceDone",
+      "VoiceError",
+      "VoiceAction",
+      "ThreadCount",
+      "ThreadId",
+      "ThreadList"
     ],
     "resources": {
       "media": [
@@ -68,12 +82,14 @@
     }
   },
   "devDependencies": {
+    "@cryptography/aes": "0.1.1",
     "buffer": "6.0.3",
     "esbuild": "0.28.0",
     "jpeg-js": "0.4.4",
     "js-sha1": "0.7.0",
     "js-sha256": "0.11.1",
-    "telegram": "2.26.22",
+    "pako": "2.1.0",
+    "teleproto": "1.228.5",
     "upng-js": "2.1.0"
   }
 }

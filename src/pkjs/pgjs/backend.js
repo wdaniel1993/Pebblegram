@@ -29,6 +29,7 @@ function create(options) {
         '&phone=' + encodeURIComponent(state.phone) +
         '&hasSession=' + encodeURIComponent(state.hasSession ? '1' : '0') +
         '&authStage=' + encodeURIComponent(state.authStage || '') +
+        '&hasCodeRequest=' + encodeURIComponent(state.hasCodeRequest ? '1' : '0') +
         '&cannedReplies=' + encodeURIComponent(options.cannedReplies());
     },
     applySettings: function(data) {
@@ -45,20 +46,23 @@ function create(options) {
     chats: function(limit, options) {
       return telegramApi().chats(limit, options);
     },
-    messages: function(chatId, limit, beforeId) {
-      return telegramApi().messages(chatId, limit, beforeId);
+    messages: function(chatId, limit, beforeId, threadId) {
+      return telegramApi().messages(chatId, limit, beforeId, threadId);
     },
-    olderMessages: function(chatId, limit, beforeId) {
-      return telegramApi().messages(chatId, limit, beforeId);
+    olderMessages: function(chatId, limit, beforeId, threadId) {
+      return telegramApi().messages(chatId, limit, beforeId, threadId);
     },
-    newerMessages: function(chatId, limit, afterId) {
-      return telegramApi().newerMessages(chatId, limit, afterId);
+    newerMessages: function(chatId, limit, afterId, threadId) {
+      return telegramApi().newerMessages(chatId, limit, afterId, threadId);
     },
     keepalive: function() {
       return telegramApi().keepalive();
     },
     sendMessage: function(chatId, text, replyTo) {
       return telegramApi().sendMessage(chatId, text, replyTo);
+    },
+    createThread: function(chatId, title) {
+      return telegramApi().createThread(chatId, title);
     },
     editMessage: function(chatId, messageId, text) {
       return telegramApi().editMessage(chatId, messageId, text);
@@ -97,6 +101,9 @@ function create(options) {
       if (image) {
         image.cancelImageRequests();
       }
+    },
+    voiceBytes: function(chatId, messageId) {
+      return telegramApi().downloadVoiceBytes(chatId, messageId);
     }
   };
 }

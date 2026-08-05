@@ -5,14 +5,20 @@ function parseApiId(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parseBoolean(value) {
+function parseBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 const runtimeConfig = {
   apiId: parseApiId(process.env.PGJS_TELEGRAM_API_ID),
   apiHash: String(process.env.PGJS_TELEGRAM_API_HASH || "").trim(),
-  forceWSS: parseBoolean(process.env.PGJS_TELEGRAM_FORCE_WSS),
+  // Default ON: the Core Devices companion app blocks cleartext ws:// (ATS /
+  // cleartext-traffic), so GramJS must use wss://:443. Opt out with
+  // PGJS_TELEGRAM_FORCE_WSS=false. (upstream issue #9)
+  forceWSS: parseBoolean(process.env.PGJS_TELEGRAM_FORCE_WSS, true),
   testServers: parseBoolean(process.env.PGJS_TELEGRAM_TEST_SERVERS)
 };
 
@@ -27,18 +33,39 @@ const commonOptions = {
   logLevel: "info",
   alias: {
     crypto: "./src/pkjs/pgjs/shims/crypto.js",
+    "node:crypto": "./src/pkjs/pgjs/shims/crypto.js",
     fs: "./src/pkjs/pgjs/shims/empty.js",
+    "node:fs": "./src/pkjs/pgjs/shims/empty.js",
     net: "./src/pkjs/pgjs/shims/empty.js",
+    "node:net": "./src/pkjs/pgjs/shims/empty.js",
     tls: "./src/pkjs/pgjs/shims/empty.js",
+    "node:tls": "./src/pkjs/pgjs/shims/empty.js",
     events: "./src/pkjs/pgjs/shims/events.js",
+    "node:events": "./src/pkjs/pgjs/shims/events.js",
     util: "./src/pkjs/pgjs/shims/util.js",
+    "node:util": "./src/pkjs/pgjs/shims/util.js",
     path: "./src/pkjs/pgjs/shims/path.js",
+    "node:path": "./src/pkjs/pgjs/shims/path.js",
     stream: "./src/pkjs/pgjs/shims/stream.js",
+    "node:stream": "./src/pkjs/pgjs/shims/stream.js",
     os: "./src/pkjs/pgjs/shims/os.js",
+    "node:os": "./src/pkjs/pgjs/shims/os.js",
     assert: "./src/pkjs/pgjs/shims/empty.js",
+    "node:assert": "./src/pkjs/pgjs/shims/empty.js",
     constants: "./src/pkjs/pgjs/shims/empty.js",
+    "node:constants": "./src/pkjs/pgjs/shims/empty.js",
     socks: "./src/pkjs/pgjs/shims/empty.js",
-    websocket: "./src/pkjs/pgjs/shims/websocket.js"
+    websocket: "./src/pkjs/pgjs/shims/websocket.js",
+    zlib: "./src/pkjs/pgjs/shims/zlib.js",
+    "node:zlib": "./src/pkjs/pgjs/shims/zlib.js",
+    "node:buffer": "buffer",
+    // Node-only server session storage (store2/node-localstorage → graceful-fs
+    // reads process.cwd at load). Pebblegram persists sessions via its own
+    // cache module; StoreSession is never used in the WebView. Aliasing these
+    // empty keeps graceful-fs's top-level `process` access out of the bundle.
+    store2: "./src/pkjs/pgjs/shims/empty.js",
+    "node-localstorage": "./src/pkjs/pgjs/shims/empty.js",
+    "graceful-fs": "./src/pkjs/pgjs/shims/empty.js"
   }
 };
 

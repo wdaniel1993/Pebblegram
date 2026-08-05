@@ -53,6 +53,8 @@
 #define LONG_MESSAGE_SCROLL_DELTA PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 42, 42, 42, 42, 56, 56, 48)
 #define COMPOSE_BUBBLE_H 30
 #define COMPOSE_BUBBLE_GAP 8
+#define THREAD_ROW_H 34
+#define THREAD_ROW_GAP 2
 #define MESSAGE_COMMAND_RETRY_MS 3000
 #define MESSAGE_COMMAND_WAKE_RETRY_MS 650
 #define MESSAGE_COMMAND_MAX_ATTEMPTS 3
@@ -60,6 +62,15 @@
 #define IMAGE_COMMAND_RETRY_MS 350
 #define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
+// Voice playback: PebbleOS speaker_stream_* owns the 8KB PCM ring; we just feed
+// it from the AppMessage inbox. Format is fixed to 8kHz/16bit/mono (PCM value
+// 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
+// verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
+#define VOICE_DEFAULT_VOLUME 70
+#define VOICE_EXPECTED_FORMAT 2
+#define VOICE_POLL_MS 50
+#define VOICE_DRAIN_RETRY_MS 8
+#define VOICE_STALL_MS 10000
 #define CHAT_COMMAND_WAKE_RETRY_MS 700
 #define CHAT_COMMAND_MAX_ATTEMPTS 4
 #define CHAT_FIRST_PAINT_ROWS PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3, 3, 3, 3, 5, 5, 5)
@@ -130,7 +141,9 @@ typedef enum {
   ActionItemMarkUnread,
   ActionItemGoBack,
   ActionItemConfirmSend,
-  ActionItemConfirmCancel
+  ActionItemConfirmCancel,
+  ActionItemPlayVoice,
+  ActionItemStopVoice
 } ActionItem;
 
 typedef struct {
@@ -153,10 +166,15 @@ typedef struct {
   char *context;
   char image_token[MAX_ID];
   char image_error[MAX_IMAGE_ERROR];
+  char voice_token[MAX_ID];
+  uint32_t voice_duration_ms;
   bool outgoing;
   bool image_placeholder;
   bool image_requested;
   bool image_failed;
+  bool voice_placeholder;
+  uint16_t thread_replies;
+  bool voice_playing;
   uint8_t image_progress;
   uint8_t image_retry_level;
   uint16_t image_width;
@@ -263,6 +281,24 @@ static int s_image_received;
 static int s_image_expected_offset;
 static int s_image_transfer_id;
 static bool s_image_is_pbi;
+// Voice transfer state — mirrors s_image_* pattern. Only one voice is in flight
+// at a time (request/get_voice is single-message-driven from the UI).
+static char s_voice_message_id[MAX_ID];
+static char s_voice_token[MAX_ID];
+static int s_voice_transfer_id;
+static int s_voice_expected_seq;
+static int s_voice_received;
+static int s_voice_total;
+static int s_voice_format;
+static bool s_voice_active;
+// Threaded bot chats (Telegram "threads" mode): s_thread_mode means the open
+// chat is displayed as a thread LIST (history = thread roots); s_thread_root
+// is set while viewing a single thread and anchors scoped pagination and
+// replies inside it.
+static bool s_thread_mode;
+static char s_thread_root[MAX_ID];
+static bool s_voice_playing;
+static bool s_voice_stream_open;
 static int s_avatar_size;
 static int s_avatar_received;
 static int s_avatar_expected_offset;
@@ -331,6 +367,8 @@ static AppTimer *s_chat_scroll_timer;
 static AppTimer *s_message_timeout_timer;
 static AppTimer *s_message_retry_timer;
 static AppTimer *s_image_retry_timer;
+static AppTimer *s_voice_drain_timer;
+static AppTimer *s_voice_poll_timer;
 static AppTimer *s_status_clear_timer;
 static AppTimer *s_chat_retry_timer;
 static AppTimer *s_startup_wake_timer;
@@ -345,6 +383,14 @@ static void chat_retry_timer_callback(void *data);
 static void clear_active_image_request(void);
 static bool selected_message_needs_image(void);
 static void image_retry_timer_callback(void *data);
+static void voice_drain_timer_callback(void *data);
+static void voice_poll_timer_callback(void *data);
+static void schedule_voice_drain_retry(void);
+static void schedule_voice_poll(void);
+static void reset_voice_transfer_state(void);
+static void cancel_active_voice(void);
+static bool send_voice_request(const char *message_id);
+static bool find_message_by_voice_token(const char *token, Message **out_message);
 static void request_older_messages(bool silent);
 static void request_newer_messages(bool silent);
 static void refresh_loaded_image_count(void);
@@ -988,6 +1034,205 @@ static void schedule_image_transfer_timeout(void) {
   schedule_image_timeout(IMAGE_TRANSFER_STALL_MS);
 }
 
+// ---- Voice transfer state machine -------------------------------------------
+// Mirrors the image state machine at lines ~4119-4409. We don't allocate a
+// ring buffer in Pebblegram RAM — PebbleOS's PCM stream already owns an 8KB
+// ring (PCM_STREAM_DEFAULT_SIZE_BYTES, see coredevices/PebbleOS
+// src/fw/services/speaker/pcm_stream.h). We feed each chunk directly via
+// speaker_stream_write and let the OS absorb backpressure. On voice_done we
+// call speaker_stream_close which drains and finishes.
+
+static bool find_message_by_voice_token(const char *token, Message **out_message) {
+  if (out_message) {
+    *out_message = NULL;
+  }
+  if (!token || !token[0]) {
+    return false;
+  }
+  for (int i = 0; i < s_message_count; i++) {
+    if (s_messages[i].voice_placeholder && s_messages[i].voice_token[0] &&
+        strcmp(s_messages[i].voice_token, token) == 0) {
+      if (out_message) {
+        *out_message = &s_messages[i];
+      }
+      return true;
+    }
+  }
+  // Fall back to message id (Telegram uses the message id as the voice token)
+  for (int i = 0; i < s_message_count; i++) {
+    if (s_messages[i].id[0] && strcmp(s_messages[i].id, token) == 0 &&
+        s_messages[i].voice_placeholder) {
+      if (out_message) {
+        *out_message = &s_messages[i];
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+// Re-feed any chunk tail the OS ring couldn't accept. The spill buffer holds
+// at most one chunk (≤ ~800B; the JS framing default in
+// DEFAULT_VOICE_CHUNK_BYTES). The drain timer fires at VOICE_DRAIN_RETRY_MS
+// when speaker_stream_write returned less than the chunk size.
+static uint8_t s_voice_spill[1024];
+static int s_voice_spill_len;
+static int s_voice_spill_offset;
+
+static void cancel_voice_drain_timer(void) {
+  if (s_voice_drain_timer) {
+    app_timer_cancel(s_voice_drain_timer);
+    s_voice_drain_timer = NULL;
+  }
+}
+
+static void voice_drain_timer_callback(void *data) {
+  s_voice_drain_timer = NULL;
+  if (!s_voice_active || !s_voice_stream_open || s_voice_spill_len <= 0) {
+    return;
+  }
+  const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+  (void)p;  // basalt/diorite stub speaker_stream_write() to (0)
+  uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
+  if (written == 0) {
+    schedule_voice_drain_retry();
+    return;
+  }
+  s_voice_spill_offset += (int)written;
+  s_voice_spill_len -= (int)written;
+  if (s_voice_spill_len > 0) {
+    schedule_voice_drain_retry();
+  } else {
+    s_voice_spill_offset = 0;
+  }
+}
+
+static void schedule_voice_drain_retry(void) {
+  if (s_voice_drain_timer) {
+    return;
+  }
+  s_voice_drain_timer = app_timer_register(VOICE_DRAIN_RETRY_MS,
+                                            voice_drain_timer_callback, NULL);
+}
+
+static void cancel_voice_poll_timer(void) {
+  if (s_voice_poll_timer) {
+    app_timer_cancel(s_voice_poll_timer);
+    s_voice_poll_timer = NULL;
+  }
+}
+
+static void reset_voice_transfer_state(void) {
+  cancel_voice_drain_timer();
+  cancel_voice_poll_timer();
+  if (s_voice_stream_open) {
+    speaker_stream_close();
+    s_voice_stream_open = false;
+  }
+  s_voice_message_id[0] = '\0';
+  s_voice_token[0] = '\0';
+  s_voice_transfer_id = 0;
+  s_voice_expected_seq = 0;
+  s_voice_received = 0;
+  s_voice_total = 0;
+  s_voice_format = 0;
+  s_voice_active = false;
+  s_voice_playing = false;
+  s_voice_spill_len = 0;
+  s_voice_spill_offset = 0;
+  // Clear any voice_playing flags on messages so the UI returns to the
+  // idle "▶ voice" affordance.
+  for (int i = 0; i < s_message_count; i++) {
+    s_messages[i].voice_playing = false;
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void cancel_active_voice(void) {
+  if (!s_voice_active && !s_voice_playing && !s_voice_stream_open) {
+    return;
+  }
+  if (s_voice_stream_open) {
+    // Hard stop — flush anything already in the OS ring, then drop it.
+    speaker_stop();
+  }
+  reset_voice_transfer_state();
+}
+
+// Forward one chunk to the OS ring, spilling any partial-write tail into
+// s_voice_spill for the drain timer to re-feed.
+static void write_voice_chunk(const uint8_t *data, int len) {
+  if (!data || len <= 0) {
+    return;
+  }
+  uint32_t written = speaker_stream_write(data, (uint32_t)len);
+  if (written == (uint32_t)len) {
+    return;
+  }
+  int remaining = len - (int)written;
+  if (remaining > (int)sizeof(s_voice_spill)) {
+    // Chunk larger than the spill can hold; drop the tail. Should not happen
+    // with the JS default of 800B chunks.
+    remaining = (int)sizeof(s_voice_spill);
+  }
+  memcpy(s_voice_spill, data + written, remaining);
+  s_voice_spill_offset = 0;
+  s_voice_spill_len = remaining;
+  schedule_voice_drain_retry();
+}
+
+// Periodic poll of speaker_get_status() to detect when the OS has finished
+// draining the PCM ring so we can flip voice_playing off in the UI.
+static void voice_poll_timer_callback(void *data) {
+  s_voice_poll_timer = NULL;
+  if (!s_voice_playing) {
+    return;
+  }
+  SpeakerStatus status = speaker_get_status();
+  if (status == SpeakerStatusIdle) {
+    s_voice_playing = false;
+    for (int i = 0; i < s_message_count; i++) {
+      if (s_messages[i].voice_playing) {
+        s_messages[i].voice_playing = false;
+      }
+    }
+    cancel_voice_poll_timer();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+  // Keep polling while draining.
+  s_voice_poll_timer = app_timer_register(VOICE_POLL_MS,
+                                           voice_poll_timer_callback, NULL);
+}
+
+static void schedule_voice_poll(void) {
+  cancel_voice_poll_timer();
+  s_voice_poll_timer = app_timer_register(VOICE_POLL_MS,
+                                           voice_poll_timer_callback, NULL);
+}
+
+static bool send_voice_request(const char *message_id) {
+  if (!message_id || !message_id[0]) {
+    return false;
+  }
+  // Single in-flight voice: cancel any previous attempt.
+  if (s_voice_active || s_voice_stream_open) {
+    cancel_active_voice();
+  }
+  // Command only — no retries via the standard chat retry timer; voice is
+  // expected to be fast and JS drives the rest of the state machine.
+  if (!send_command_with_status("get_voice", s_current_chat_id, NULL, NULL,
+                                message_id, false)) {
+    show_status("Bridge busy");
+    return false;
+  }
+  return true;
+}
+
 static bool message_needs_image(Message *message) {
   return message && message->image_placeholder && message->image_token[0] &&
          !message->image_requested && !message->image_failed && !message->image_bitmap;
@@ -1406,6 +1651,16 @@ static bool send_command_with_status(const char *command, const char *chat_id, c
       return false;
     }
   }
+  if (s_thread_root[0]) {
+    // Inside a thread: anchor pagination and sends to the thread root.
+    dict_result = dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_root);
+    if (dict_result != DICT_OK) {
+      if (show_failures) {
+        show_status("Thread ID write fail");
+      }
+      return false;
+    }
+  }
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
@@ -1426,7 +1681,7 @@ static const char *default_status_text(void) {
   if (s_view_state == ViewStateChat && s_current_chat_title[0]) {
     return s_current_chat_title;
   }
-  return "Pebblegram";
+  return "Pebblegram AI";
 }
 
 static bool status_message_should_persist(const char *message) {
@@ -1462,7 +1717,7 @@ static void status_clear_timer_callback(void *data) {
 
 static void show_status(const char *message) {
   if (s_status_layer) {
-    const char *shown = s_chats_loading ? "Pebblegram" :
+    const char *shown = s_chats_loading ? "Pebblegram AI" :
                         (message && message[0] ? message : default_status_text());
     copy_cstr(s_status_text, sizeof(s_status_text), shown);
     text_layer_set_text(s_status_layer, s_status_text);
@@ -1765,6 +2020,10 @@ static void clear_message_slot(Message *message) {
   if (s_image_message_id[0] && strcmp(s_image_message_id, message->image_token) == 0) {
     clear_active_image_request();
   }
+  if (s_voice_message_id[0] && strcmp(s_voice_message_id, message->id) == 0) {
+    // The message being cleared owns the in-flight voice — cancel it.
+    cancel_active_voice();
+  }
   destroy_message_bitmap(message);
   release_message_strings(message);
   memset(message, 0, sizeof(Message));
@@ -1912,6 +2171,39 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
     message->image_retry_level = 0;
     message->image_bitmap = NULL;
   }
+  // Voice fields: the JS side sends VoiceToken ONLY for real voice notes
+  // (telegram.js messageVoice() -> attrs[i].voice === true), using the
+  // message id as the token. Never fall back to the message id here — every
+  // message has one, so a fallback marks ALL messages as playable voice.
+  char *incoming_voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+  if (incoming_voice_token && incoming_voice_token[0]) {
+    copy_cstr(message->voice_token, sizeof(message->voice_token), incoming_voice_token);
+  } else {
+    message->voice_token[0] = '\0';
+  }
+  message->voice_placeholder = message->voice_token[0] != '\0';
+  int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
+  if (voice_duration > 0) {
+    message->voice_duration_ms = (uint32_t)PG_MIN(voice_duration, 600000);
+  } else {
+    message->voice_duration_ms = 0;
+  }
+  // Threaded bot chats: every row of a thread-LIST batch carries ThreadList=1
+  // (the watch switches the open chat to thread-list rendering); every row of
+  // a thread view carries ThreadId (the root) which anchors pagination and
+  // replies inside the thread. Both are batch-consistent flags sent by JS.
+  message->thread_replies = (uint16_t)PG_MIN(tuple_int(iter, MESSAGE_KEY_ThreadCount, 0), 999);
+  if (tuple_int(iter, MESSAGE_KEY_ThreadList, 0) != 0) {
+    s_thread_mode = true;
+    s_thread_root[0] = '\0';
+  }
+  char *incoming_thread_id = tuple_cstring(iter, MESSAGE_KEY_ThreadId);
+  if (incoming_thread_id && incoming_thread_id[0]) {
+    copy_cstr(s_thread_root, sizeof(s_thread_root), incoming_thread_id);
+    s_thread_mode = false;
+  }
+  // Don't reset voice_playing here — it's set/cleared by the voice state
+  // machine and poll timer, not by message stream updates.
 }
 
 static Message *prepend_message_slot(void) {
@@ -2112,6 +2404,9 @@ static int message_bubble_height(Message *message, int text_w, int bubble_w) {
   int context_h = message_context_height(message);
   int image_h = message->image_placeholder ?
                 message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
+  // Voice bubble is a small pill; no text below it — it sits at the bottom of
+  // the bubble like a media attachment. +6 for the internal padding.
+  int voice_h = message->voice_placeholder ? 30 : 0;
   copy_cstr(display_text, sizeof(display_text), message->text);
   truncate_cstr_bytes(display_text, sizeof(display_text), MESSAGE_PREVIEW_TEXT, " ...");
   GSize size = GSize(0, 0);
@@ -2126,11 +2421,31 @@ static int message_bubble_height(Message *message, int text_w, int bubble_w) {
   }
   int text_h = display_text[0] ? size.h : 0;
   text_h = PG_MAX(0, PG_MIN(text_h, MAX_TEXT * 2));
-  return PG_MAX(28, text_h + name_h + context_h + image_h + reaction_h + 7);
+  return PG_MAX(28, text_h + name_h + context_h + image_h + voice_h + reaction_h + 7);
 }
 
 static void recalc_message_layout(void) {
   if (!s_messages_root) {
+    return;
+  }
+
+  if (s_thread_mode) {
+    // Thread list: fixed-height rows. When at the newest end, reserve the
+    // compose bubble at the bottom — sending from there creates a NEW topic
+    // (create_thread), mirroring Telegram's "All Messages" composer.
+    for (int i = 0; i < s_message_count; i++) {
+      s_message_y[i] = 2 + i * (THREAD_ROW_H + THREAD_ROW_GAP);
+      s_message_h[i] = THREAD_ROW_H;
+    }
+    int rows_h = 2 + s_message_count * (THREAD_ROW_H + THREAD_ROW_GAP) + 4;
+    if (s_at_newest && !s_touch_keyboard_open) {
+      s_compose_bubble_y = rows_h + COMPOSE_BUBBLE_GAP;
+      s_chat_content_height = s_compose_bubble_y + COMPOSE_BUBBLE_H + (ROUND_UI ? 12 : 5);
+    } else {
+      s_compose_bubble_y = rows_h + COMPOSE_BUBBLE_GAP;
+      s_chat_content_height = rows_h;
+    }
+    s_chat_scroll_offset = clamp_scroll_offset(s_chat_scroll_offset);
     return;
   }
 
@@ -2576,6 +2891,85 @@ static void close_touch_keyboard(void) {
 }
 #endif
 
+static void draw_thread_rows(GContext *ctx, GRect bounds) {
+  GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GFont count_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  int first = 0;
+  while (first < s_message_count - 1 &&
+         s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
+    first++;
+  }
+  for (int i = first; i < s_message_count; i++) {
+    Message *message = &s_messages[i];
+    int y = s_message_y[i] - s_chat_scroll_offset;
+    if (y > bounds.size.h) {
+      break;
+    }
+    bool selected = i == s_selected_message;
+    GRect row = GRect(0, y, bounds.size.w, s_message_h[i]);
+    graphics_context_set_fill_color(ctx, selected
+        ? (BW_UI ? GColorLightGray : APP_COLOR_LIGHT)
+        : (BW_UI ? GColorWhite : CHAT_BG));
+    graphics_fill_rect(ctx, row, 0, GCornerNone);
+    if (selected) {
+      graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+      graphics_draw_rect(ctx, GRect(row.origin.x + 1, row.origin.y + 1,
+                                    row.size.w - 2, row.size.h - 2));
+    }
+    char preview[MESSAGE_PREVIEW_TEXT + 8];
+    copy_cstr(preview, sizeof(preview), message->text[0] ? message->text : "Message");
+    if ((int)strlen(preview) > MESSAGE_PREVIEW_TEXT) {
+      truncate_cstr_bytes(preview, sizeof(preview), MESSAGE_PREVIEW_TEXT, " ...");
+    }
+    int count_w = message->thread_replies > 0 ? 42 : 0;
+    int text_w = bounds.size.w - 12 - count_w;
+    graphics_context_set_text_color(ctx, BW_UI ? GColorBlack :
+                                    (message->outgoing ? GColorDarkGray : APP_COLOR));
+    graphics_draw_text(ctx, message->sender[0] ? message->sender :
+                       (message->outgoing ? "You" : "Bot"), sender_font,
+                       GRect(6, y + 2, text_w, 16), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, preview, text_font,
+                       GRect(6, y + 17, text_w, 18), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    if (message->thread_replies > 0) {
+      char count_text[10];
+      snprintf(count_text, sizeof(count_text), "» %d", message->thread_replies);
+      graphics_context_set_text_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+      graphics_draw_text(ctx, count_text, count_font,
+                         GRect(bounds.size.w - count_w - 2, y + (s_message_h[i] - 16) / 2,
+                               count_w, 16), GTextOverflowModeTrailingEllipsis,
+                         GTextAlignmentRight, NULL);
+    }
+  }
+}
+
+static void draw_compose_bubble(GContext *ctx, GRect bounds) {
+  GRect compose_rect = compose_rect_for_bounds(bounds);
+  int compose_y = compose_rect.origin.y;
+  bool compose_selected = compose_target_is_selected();
+  if (s_at_newest && !s_touch_keyboard_open &&
+      compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
+    graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
+    graphics_fill_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2, GCornersAll);
+    graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (compose_selected ? APP_COLOR : GColorDarkGray));
+    graphics_draw_round_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2);
+    if (compose_selected) {
+      graphics_draw_round_rect(ctx, GRect(compose_rect.origin.x + 1, compose_rect.origin.y + 1,
+                                          compose_rect.size.w - 2, compose_rect.size.h - 2),
+                               (COMPOSE_BUBBLE_H / 2) - 1);
+    }
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, s_thread_mode ? "New chat" : "New message",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(compose_rect.origin.x + 8, compose_rect.origin.y + 3,
+                             compose_rect.size.w - 16, compose_rect.size.h - 5),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  }
+}
+
 static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, CHAT_BG);
@@ -2590,6 +2984,14 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
 
   recalc_message_layout();
+  if (s_thread_mode) {
+    // Threaded bot chat: render the thread list (roots with reply counts)
+    // instead of bubbles. The compose bubble below doubles as the "New chat"
+    // composer: sending from the thread list creates a new topic.
+    draw_thread_rows(ctx, bounds);
+    draw_compose_bubble(ctx, bounds);
+    return;
+  }
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -2656,7 +3058,8 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_text_color(ctx, GColorBlack);
     int image_h = message->image_placeholder ?
                   message_image_display_height(message, message_image_frame_width(bubble_w)) + 8 : 0;
-    int text_rect_h = bubble_h - name_h - context_h - image_h - reaction_h - 6;
+    int voice_h = message->voice_placeholder ? 30 : 0;
+    int text_rect_h = bubble_h - name_h - context_h - image_h - voice_h - reaction_h - 6;
     if (display_text[0] && text_rect_h > 0 && text_w > 4) {
       graphics_draw_text(ctx, display_text, text_font,
                          GRect(x + 5, text_y, text_w, text_rect_h),
@@ -2706,6 +3109,38 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 	      }
 	    }
 
+    if (message->voice_placeholder) {
+      // Compact play/stop pill at the bottom of the bubble. Acts as a
+      // visual affordance; the actual play/stop action is fired from the
+      // action menu (ActionItemPlayVoice / ActionItemStopVoice).
+      int vh = 22;
+      int voice_y = y + bubble_h - reaction_h - voice_h + 4;
+      GRect voice_rect = GRect(x + 5, voice_y, text_w, vh);
+      graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite :
+                                      (message->voice_playing ? APP_COLOR_LIGHT : GColorWhite));
+      graphics_fill_rect(ctx, voice_rect, 4, GCornersAll);
+      graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack :
+                                      (selected ? APP_COLOR : GColorLightGray));
+      graphics_draw_round_rect(ctx, voice_rect, 4);
+      char voice_label[24];
+      if (message->voice_duration_ms > 0) {
+        int total_seconds = (message->voice_duration_ms + 500) / 1000;
+        int minutes = total_seconds / 60;
+        int seconds = total_seconds % 60;
+        snprintf(voice_label, sizeof(voice_label), "%s %d:%02d",
+                 message->voice_playing ? "Stop" : "Play", minutes, seconds);
+      } else {
+        snprintf(voice_label, sizeof(voice_label), "%s Voice",
+                 message->voice_playing ? "Stop" : "Play");
+      }
+      graphics_context_set_text_color(ctx, GColorBlack);
+      graphics_draw_text(ctx, voice_label,
+                         fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                         GRect(voice_rect.origin.x + 6, voice_rect.origin.y + 1,
+                               voice_rect.size.w - 12, vh),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
+
     if (reaction_h > 0) {
       int meta_w = message->meta[0] ? PG_MIN(50, text_w) : 0;
       graphics_context_set_text_color(ctx, BW_UI ? GColorBlack : GColorDarkGray);
@@ -2723,26 +3158,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     }
   }
 
-  GRect compose_rect = compose_rect_for_bounds(bounds);
-  int compose_y = compose_rect.origin.y;
-  bool compose_selected = compose_target_is_selected();
-  if (s_at_newest && !s_touch_keyboard_open &&
-      compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
-    graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
-    graphics_fill_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2, GCornersAll);
-    graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (compose_selected ? APP_COLOR : GColorDarkGray));
-    graphics_draw_round_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2);
-    if (compose_selected) {
-      graphics_draw_round_rect(ctx, GRect(compose_rect.origin.x + 1, compose_rect.origin.y + 1,
-                                          compose_rect.size.w - 2, compose_rect.size.h - 2),
-                               (COMPOSE_BUBBLE_H / 2) - 1);
-    }
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, "New message", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(compose_rect.origin.x + 8, compose_rect.origin.y + 3,
-                             compose_rect.size.w - 16, compose_rect.size.h - 5),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-  }
+  draw_compose_bubble(ctx, bounds);
 
 #if TOUCH_KEYBOARD_AVAILABLE
   if (s_touch_keyboard_open) {
@@ -2898,7 +3314,7 @@ static void render_chat_list_with_transition(void) {
     animate_layer_frame(&s_messages_animation, s_messages_root, messages_from, messages_to,
                         messages_slide_back_stopped);
   }
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
 }
 
 static void select_chat_row(int row, bool animated) {
@@ -2926,7 +3342,7 @@ static void reveal_available_chat_rows(void) {
     s_chat_first_paint_reported = true;
     send_command_with_status("chat_first_paint", NULL, NULL, NULL, NULL, false);
   }
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
 }
 
 static void remove_chat_at(int row) {
@@ -2972,7 +3388,7 @@ static void request_chats(void) {
   s_chat_first_paint_reported = false;
   s_chat_request_attempts = 1;
   show_loading_text("Loading...", false);
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
   if (s_chat_menu) {
     menu_layer_reload_data(s_chat_menu);
   }
@@ -3085,7 +3501,7 @@ static void message_timeout_timer_callback(void *data) {
     s_chats_loading = false;
     s_loading_error = true;
     show_loading_text("Chats failed", true);
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
     if (s_chat_menu) {
       menu_layer_reload_data(s_chat_menu);
     }
@@ -3397,6 +3813,10 @@ static void request_messages(const char *chat_id) {
   s_chat_view_pending = false;
   s_loading_messages = true;
   s_message_request_attempts = 1;
+  // Fresh open: leave any previous thread state behind. The response batch
+  // re-establishes it (ThreadList for a thread list, ThreadId for a thread).
+  s_thread_mode = false;
+  s_thread_root[0] = '\0';
   show_status("Loading messages...");
   if (s_view_state != ViewStateChat || !s_messages_root) {
     s_chat_view_pending = false;
@@ -3433,8 +3853,20 @@ static void maybe_prefetch_newer_messages(void) {
 
 static void send_text_message(const char *text, bool as_reply) {
   const char *reply_to = NULL;
+  if (s_thread_mode && !s_thread_root[0]) {
+    // Thread list: a plain send starts a NEW chat (new topic), mirroring
+    // Telegram's "All Messages" composer. JS creates the topic and sends the
+    // first message into it, so it never lands in the lobby.
+    show_status("Starting chat...");
+    send_command("create_thread", s_current_chat_id, text, NULL, NULL);
+    return;
+  }
   if (as_reply && s_selected_message >= 0 && s_selected_message < s_message_count) {
     reply_to = s_messages[s_selected_message].id;
+  } else if (s_thread_root[0]) {
+    // Inside a thread, a plain send replies to the thread root so it lands
+    // in the thread instead of the chat's main history.
+    reply_to = s_thread_root;
   }
   show_status("Sending...");
   send_command("send_message", s_current_chat_id, text, reply_to, NULL);
@@ -3465,6 +3897,14 @@ static bool selected_message_is_truncated(void) {
 
 static bool selected_message_has_context(void) {
   return has_selected_message() && message_has_context(&s_messages[s_selected_message]);
+}
+
+static bool selected_message_has_voice(void) {
+  return has_selected_message() && s_messages[s_selected_message].voice_placeholder;
+}
+
+static bool selected_message_voice_is_playing(void) {
+  return selected_message_has_voice() && s_messages[s_selected_message].voice_playing;
 }
 
 static bool selected_message_context_is_forward(void) {
@@ -3565,7 +4005,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       s_bridge_ready = false;
       s_chats_loading = true;
       show_loading_text(error ? error : "Login failed", true);
-      show_status("Pebblegram");
+      show_status("Pebblegram AI");
     } else {
       s_loading_messages = false;
       s_loading_older_messages = false;
@@ -3619,7 +4059,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       menu_layer_reload_data(s_chat_menu);
       select_chat_row(s_selected_chat, false);
     }
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
     return;
   }
 
@@ -4014,7 +4454,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       reveal_available_chat_rows();
     }
     if (s_chat_count >= s_expected_rows) {
-      show_status("Pebblegram");
+      show_status("Pebblegram AI");
     }
     return;
   }
@@ -4408,12 +4848,171 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
 
+  // ---- Voice transfer AppMessage handlers ------------------------------------
+  // Mirrors the image state machine above: voice_start opens the PCM stream
+  // and primes state, voice appends one chunk, voice_done drains + closes,
+  // voice_error hard-cancels. We accept a format-mismatch by logging and
+  // attempting playback anyway — PebbleOS's PCM service will resample from
+  // whatever format we declared (see coredevices/PebbleOS
+  // src/fw/services/speaker/speaker_service.c, prv_read_and_convert_pcm).
+  if (strcmp(type, "voice_start") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    int voice_total = tuple_int(iter, MESSAGE_KEY_VoiceSize, 0);
+    int voice_format = tuple_int(iter, MESSAGE_KEY_VoiceFormat, VOICE_EXPECTED_FORMAT);
+    int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id <= 0) {
+      return;
+    }
+    if (s_voice_active) {
+      // A different transfer is already in flight — ignore the new one.
+      return;
+    }
+    if (voice_format != VOICE_EXPECTED_FORMAT) {
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "Voice format mismatch: got %d expected %d (msg=%s)",
+              voice_format, VOICE_EXPECTED_FORMAT, message_id);
+      // Accept-and-log per the design doc: try to play anyway, the OS
+      // resampler will handle it (with quality degradation if mismatched).
+    }
+    Message *message = NULL;
+    find_message_by_voice_token(token, &message);
+    s_voice_active = true;
+    copy_cstr(s_voice_message_id, sizeof(s_voice_message_id), message_id);
+    copy_cstr(s_voice_token, sizeof(s_voice_token), token);
+    s_voice_transfer_id = transfer_id;
+    s_voice_total = voice_total;
+    s_voice_format = voice_format;
+    s_voice_expected_seq = 0;
+    s_voice_received = 0;
+    s_voice_spill_len = 0;
+    s_voice_spill_offset = 0;
+    s_voice_stream_open = speaker_stream_open(
+        (SpeakerPcmFormat)voice_format, VOICE_DEFAULT_VOLUME);
+    if (!s_voice_stream_open) {
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "speaker_stream_open failed for msg=%s fmt=%d",
+              message_id, voice_format);
+      // Tear down — JS will see no further voice frames and may time out.
+      reset_voice_transfer_state();
+      return;
+    }
+    s_voice_playing = true;
+    if (message) {
+      message->voice_playing = true;
+      if (voice_duration > 0) {
+        message->voice_duration_ms = (uint16_t)PG_MIN(voice_duration, 600000);
+      }
+    }
+    schedule_voice_poll();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
+  if (strcmp(type, "voice") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    int seq = tuple_int(iter, MESSAGE_KEY_VoiceSeq, -1);
+    int index = tuple_int(iter, MESSAGE_KEY_Index, -1);
+    Tuple *data = dict_find(iter, MESSAGE_KEY_VoiceData);
+    int data_len = data ? data->length : 0;
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id != s_voice_transfer_id ||
+        !s_voice_active || !s_voice_stream_open || !data) {
+      return;
+    }
+    int expected = seq >= 0 ? seq : index;
+    if (expected < 0) {
+      return;
+    }
+    if (expected < s_voice_expected_seq) {
+      // Duplicate/out-of-order chunk — drop.
+      return;
+    }
+    if (expected > s_voice_expected_seq) {
+      // Gap — cancel the transfer and report a stall.
+      APP_LOG(APP_LOG_LEVEL_WARNING,
+              "Voice transfer gap for %s: got seq=%d expected=%d",
+              token, expected, s_voice_expected_seq);
+      reset_voice_transfer_state();
+      return;
+    }
+    write_voice_chunk(data->value->data, data_len);
+    s_voice_expected_seq = expected + data_len;
+    s_voice_received += data_len;
+    return;
+  }
+
+  if (strcmp(type, "voice_done") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
+    int transfer_id = tuple_int(iter, MESSAGE_KEY_VoiceTransferId, 0);
+    const char *token = voice_token && voice_token[0] ? voice_token : message_id;
+    if (!message_id || !token || transfer_id != s_voice_transfer_id ||
+        !s_voice_active) {
+      return;
+    }
+    // Drain any pending spill into the OS ring before closing.
+    while (s_voice_spill_len > 0 && s_voice_stream_open) {
+      const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+      (void)p;  // basalt/diorite stub speaker_stream_write() to (0)
+      uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
+      if (written == 0) {
+        break;  // OS ring still full; let speaker_stream_close drain later
+      }
+      s_voice_spill_offset += (int)written;
+      s_voice_spill_len -= (int)written;
+      if (s_voice_spill_len == 0) {
+        s_voice_spill_offset = 0;
+      }
+    }
+    if (s_voice_stream_open) {
+      // speaker_stream_close drains the OS ring and finishes playback.
+      speaker_stream_close();
+      s_voice_stream_open = false;
+    }
+    s_voice_active = false;
+    // Keep s_voice_playing true until the OS reports idle — voice_poll_timer
+    // will flip it. Schedule a poll in case no timer is active yet.
+    schedule_voice_poll();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
+  if (strcmp(type, "voice_error") == 0) {
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    char *detail = tuple_cstring(iter, MESSAGE_KEY_Error);
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "voice_error msg=%s detail=%s",
+            message_id ? message_id : "(null)",
+            detail && detail[0] ? detail : "");
+    cancel_active_voice();
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
+
   if (strcmp(type, "reacted") == 0) {
     show_status("Reacted");
   }
 
   if (strcmp(type, "sent") == 0) {
     show_status("Sent");
+    return;
+  }
+
+  if (strcmp(type, "thread_created") == 0) {
+    // JS created the topic and sent the first message; it follows up with a
+    // thread view (ThreadId rows) that switches the watch into the thread.
+    show_status("Chat started");
     return;
   }
 
@@ -4499,6 +5098,20 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
     }
     return;
   }
+  if (command && strcmp(command, "get_voice") == 0) {
+    // JS never received the request — the transfer will never start.
+    // Tear down any locally-primed voice state and surface a status.
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    cancel_active_voice();
+    show_status("Voice request failed");
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "get_voice send failed for msg=%s reason=%d",
+            message_id ? message_id : "(null)", (int)reason);
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+    return;
+  }
   show_status("Send failed");
 }
 
@@ -4522,7 +5135,8 @@ static int action_item_count(void) {
       return 4 +
              (s_messages[s_selected_message].outgoing ? 1 : 0) +
              (selected_message_has_context() ? 1 : 0) +
-             (selected_message_is_truncated() ? 1 : 0);
+             (selected_message_is_truncated() ? 1 : 0) +
+             (selected_message_has_voice() ? 1 : 0);
     case ActionMenuChat:
       return 5;
     case ActionMenuCanned:
@@ -4720,6 +5334,13 @@ static ActionMenuLevel *native_build_main_level(void) {
     native_add_action(level, selected_message_context_is_forward() ? "View Forward" : "View Quote",
                       ActionItemFullContext, -1);
   }
+  if (selected_message_has_voice()) {
+    if (selected_message_voice_is_playing()) {
+      native_add_action(level, "Stop Voice", ActionItemStopVoice, -1);
+    } else {
+      native_add_action(level, "Play Voice", ActionItemPlayVoice, -1);
+    }
+  }
   if (s_messages[s_selected_message].outgoing) {
     native_add_action(level, "Edit Message", ActionItemEdit, -1);
   }
@@ -4805,7 +5426,7 @@ static bool show_native_action_menu(ActionMenuMode mode) {
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
   } else {
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
   }
 
   if (s_native_action_menu) {
@@ -4929,6 +5550,26 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
       s_full_text_scroll_offset = 0;
       native_defer_action_mode(ActionMenuFullText);
       break;
+    case ActionItemPlayVoice:
+      if (!selected_message_has_voice()) {
+        break;
+      }
+      send_voice_request(s_messages[s_selected_message].id);
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      break;
+    case ActionItemStopVoice:
+      // Tell JS to stop the upstream stream (cancel the inflight transfer
+      // and skip any further voice frames), then hard-stop the local PCM
+      // ring. cancel_active_voice() also resets voice_playing on the UI.
+      send_command("cancel_voice", s_current_chat_id, NULL, NULL,
+                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      cancel_active_voice();
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      break;
     case ActionItemGoToBottom:
       go_to_bottom();
       break;
@@ -4992,7 +5633,7 @@ static void show_action_window(ActionMenuMode mode) {
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
   } else {
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
   }
   s_action_mode = mode;
   s_action_selected = 0;
@@ -5098,6 +5739,20 @@ static void action_click_config_provider(void *context) {
 
 static void main_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_view_state == ViewStateChat) {
+    if (s_thread_mode) {
+      // Thread list: SELECT opens the highlighted thread, or the compose
+      // target at the bottom starts a NEW chat (new topic).
+      if (compose_target_is_selected()) {
+        show_action_window(ActionMenuMain);
+        return;
+      }
+      if (s_selected_message >= 0 && s_selected_message < s_message_count &&
+          s_messages[s_selected_message].id[0]) {
+        send_command_with_status("open_thread", s_current_chat_id, NULL, NULL,
+                                 s_messages[s_selected_message].id, false);
+      }
+      return;
+    }
     show_action_window(ActionMenuMain);
   } else if (s_view_state == ViewStateChatList && s_chat_menu) {
     if (s_loading_messages) {
@@ -5273,6 +5928,15 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
     return;
   }
   if (s_view_state == ViewStateChat) {
+    if (s_thread_root[0]) {
+      // Inside a thread: BACK returns to the thread list (re-fetch the
+      // chat's history, which the JS serves as the thread list).
+      s_thread_root[0] = '\0';
+      s_thread_mode = false;
+      request_messages(s_current_chat_id);
+      return;
+    }
+    s_thread_mode = false;
     cancel_message_timeout();
     cancel_message_retry();
     s_loading_messages = false;
@@ -5336,7 +6000,7 @@ static void main_window_load(Window *window) {
   GRect status_rect = ROUND_UI ? GRect(24, chat_status_y(), bounds.size.w - 48, STATUS_H) :
                                  GRect(0, 0, bounds.size.w, STATUS_H);
   s_status_layer = text_layer_create(status_rect);
-  text_layer_set_text(s_status_layer, "Pebblegram");
+  text_layer_set_text(s_status_layer, "Pebblegram AI");
   text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
   text_layer_set_text_color(s_status_layer, GColorWhite);
@@ -5425,6 +6089,10 @@ static void deinit(void) {
   free_image_transfer_buffer();
   free_avatar_transfer_buffer();
   free_full_text_body();
+  // Hard-stop any in-flight voice playback. The OS speaker may keep
+  // draining its ring briefly after speaker_stop() returns; that's fine —
+  // we're tearing down the app.
+  cancel_active_voice();
 #if TOUCH_KEYBOARD_AVAILABLE
   if (TOUCH_KEYBOARD_ENABLED) {
     touch_service_unsubscribe();

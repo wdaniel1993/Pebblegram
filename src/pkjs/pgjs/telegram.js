@@ -210,6 +210,33 @@ function messageDocument(message) {
   return (message && message.document) || (media && media.document) || null;
 }
 
+// Telegram voice notes: the message's document carries a
+// DocumentAttributeAudio whose `.voice === true` and whose `.duration`
+// is the audio length in seconds. Used by the playback path (Phase A)
+// to identify a message as playable voice and to surface its duration
+// to the watch UI.
+function messageVoice(message) {
+  var doc = messageDocument(message);
+  if (!doc) {
+    return null;
+  }
+  var attrs = documentAttributes(doc);
+  for (var i = 0; i < attrs.length; i += 1) {
+    if (attrs[i] && attrs[i].voice) {
+      return {
+        document: doc,
+        durationSeconds: Number(attrs[i].duration) || 0,
+        waveform: attrs[i].waveform || null
+      };
+    }
+  }
+  return null;
+}
+
+function hasVoice(message) {
+  return !!messageVoice(message);
+}
+
 function attributeName(attribute) {
   return objectName(attribute);
 }
@@ -1174,6 +1201,7 @@ function normalizeMessage(message, readOutboxMaxId) {
   var previewable = hasPreviewableStill(message);
   var imageDimensions = hasDirectPhoto(message) ? photoDimensions(message) :
                         (previewable ? documentDimensions(message) : null);
+  var voice = messageVoice(message);
   return {
     id: String(message.id),
     sender: senderName(message),
@@ -1183,8 +1211,25 @@ function normalizeMessage(message, readOutboxMaxId) {
     outgoing: !!message.out,
     image_token: (hasDirectPhoto(message) || previewable) ? String(message.id) : null,
     image_width: imageDimensions ? imageDimensions.width : 0,
-    image_height: imageDimensions ? imageDimensions.height : 0
+    image_height: imageDimensions ? imageDimensions.height : 0,
+    voice_token: voice ? String(message.id) : null,
+    voice_duration_ms: voice ? Math.round(voice.durationSeconds * 1000) : 0,
+    thread_replies: messageRepliesCount(message)
   };
+}
+
+// Threaded-mode bot chats: a thread ROOT carries MessageReplies (the count of
+// bot responses nested under it). A non-zero count marks the message as a
+// thread root in the thread list view. Reply messages inside the thread carry
+// the nested count of THEIR replies; we ignore those here — only roots are
+// rendered as threads.
+function messageRepliesCount(message) {
+  var replies = message && message.replies;
+  if (!replies) {
+    return 0;
+  }
+  var count = replies.replies;
+  return (typeof count === 'number' && count > 0) ? count : 0;
 }
 
 function textWithEntitiesText(value) {
@@ -1332,23 +1377,43 @@ function chats(limit, options) {
   });
 }
 
-function messages(chatId, limit, beforeId) {
+function messages(chatId, limit, beforeId, threadId) {
   return auth.getClient().then(function(client) {
     var options = {limit: limit};
     if (beforeId) {
       options.offsetId = parseInt(beforeId, 10) || 0;
     }
+    if (threadId) {
+      // Thread-scoped page: messages.getReplies under the root message.
+      options.replyTo = parseInt(threadId, 10) || threadId;
+    }
     return client.getMessages(chatId, options).then(function(rows) {
-      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);
+      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0)
+        .then(function(list) {
+          // Threaded-mode bot chat: the history of such a chat is a list of
+          // thread ROOTS (each carrying its MessageReplies count). Expose
+          // thread_mode on the array so the watch renders a thread list
+          // instead of bubbles. Only detected on the initial (non-thread)
+          // page to keep flat chats untouched.
+          if (!threadId && list.some(function(r) {
+            return r.thread_replies > 0;
+          })) {
+            list.thread_mode = true;
+          }
+          return list;
+        });
     });
   });
 }
 
-function newerMessages(chatId, limit, afterId) {
+function newerMessages(chatId, limit, afterId, threadId) {
   return auth.getClient().then(function(client) {
     var options = {limit: limit};
     if (afterId) {
       options.minId = parseInt(afterId, 10) || 0;
+    }
+    if (threadId) {
+      options.replyTo = parseInt(threadId, 10) || threadId;
     }
     return client.getMessages(chatId, options).then(function(rows) {
       return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);
@@ -1364,6 +1429,59 @@ function sendMessage(chatId, text, replyTo) {
     }
     return client.sendMessage(chatId, options);
   });
+}
+
+// Create a new topic (forum thread) in a threaded-mode private chat and
+// return the new topic's root message id. The caller then sends the first
+// message with replyTo = root id, which lands INSIDE the new topic. This is
+// the user-account equivalent of Telegram's "send in All Messages" flow that
+// Hermes uses to start a fresh session per topic.
+function createThread(chatId, title) {
+  return auth.getClient().then(function(client) {
+    var Api = gram.Api;
+    var request = new Api.messages.CreateForumTopic({
+      peer: chatId,
+      title: title || 'New chat',
+      randomId: Math.floor(Math.random() * 0x7fffffff)
+    });
+    return client.invoke(request).then(function(updates) {
+      return findCreatedTopicRootId(updates, client);
+    });
+  });
+}
+
+function findCreatedTopicRootId(updates, client) {
+  var Api = gram.Api;
+  var candidates = [];
+  function collect(container) {
+    if (!container) {
+      return;
+    }
+    if (Array.isArray(container)) {
+      container.forEach(collect);
+      return;
+    }
+    if (container.className === 'Updates' || container.className === 'UpdatesCombined') {
+      collect(container.updates);
+      return;
+    }
+    if (container.className === 'UpdateNewMessage' ||
+        container.className === 'UpdateNewChannelMessage') {
+      collect(container.message);
+      return;
+    }
+    if (container.className === 'MessageService') {
+      candidates.push(container);
+    }
+  }
+  collect(updates);
+  for (var i = 0; i < candidates.length; i++) {
+    var action = candidates[i].action;
+    if (action && action.className === 'MessageActionTopicCreate') {
+      return String(candidates[i].id);
+    }
+  }
+  throw new Error('Topic created but root message not found in response');
 }
 
 function deleteMessage(chatId, messageId) {
@@ -1620,12 +1738,33 @@ function downloadMedia(chatId, messageId, options) {
   });
 }
 
+// Download the OGG Opus bytes for a voice message. Reuses GramJS's
+// client.downloadMedia, which honors MTProto file references and
+// handles progressive download for the document. Bypasses the
+// image-specific byte validation in downloadFullMediaBytes — voice
+// bytes are OGG Opus, not PNG/JPEG.
+function downloadVoiceBytes(chatId, messageId) {
+  return auth.getClient().then(function(client) {
+    return client.getMessages(chatId, {ids: [parseInt(messageId, 10) || messageId]}).then(function(rows) {
+      var message = rows && rows[0];
+      if (!message || !hasVoice(message)) {
+        throw new Error('message has no voice media');
+      }
+      return withTimeout(
+        client.downloadMedia(message, gramDownloadOptions({})),
+        'voice download timed out', FULL_MEDIA_DOWNLOAD_TIMEOUT_MS
+      );
+    });
+  });
+}
+
 module.exports = {
   chats: chats,
   messages: messages,
   newerMessages: newerMessages,
   keepalive: keepalive,
   sendMessage: sendMessage,
+  createThread: createThread,
   editMessage: editMessage,
   sendReaction: sendReaction,
   message: message,
@@ -1636,5 +1775,6 @@ module.exports = {
   muteChat: muteChat,
   markUnread: markUnread,
   downloadProfilePhoto: downloadProfilePhoto,
-  downloadMedia: downloadMedia
+  downloadMedia: downloadMedia,
+  downloadVoiceBytes: downloadVoiceBytes
 };

@@ -22,11 +22,19 @@ Pebblegram brings Telegram to Pebble watches with a PebbleKit JS Telegram client
 - Sends emoji replies
 - Sends, updates, and removes Telegram reactions
 - Replies to, forwards, edits, and deletes messages from the watch
+- Plays incoming voice messages on watches with speakers (Emery, Gabbro)
 - Loads older messages on demand
 - Keeps open chats and the chat list refreshed while the app is running
 - Supports Basalt, Diorite, Emery, and Gabbro builds
 - Includes a black-and-white optimized Diorite image path
 - Includes round-screen layout handling for Gabbro
+
+## Voice Messages
+
+Incoming voice messages play as audio on watches with speakers (Emery, Gabbro). The phone-side PebbleKit JS fetches the voice file over MTProto, decodes OGG Opus to 8 kHz mono 16-bit PCM, and streams it to the watch in small chunks over AppMessage; the watch plays the stream through its speaker API with a play/stop pill in the chat UI.
+
+- Playback requires a watch speaker (Emery, Gabbro). Basalt and Diorite build fine but have no speaker, so playback is a silent no-op there.
+- Recording from the watch is not yet available — it depends on an upstream PebbleOS on-device audio recording API that has not shipped.
 
 ## Changes Since 3.3
 
@@ -73,6 +81,7 @@ For local testing with embedded API credentials, keep them in an ignored environ
 
 - `src/c/Pebblegram.c`: watch UI, AppMessage handling, scrolling, image decoding, actions, dictation
 - `src/pkjs/index.js`: PebbleKit JS runtime and watch communication
+- `src/pkjs/pebblegram-voice.js`: voice message decoding (OGG Opus → PCM) and streaming
 - `src/pkjs/config.html`: Pebble settings page
 - `src/pkjs/pgjs/`: Telegram client, auth, settings storage, and image processing
 - `resources/images/menu_icon.png`: launcher/app-list icon bundled into the PBW
