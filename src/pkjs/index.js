@@ -3,7 +3,7 @@ var pgjsBackend = require('./pgjs/backend');
 var pebblegramVoice = require('./pebblegram-voice');
 
 var DEBUG_LOGS = false;
-var TELEGRAM_SETTINGS_PAGE_URL = 'https://tombolger.github.io/Pebblegram/pgjs/config.html';
+var TELEGRAM_SETTINGS_PAGE_URL = 'https://wdaniel1993.github.io/Pebblegram/pgjs/config.html';
 var MAX_ROWS = 20;
 var MAX_SEND_QUEUE = 80;
 var MAX_CACHED_CHATS = 12;
@@ -2562,7 +2562,7 @@ Pebble.addEventListener('ready', function() {
   watchReady = true;
   logLaunch('Pebble ready event');
   configureForPlatform();
-  debugLog('Pebblegram JS ready, backend=pgjs, canned=' + cannedReplies());
+  debugLog('Pebblegram AI JS ready, backend=pgjs, canned=' + cannedReplies());
   prewarmPhoneBackend();
   getChats(false);
 });

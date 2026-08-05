@@ -187,9 +187,9 @@ function createClient(gram, config, sessionString) {
     networkSocket: gram.PromisedWebSockets,
     useWSS: config.forceWSS === true,
     testServers: config.testServers === true,
-    deviceModel: 'Pebblegram',
+    deviceModel: 'Pebblegram AI',
     systemVersion: 'Pebble PKJS',
-    appVersion: 'Pebblegram',
+    appVersion: 'Pebblegram AI',
     langCode: 'en',
     systemLangCode: 'en'
   });

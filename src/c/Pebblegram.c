@@ -1681,7 +1681,7 @@ static const char *default_status_text(void) {
   if (s_view_state == ViewStateChat && s_current_chat_title[0]) {
     return s_current_chat_title;
   }
-  return "Pebblegram";
+  return "Pebblegram AI";
 }
 
 static bool status_message_should_persist(const char *message) {
@@ -1717,7 +1717,7 @@ static void status_clear_timer_callback(void *data) {
 
 static void show_status(const char *message) {
   if (s_status_layer) {
-    const char *shown = s_chats_loading ? "Pebblegram" :
+    const char *shown = s_chats_loading ? "Pebblegram AI" :
                         (message && message[0] ? message : default_status_text());
     copy_cstr(s_status_text, sizeof(s_status_text), shown);
     text_layer_set_text(s_status_layer, s_status_text);
@@ -3314,7 +3314,7 @@ static void render_chat_list_with_transition(void) {
     animate_layer_frame(&s_messages_animation, s_messages_root, messages_from, messages_to,
                         messages_slide_back_stopped);
   }
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
 }
 
 static void select_chat_row(int row, bool animated) {
@@ -3342,7 +3342,7 @@ static void reveal_available_chat_rows(void) {
     s_chat_first_paint_reported = true;
     send_command_with_status("chat_first_paint", NULL, NULL, NULL, NULL, false);
   }
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
 }
 
 static void remove_chat_at(int row) {
@@ -3388,7 +3388,7 @@ static void request_chats(void) {
   s_chat_first_paint_reported = false;
   s_chat_request_attempts = 1;
   show_loading_text("Loading...", false);
-  show_status("Pebblegram");
+  show_status("Pebblegram AI");
   if (s_chat_menu) {
     menu_layer_reload_data(s_chat_menu);
   }
@@ -3501,7 +3501,7 @@ static void message_timeout_timer_callback(void *data) {
     s_chats_loading = false;
     s_loading_error = true;
     show_loading_text("Chats failed", true);
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
     if (s_chat_menu) {
       menu_layer_reload_data(s_chat_menu);
     }
@@ -4005,7 +4005,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       s_bridge_ready = false;
       s_chats_loading = true;
       show_loading_text(error ? error : "Login failed", true);
-      show_status("Pebblegram");
+      show_status("Pebblegram AI");
     } else {
       s_loading_messages = false;
       s_loading_older_messages = false;
@@ -4059,7 +4059,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       menu_layer_reload_data(s_chat_menu);
       select_chat_row(s_selected_chat, false);
     }
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
     return;
   }
 
@@ -4454,7 +4454,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       reveal_available_chat_rows();
     }
     if (s_chat_count >= s_expected_rows) {
-      show_status("Pebblegram");
+      show_status("Pebblegram AI");
     }
     return;
   }
@@ -5426,7 +5426,7 @@ static bool show_native_action_menu(ActionMenuMode mode) {
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
   } else {
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
   }
 
   if (s_native_action_menu) {
@@ -5633,7 +5633,7 @@ static void show_action_window(ActionMenuMode mode) {
   if (s_view_state == ViewStateChat) {
     show_status(s_current_chat_title);
   } else {
-    show_status("Pebblegram");
+    show_status("Pebblegram AI");
   }
   s_action_mode = mode;
   s_action_selected = 0;
@@ -6000,7 +6000,7 @@ static void main_window_load(Window *window) {
   GRect status_rect = ROUND_UI ? GRect(24, chat_status_y(), bounds.size.w - 48, STATUS_H) :
                                  GRect(0, 0, bounds.size.w, STATUS_H);
   s_status_layer = text_layer_create(status_rect);
-  text_layer_set_text(s_status_layer, "Pebblegram");
+  text_layer_set_text(s_status_layer, "Pebblegram AI");
   text_layer_set_font(s_status_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_status_layer, GTextAlignmentCenter);
   text_layer_set_text_color(s_status_layer, GColorWhite);

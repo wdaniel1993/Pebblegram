@@ -1,7 +1,7 @@
 {
-  "name": "Pebblegram",
-  "author": "Bolger Innovations",
-  "version": "3.5.0",
+  "name": "Pebblegram AI",
+  "author": "Daniel Wallner",
+  "version": "1.0.0",
   "keywords": [
     "pebble-app"
   ],
@@ -9,7 +9,7 @@
     "build:pgjs-gramjs": "node tools/build-pgjs-gramjs.mjs"
   },
   "pebble": {
-    "displayName": "Pebblegram",
+    "displayName": "Pebblegram AI",
     "uuid": "2430a9d0-5be9-4850-b259-821030705e46",
     "sdkVersion": "3",
     "enableMultiJS": true,
