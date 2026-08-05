@@ -1232,6 +1232,125 @@ function messageRepliesCount(message) {
   return (typeof count === 'number' && count > 0) ? count : 0;
 }
 
+// Diagnostic for undetected threaded chats: classify raw history rows so a
+// debug status can show what the server actually returned. Each row becomes
+// one letter code:
+//   M  = Message          R=n = has MessageReplies with count n
+//   S  = MessageService   T  = reply_to with topMsgId (in-thread message)
+//   O  = other (MessageEmpty etc.)
+// Compact counts for the watch status line (fits GOTHIC_18):
+// "M5 S2 R3 T2" = 5 Messages, 2 MessageService rows, 3 rows with
+// MessageReplies, 2 rows with topMsgId.
+function summarizeHistoryCounts(rows) {
+  try {
+    var counts = {M: 0, S: 0, O: 0, R: 0, T: 0};
+    (rows || []).forEach(function(m) {
+      var kind = 'O';
+      if (m && m.className === 'Message') {
+        kind = 'M';
+      } else if (m && m.className === 'MessageService') {
+        kind = 'S';
+      }
+      counts[kind]++;
+      var replies = m && m.replies;
+      if (replies && typeof replies.replies === 'number') {
+        counts.R++;
+      }
+      var reply = m && (m.replyTo || m.reply_to);
+      if (reply) {
+        var top = reply.replyToTopId || reply.reply_to_top_id || reply.topMsgId || reply.top_msg_id;
+        if (top) {
+          counts.T++;
+        }
+      }
+    });
+    return 'M' + counts.M + ' S' + counts.S + ' R' + counts.R + ' T' + counts.T;
+  } catch (e) {
+    return 'DBG ERR';
+  }
+}
+
+function summarizeHistoryRows(rows) {
+  try {
+    return (rows || []).map(function(m) {
+      var kind = 'O';
+      if (m && m.className === 'Message') {
+        kind = 'M';
+      } else if (m && m.className === 'MessageService') {
+        kind = 'S';
+      }
+      var parts = [kind];
+      var replies = m && m.replies;
+      if (replies && typeof replies.replies === 'number') {
+        parts.push('R' + replies.replies);
+      }
+      var reply = m && (m.replyTo || m.reply_to);
+      if (reply) {
+        var top = reply.replyToTopId || reply.reply_to_top_id || reply.topMsgId || reply.top_msg_id;
+        if (top) {
+          parts.push('T' + String(top));
+        }
+      }
+      return parts.join(' ');
+    }).join(' | ');
+  } catch (e) {
+    return 'summary error: ' + (e && e.message ? e.message : e);
+  }
+}
+
+// Collect distinct thread-root ids referenced by in-thread messages in a
+// raw history page. An in-thread reply carries replyToTopId (top_msg_id)
+// pointing at its thread root — the anchor we need to fetch the root when
+// the page contains no root with a reply count.
+function uniqueThreadRootIds(rows) {
+  var seen = {};
+  var ids = [];
+  (rows || []).forEach(function(m) {
+    var reply = m && (m.replyTo || m.reply_to);
+    if (!reply) {
+      return;
+    }
+    var top = reply.replyToTopId || reply.reply_to_top_id || reply.topMsgId || reply.top_msg_id;
+    if (!top) {
+      return;
+    }
+    var key = String(top);
+    if (!seen[key]) {
+      seen[key] = true;
+      ids.push(parseInt(key, 10) || top);
+    }
+  });
+  return ids;
+}
+
+// Fetch specific messages by id (thread roots) via teleproto getMessages ids
+// support. Returns the raw rows in server order.
+function fetchMessagesByIds(client, chatId, ids) {
+  if (!ids || !ids.length) {
+    return Promise.resolve([]);
+  }
+  return client.getMessages(chatId, {ids: ids}).then(function(rows) {
+    return rows || [];
+  });
+}
+
+// Collect ids of MessageService rows carrying MessageActionTopicCreate — the
+// forum-topic creation rows that can act as thread roots in a threaded bot
+// chat when no reply counts or replyToTopId anchors are present in the page.
+function topicCreationRowIds(rows) {
+  var ids = [];
+  (rows || []).forEach(function(m) {
+    if (!m || m.className !== 'MessageService') {
+      return;
+    }
+    var action = m.action || m.Action;
+    if (action && action.className === 'MessageActionTopicCreate') {
+      ids.push(parseInt(m.id, 10) || m.id);
+    }
+  });
+  return ids;
+}
+
 function textWithEntitiesText(value) {
   if (!value) {
     return '';
@@ -1399,6 +1518,40 @@ function messages(chatId, limit, beforeId, threadId) {
             return r.thread_replies > 0;
           })) {
             list.thread_mode = true;
+          }
+          // Fallback detection: a page can contain only in-thread replies
+          // (each carries replyToTopId pointing at its root) when the newest
+          // thread is long, or forum-topic creation rows (MessageService +
+          // MessageActionTopicCreate) that carry no reply count at all. If no
+          // root has a count but threads exist, fetch the actual roots by id
+          // so the watch still gets a thread list.
+          if (!threadId && !list.thread_mode) {
+            var rootIds = uniqueThreadRootIds(rows);
+            if (!rootIds.length) {
+              rootIds = topicCreationRowIds(rows);
+            }
+            if (rootIds.length) {
+              return fetchMessagesByIds(client, chatId, rootIds).then(function(rootRows) {
+                var roots = normalizeMessageRows(client, chatId, rootRows, readOutboxByChatId[chatId] || 0);
+                return roots.then(function(rootList) {
+                  if (rootList.length) {
+                    rootList.thread_mode = true;
+                    return rootList;
+                  }
+                  return list;
+                });
+              }).catch(function(err) {
+                debugLog('Thread fallback detection failed: ' + (err && err.message ? err.message : err));
+                return list;
+              });
+            }
+          }
+          // Diagnostic: summarize the RAW rows so an undetected threaded
+          // chat can be identified on-device. Attached to the initial page
+          // only; the watch can surface it as a status line.
+          if (!threadId && list.debug_summary === undefined) {
+            list.debug_summary = summarizeHistoryCounts(rows);
+            list.debug_summary_detail = summarizeHistoryRows(rows);
           }
           return list;
         });

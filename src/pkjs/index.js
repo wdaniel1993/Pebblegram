@@ -1723,6 +1723,13 @@ function getMessages(chatId) {
     markRead(chatId);
     sendMessageRows(messages, chatId, 'initial');
     warmChatHistory(chatId);
+    // Diagnostic: when a chat is NOT detected as threaded, surface the raw
+    // history classification on the watch (compact counts) and in the JS
+    // console (per-row detail) so we can see what the server returned.
+    if (!messages.thread_mode && messages.debug_summary) {
+      status('DBG ' + messages.debug_summary);
+      debugLog('DBG history ' + chatId + ': ' + (messages.debug_summary_detail || messages.debug_summary));
+    }
   }).catch(function(err) {
     delete messageLoadPromises[key];
     promiseError('Messages failed', err);
