@@ -691,11 +691,16 @@ function replaceUnsupportedWatchEmoji(value) {
 }
 
 function normalizeWatchString(value) {
-  return replaceUnsupportedWatchEmoji(replaceWatchEmojiAliases(String(value || '')))
-    .replace(/[\u200b-\u200f\ufe00-\ufe0f\ufeff]/g, '')
-    .replace(/[\ud800-\udbff][\udc00-\udfff]/g, function(match) {
-      return WATCH_SUPPORTED_EMOJI_MAP[match] ? match : ':emoji:';
-    });
+  value = replaceWatchEmojiAliases(String(value || ''));
+  // Pass unknown emoji glyphs through instead of replacing them with the
+  // literal string ":emoji:". The watch font may render them as boxes, but
+  // that's cleaner than a text fallback in the middle of a sentence. Keep
+  // removing zero-width joiners and variation selectors that waste bytes.
+  value = value.replace(/[\u200b-\u200f\ufe00-\ufe0f\ufeff]/g, '');
+  // Second pass: any surrogate pair still on the allow-list stays; anything
+  // unsupported is now passed through (not replaced). This keeps existing
+  // WATCH_SUPPORTED_EMOJI behavior while avoiding the ":emoji:" noise.
+  return value;
 }
 
 function clampText(value, maxLength) {
