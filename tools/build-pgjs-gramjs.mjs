@@ -33,18 +33,32 @@ const commonOptions = {
   logLevel: "info",
   alias: {
     crypto: "./src/pkjs/pgjs/shims/crypto.js",
+    "node:crypto": "./src/pkjs/pgjs/shims/crypto.js",
     fs: "./src/pkjs/pgjs/shims/empty.js",
+    "node:fs": "./src/pkjs/pgjs/shims/empty.js",
     net: "./src/pkjs/pgjs/shims/empty.js",
+    "node:net": "./src/pkjs/pgjs/shims/empty.js",
     tls: "./src/pkjs/pgjs/shims/empty.js",
+    "node:tls": "./src/pkjs/pgjs/shims/empty.js",
     events: "./src/pkjs/pgjs/shims/events.js",
+    "node:events": "./src/pkjs/pgjs/shims/events.js",
     util: "./src/pkjs/pgjs/shims/util.js",
+    "node:util": "./src/pkjs/pgjs/shims/util.js",
     path: "./src/pkjs/pgjs/shims/path.js",
+    "node:path": "./src/pkjs/pgjs/shims/path.js",
     stream: "./src/pkjs/pgjs/shims/stream.js",
+    "node:stream": "./src/pkjs/pgjs/shims/stream.js",
     os: "./src/pkjs/pgjs/shims/os.js",
+    "node:os": "./src/pkjs/pgjs/shims/os.js",
     assert: "./src/pkjs/pgjs/shims/empty.js",
+    "node:assert": "./src/pkjs/pgjs/shims/empty.js",
     constants: "./src/pkjs/pgjs/shims/empty.js",
+    "node:constants": "./src/pkjs/pgjs/shims/empty.js",
     socks: "./src/pkjs/pgjs/shims/empty.js",
-    websocket: "./src/pkjs/pgjs/shims/websocket.js"
+    websocket: "./src/pkjs/pgjs/shims/websocket.js",
+    zlib: "./src/pkjs/pgjs/shims/zlib.js",
+    "node:zlib": "./src/pkjs/pgjs/shims/zlib.js",
+    "node:buffer": "buffer"
   }
 };
 

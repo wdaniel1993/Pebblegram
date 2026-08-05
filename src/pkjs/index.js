@@ -1893,7 +1893,9 @@ function singleMessageSignature(message) {
     message.forward_sender || '',
     message.forward_text || '',
     message.image_token || '',
-    message.outgoing ? '1' : '0'
+    message.outgoing ? '1' : '0',
+    message.thread_replies ? String(message.thread_replies) : '',
+    message.thread_id ? String(message.thread_id) : ''
   ].join('|');
 }
 
@@ -2152,6 +2154,40 @@ function sendMessage(chatId, text, replyTo) {
   }).catch(function(err) {
     promiseError('Send failed', err);
   });
+}
+
+// "New thread" flow for threaded-mode bot chats: create a fresh topic, then
+// send the first message into it. This mirrors Telegram's "send in All
+// Messages" behavior that Hermes uses to start a new session per topic, and
+// keeps the message out of the root lobby where Hermes rejects prompts.
+function createThreadAndSend(chatId, text) {
+  if (!chatId) {
+    return;
+  }
+  var rootId = null;
+  var title = threadTitleFromText(text);
+  timed('create thread ' + chatId, activePgjs().createThread(chatId, title)).then(function(createdRootId) {
+    rootId = createdRootId;
+    return timed('send into new thread ' + chatId, activePgjs().sendMessage(chatId, text, rootId));
+  }).then(function() {
+    var payload = {};
+    payload[MessageKeys.Type] = 'thread_created';
+    sendToWatch(payload);
+    // Open the fresh thread so the user sees their message + bot reply.
+    if (rootId) {
+      getThreadMessages(chatId, rootId);
+    }
+  }).catch(function(err) {
+    promiseError('New thread failed', err);
+  });
+}
+
+function threadTitleFromText(text) {
+  var trimmed = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) {
+    return 'New chat';
+  }
+  return trimmed.length <= 32 ? trimmed : trimmed.slice(0, 32);
 }
 
 function deleteMessage(chatId, messageId) {
@@ -2566,6 +2602,8 @@ Pebble.addEventListener('appmessage', function(event) {
     leaveChat(chatId);
   } else if (command === 'send_message') {
     sendMessage(chatId, text, replyTo);
+  } else if (command === 'create_thread') {
+    createThreadAndSend(chatId, text);
   } else if (command === 'delete_message') {
     deleteMessage(chatId, messageId);
   } else if (command === 'edit_message') {

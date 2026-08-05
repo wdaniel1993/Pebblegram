@@ -1431,6 +1431,59 @@ function sendMessage(chatId, text, replyTo) {
   });
 }
 
+// Create a new topic (forum thread) in a threaded-mode private chat and
+// return the new topic's root message id. The caller then sends the first
+// message with replyTo = root id, which lands INSIDE the new topic. This is
+// the user-account equivalent of Telegram's "send in All Messages" flow that
+// Hermes uses to start a fresh session per topic.
+function createThread(chatId, title) {
+  return auth.getClient().then(function(client) {
+    var Api = gram.Api;
+    var request = new Api.messages.CreateForumTopic({
+      peer: chatId,
+      title: title || 'New chat',
+      randomId: Math.floor(Math.random() * 0x7fffffff)
+    });
+    return client.invoke(request).then(function(updates) {
+      return findCreatedTopicRootId(updates, client);
+    });
+  });
+}
+
+function findCreatedTopicRootId(updates, client) {
+  var Api = gram.Api;
+  var candidates = [];
+  function collect(container) {
+    if (!container) {
+      return;
+    }
+    if (Array.isArray(container)) {
+      container.forEach(collect);
+      return;
+    }
+    if (container.className === 'Updates' || container.className === 'UpdatesCombined') {
+      collect(container.updates);
+      return;
+    }
+    if (container.className === 'UpdateNewMessage' ||
+        container.className === 'UpdateNewChannelMessage') {
+      collect(container.message);
+      return;
+    }
+    if (container.className === 'MessageService') {
+      candidates.push(container);
+    }
+  }
+  collect(updates);
+  for (var i = 0; i < candidates.length; i++) {
+    var action = candidates[i].action;
+    if (action && action.className === 'MessageActionTopicCreate') {
+      return String(candidates[i].id);
+    }
+  }
+  throw new Error('Topic created but root message not found in response');
+}
+
 function deleteMessage(chatId, messageId) {
   return auth.getClient().then(function(client) {
     return client.deleteMessages(chatId, [parseInt(messageId, 10) || messageId], {revoke: true});
@@ -1711,6 +1764,7 @@ module.exports = {
   newerMessages: newerMessages,
   keepalive: keepalive,
   sendMessage: sendMessage,
+  createThread: createThread,
   editMessage: editMessage,
   sendReaction: sendReaction,
   message: message,

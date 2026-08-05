@@ -60,6 +60,9 @@ function create(options) {
     sendMessage: function(chatId, text, replyTo) {
       return telegramApi().sendMessage(chatId, text, replyTo);
     },
+    createThread: function(chatId, title) {
+      return telegramApi().createThread(chatId, title);
+    },
     editMessage: function(chatId, messageId, text) {
       return telegramApi().editMessage(chatId, messageId, text);
     },

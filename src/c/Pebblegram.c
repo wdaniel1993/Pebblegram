@@ -2430,13 +2430,21 @@ static void recalc_message_layout(void) {
   }
 
   if (s_thread_mode) {
-    // Thread list: fixed-height rows, no compose bubble.
+    // Thread list: fixed-height rows. When at the newest end, reserve the
+    // compose bubble at the bottom — sending from there creates a NEW topic
+    // (create_thread), mirroring Telegram's "All Messages" composer.
     for (int i = 0; i < s_message_count; i++) {
       s_message_y[i] = 2 + i * (THREAD_ROW_H + THREAD_ROW_GAP);
       s_message_h[i] = THREAD_ROW_H;
     }
-    s_compose_bubble_y = s_chat_content_height + COMPOSE_BUBBLE_GAP;
-    s_chat_content_height = 2 + s_message_count * (THREAD_ROW_H + THREAD_ROW_GAP) + 4;
+    int rows_h = 2 + s_message_count * (THREAD_ROW_H + THREAD_ROW_GAP) + 4;
+    if (s_at_newest && !s_touch_keyboard_open) {
+      s_compose_bubble_y = rows_h + COMPOSE_BUBBLE_GAP;
+      s_chat_content_height = s_compose_bubble_y + COMPOSE_BUBBLE_H + (ROUND_UI ? 12 : 5);
+    } else {
+      s_compose_bubble_y = rows_h + COMPOSE_BUBBLE_GAP;
+      s_chat_content_height = rows_h;
+    }
     s_chat_scroll_offset = clamp_scroll_offset(s_chat_scroll_offset);
     return;
   }
@@ -2938,6 +2946,30 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
   }
 }
 
+static void draw_compose_bubble(GContext *ctx, GRect bounds) {
+  GRect compose_rect = compose_rect_for_bounds(bounds);
+  int compose_y = compose_rect.origin.y;
+  bool compose_selected = compose_target_is_selected();
+  if (s_at_newest && !s_touch_keyboard_open &&
+      compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
+    graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
+    graphics_fill_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2, GCornersAll);
+    graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (compose_selected ? APP_COLOR : GColorDarkGray));
+    graphics_draw_round_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2);
+    if (compose_selected) {
+      graphics_draw_round_rect(ctx, GRect(compose_rect.origin.x + 1, compose_rect.origin.y + 1,
+                                          compose_rect.size.w - 2, compose_rect.size.h - 2),
+                               (COMPOSE_BUBBLE_H / 2) - 1);
+    }
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, s_thread_mode ? "New chat" : "New message",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(compose_rect.origin.x + 8, compose_rect.origin.y + 3,
+                             compose_rect.size.w - 16, compose_rect.size.h - 5),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  }
+}
+
 static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, CHAT_BG);
@@ -2954,8 +2986,10 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   recalc_message_layout();
   if (s_thread_mode) {
     // Threaded bot chat: render the thread list (roots with reply counts)
-    // instead of bubbles; no compose bubble in list mode.
+    // instead of bubbles. The compose bubble below doubles as the "New chat"
+    // composer: sending from the thread list creates a new topic.
     draw_thread_rows(ctx, bounds);
+    draw_compose_bubble(ctx, bounds);
     return;
   }
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
@@ -3124,26 +3158,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     }
   }
 
-  GRect compose_rect = compose_rect_for_bounds(bounds);
-  int compose_y = compose_rect.origin.y;
-  bool compose_selected = compose_target_is_selected();
-  if (s_at_newest && !s_touch_keyboard_open &&
-      compose_y < bounds.size.h && compose_y + COMPOSE_BUBBLE_H > 0) {
-    graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : GColorLightGray);
-    graphics_fill_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2, GCornersAll);
-    graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (compose_selected ? APP_COLOR : GColorDarkGray));
-    graphics_draw_round_rect(ctx, compose_rect, COMPOSE_BUBBLE_H / 2);
-    if (compose_selected) {
-      graphics_draw_round_rect(ctx, GRect(compose_rect.origin.x + 1, compose_rect.origin.y + 1,
-                                          compose_rect.size.w - 2, compose_rect.size.h - 2),
-                               (COMPOSE_BUBBLE_H / 2) - 1);
-    }
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, "New message", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(compose_rect.origin.x + 8, compose_rect.origin.y + 3,
-                             compose_rect.size.w - 16, compose_rect.size.h - 5),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-  }
+  draw_compose_bubble(ctx, bounds);
 
 #if TOUCH_KEYBOARD_AVAILABLE
   if (s_touch_keyboard_open) {
@@ -3838,6 +3853,14 @@ static void maybe_prefetch_newer_messages(void) {
 
 static void send_text_message(const char *text, bool as_reply) {
   const char *reply_to = NULL;
+  if (s_thread_mode && !s_thread_root[0]) {
+    // Thread list: a plain send starts a NEW chat (new topic), mirroring
+    // Telegram's "All Messages" composer. JS creates the topic and sends the
+    // first message into it, so it never lands in the lobby.
+    show_status("Starting chat...");
+    send_command("create_thread", s_current_chat_id, text, NULL, NULL);
+    return;
+  }
   if (as_reply && s_selected_message >= 0 && s_selected_message < s_message_count) {
     reply_to = s_messages[s_selected_message].id;
   } else if (s_thread_root[0]) {
@@ -4986,6 +5009,13 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     return;
   }
 
+  if (strcmp(type, "thread_created") == 0) {
+    // JS created the topic and sent the first message; it follows up with a
+    // thread view (ThreadId rows) that switches the watch into the thread.
+    show_status("Chat started");
+    return;
+  }
+
   if (strcmp(type, "edited") == 0) {
     show_status("Edited");
     return;
@@ -5710,7 +5740,12 @@ static void action_click_config_provider(void *context) {
 static void main_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_view_state == ViewStateChat) {
     if (s_thread_mode) {
-      // Thread list: SELECT opens the highlighted thread.
+      // Thread list: SELECT opens the highlighted thread, or the compose
+      // target at the bottom starts a NEW chat (new topic).
+      if (compose_target_is_selected()) {
+        show_action_window(ActionMenuMain);
+        return;
+      }
       if (s_selected_message >= 0 && s_selected_message < s_message_count &&
           s_messages[s_selected_message].id[0]) {
         send_command_with_status("open_thread", s_current_chat_id, NULL, NULL,
