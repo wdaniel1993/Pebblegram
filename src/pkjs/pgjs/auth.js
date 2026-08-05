@@ -249,7 +249,14 @@ function signInWithCode(gram, config, creds) {
     });
   }
 
-  pinAuthDc(client, config);
+  // Only pin the auth DC on a fresh connection. When a pendingSession exists
+  // (code-request step already ran), it carries the migrated DC and the auth
+  // key negotiated there; re-pinning would connect to DC1 while presenting
+  // that key, which Telegram rejects -> reconnect loop -> "Maximum
+  // reconnection retries reached. Aborting!" (upstream issue #9).
+  if (!creds.pendingSession) {
+    pinAuthDc(client, config);
+  }
   return timeout(
     Promise.resolve().then(function() {
       reportStatus('Connecting...');

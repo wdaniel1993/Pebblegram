@@ -5,14 +5,20 @@ function parseApiId(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function parseBoolean(value) {
+function parseBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 const runtimeConfig = {
   apiId: parseApiId(process.env.PGJS_TELEGRAM_API_ID),
   apiHash: String(process.env.PGJS_TELEGRAM_API_HASH || "").trim(),
-  forceWSS: parseBoolean(process.env.PGJS_TELEGRAM_FORCE_WSS),
+  // Default ON: the Core Devices companion app blocks cleartext ws:// (ATS /
+  // cleartext-traffic), so GramJS must use wss://:443. Opt out with
+  // PGJS_TELEGRAM_FORCE_WSS=false. (upstream issue #9)
+  forceWSS: parseBoolean(process.env.PGJS_TELEGRAM_FORCE_WSS, true),
   testServers: parseBoolean(process.env.PGJS_TELEGRAM_TEST_SERVERS)
 };
 
