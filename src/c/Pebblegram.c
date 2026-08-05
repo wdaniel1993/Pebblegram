@@ -2152,16 +2152,13 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
     message->image_retry_level = 0;
     message->image_bitmap = NULL;
   }
-  // Voice fields: prefer the dedicated VoiceToken when set (some platforms
-  // surface a separate voice id), else fall back to the message id (which
-  // is what the JS-side streamer uses today — see
-  // src/pkjs/pgjs/telegram.js, voice_token: String(message.id)).
+  // Voice fields: the JS side sends VoiceToken ONLY for real voice notes
+  // (telegram.js messageVoice() -> attrs[i].voice === true), using the
+  // message id as the token. Never fall back to the message id here — every
+  // message has one, so a fallback marks ALL messages as playable voice.
   char *incoming_voice_token = tuple_cstring(iter, MESSAGE_KEY_VoiceToken);
-  const char *voice_src = (incoming_voice_token && incoming_voice_token[0])
-                              ? incoming_voice_token
-                              : (message->id[0] ? message->id : NULL);
-  if (voice_src) {
-    copy_cstr(message->voice_token, sizeof(message->voice_token), voice_src);
+  if (incoming_voice_token && incoming_voice_token[0]) {
+    copy_cstr(message->voice_token, sizeof(message->voice_token), incoming_voice_token);
   } else {
     message->voice_token[0] = '\0';
   }
