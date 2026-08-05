@@ -65,7 +65,10 @@
       "VoiceTransferId",
       "VoiceDone",
       "VoiceError",
-      "VoiceAction"
+      "VoiceAction",
+      "ThreadCount",
+      "ThreadId",
+      "ThreadList"
     ],
     "resources": {
       "media": [

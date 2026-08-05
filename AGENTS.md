@@ -109,6 +109,14 @@ Install on device: `pebble install --emulator basalt` (QEMU) or
   JS side verified by `tools/test-voice.js` (22/22, real ffmpeg OGG Opus →
   8kHz s16 → 800B frames, 0.3% drift). C side reviewed + SDK-built; on-device
   playback verification pending (watch hardware).
+- **Threaded bot chats (Telegram "threads" mode) — implemented.** JS detects
+  thread-mode chats (history = roots with `MessageReplies` counts), sends
+  `ThreadList` rows; watch renders a thread list (sender + preview + » count),
+  SELECT opens a thread via `open_thread` → `getMessages(chatId, {replyTo:
+  root})` (GetReplies), BACK returns to the list. Thread-scoped pagination via
+  `ThreadId` on older/newer; sends inside a thread reply to the root. Flat
+  chats untouched (detection requires `thread_replies > 0` on the first page).
+  On-device verification pending (Daniel's threaded bot chats).
 - **Phase B (recording)** — blocked on upstream
   `coredevices/PebbleOS` **#1641** (on-device Speex recording + SDK API;
   `audio_recording_list()`/`audio_recording_transcribe()`). After it lands:

@@ -45,14 +45,14 @@ function create(options) {
     chats: function(limit, options) {
       return telegramApi().chats(limit, options);
     },
-    messages: function(chatId, limit, beforeId) {
-      return telegramApi().messages(chatId, limit, beforeId);
+    messages: function(chatId, limit, beforeId, threadId) {
+      return telegramApi().messages(chatId, limit, beforeId, threadId);
     },
-    olderMessages: function(chatId, limit, beforeId) {
-      return telegramApi().messages(chatId, limit, beforeId);
+    olderMessages: function(chatId, limit, beforeId, threadId) {
+      return telegramApi().messages(chatId, limit, beforeId, threadId);
     },
-    newerMessages: function(chatId, limit, afterId) {
-      return telegramApi().newerMessages(chatId, limit, afterId);
+    newerMessages: function(chatId, limit, afterId, threadId) {
+      return telegramApi().newerMessages(chatId, limit, afterId, threadId);
     },
     keepalive: function() {
       return telegramApi().keepalive();

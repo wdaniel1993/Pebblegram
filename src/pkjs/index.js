@@ -50,6 +50,7 @@ var currentChatSignature = '';
 var chatLoadPromise = null;
 var messageLoadPromises = {};
 var newerLoadPromises = {};
+var threadLoadPromises = {};
 var updateRefreshTimer = null;
 var updatesStarted = false;
 var connectionKeepaliveTimer = null;
@@ -992,6 +993,15 @@ function messagePayload(message, type, index, count, transferId) {
         ? Math.min(600000, Math.round(message.voice_duration_ms)) : 0;
     }
   }
+  if (message.thread_replies) {
+    payload[MessageKeys.ThreadCount] = message.thread_replies;
+  }
+  if (message.thread_list) {
+    payload[MessageKeys.ThreadList] = 1;
+  }
+  if (message.thread_id) {
+    payload[MessageKeys.ThreadId] = String(message.thread_id);
+  }
   return payload;
 }
 
@@ -1603,14 +1613,51 @@ function getMessages(chatId) {
   messageLoadPromises[key] = timed('messages load ' + chatId, withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS),
                                       'messages load timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(messages) {
     delete messageLoadPromises[key];
-    rememberMessages(chatId, messages || []);
-    currentChatSignature = messageSignature(messages || []);
+    messages = messages || [];
+    if (messages.thread_mode) {
+      // Threaded bot chat: the history IS the thread list. Mark every row so
+      // the watch switches to thread-list rendering for this chat.
+      for (var i = 0; i < messages.length; i++) {
+        messages[i].thread_list = true;
+      }
+    }
+    rememberMessages(chatId, messages);
+    currentChatSignature = messageSignature(messages);
     markRead(chatId);
-    sendMessageRows(messages || [], chatId, 'initial');
+    sendMessageRows(messages, chatId, 'initial');
     warmChatHistory(chatId);
   }).catch(function(err) {
     delete messageLoadPromises[key];
     promiseError('Messages failed', err);
+  });
+}
+
+function getThreadMessages(chatId, threadId) {
+  if (!chatId || !threadId) {
+    done('messages_done', 0, 0, null);
+    return;
+  }
+  var key = String(chatId || '') + ':thread:' + String(threadId);
+  if (threadLoadPromises[key]) {
+    return;
+  }
+  status('Loading thread...');
+  threadLoadPromises[key] = timed('thread load ' + chatId,
+      withTimeout(activePgjs().messages(chatId, INITIAL_MESSAGE_ROWS, 0, threadId),
+                  'thread load timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(rows) {
+    delete threadLoadPromises[key];
+    rows = rows || [];
+    // Anchor every row to the thread so the watch keeps the root id for
+    // scoped pagination and replying inside this thread.
+    for (var i = 0; i < rows.length; i++) {
+      rows[i].thread_id = threadId;
+    }
+    currentChatId = chatId;
+    markRead(chatId);
+    sendMessageRows(rows, chatId, 'initial');
+  }).catch(function(err) {
+    delete threadLoadPromises[key];
+    promiseError('Thread failed', err);
   });
 }
 
@@ -1858,7 +1905,7 @@ function markRead(chatId) {
   });
 }
 
-function getOlderMessages(chatId, anchorId, beforeId, silent) {
+function getOlderMessages(chatId, anchorId, beforeId, silent, threadId) {
   beforeId = beforeId || anchorId;
   if (!beforeId) {
     done('messages_done', 0, 0, silent ? 'silent' : null);
@@ -1867,18 +1914,32 @@ function getOlderMessages(chatId, anchorId, beforeId, silent) {
   if (!silent) {
     cancelQueuedImageTransfers();
   }
-  if (cachedOlderRows(chatId, beforeId, OLDER_MESSAGE_ROWS).length >= OLDER_MESSAGE_ROWS || oldestComplete[chatId]) {
+  var threadMode = !!threadId;
+  if (!threadMode && (cachedOlderRows(chatId, beforeId, OLDER_MESSAGE_ROWS).length >= OLDER_MESSAGE_ROWS || oldestComplete[chatId])) {
     sendOlderWindow(chatId, anchorId, beforeId, silent);
     return;
   }
   if (!silent) {
     status('Loading older...');
   }
-  timed('older messages load ' + chatId, withTimeout(activePgjs().olderMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, beforeId),
+  timed('older messages load ' + chatId, withTimeout(activePgjs().olderMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, beforeId, threadId),
                                             'older messages timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(older) {
     older = older || [];
     if (older.length === 0) {
+      if (threadMode) {
+        done('messages_done', 0, 0, silent ? 'silent' : null);
+        return;
+      }
       oldestComplete[chatId] = true;
+    }
+    if (threadMode) {
+      // Thread pages live outside the chat cache; keep the thread anchor on
+      // every row so the watch stays anchored while paging inside a thread.
+      for (var i = 0; i < older.length; i++) {
+        older[i].thread_id = threadId;
+      }
+      sendOlderWindow(chatId, anchorId, beforeId, silent);
+      return;
     }
     mergeHistoryMessages(chatId, older);
     sendOlderWindow(chatId, anchorId, beforeId, silent);
@@ -1888,7 +1949,7 @@ function getOlderMessages(chatId, anchorId, beforeId, silent) {
   });
 }
 
-function getNewerMessages(chatId, anchorId, afterId, silent) {
+function getNewerMessages(chatId, anchorId, afterId, silent, threadId) {
   afterId = afterId || anchorId;
   var key = String(chatId || '') + ':' + String(afterId || '');
   if (!afterId) {
@@ -1898,7 +1959,8 @@ function getNewerMessages(chatId, anchorId, afterId, silent) {
   if (!silent) {
     cancelQueuedImageTransfers();
   }
-  if (cachedNewerRows(chatId, afterId, NEWER_MESSAGE_ROWS).length >= NEWER_MESSAGE_ROWS || newestComplete[chatId]) {
+  var threadMode = !!threadId;
+  if (!threadMode && (cachedNewerRows(chatId, afterId, NEWER_MESSAGE_ROWS).length >= NEWER_MESSAGE_ROWS || newestComplete[chatId])) {
     sendNewerWindow(chatId, anchorId, afterId, silent);
     return;
   }
@@ -1908,12 +1970,23 @@ function getNewerMessages(chatId, anchorId, afterId, silent) {
   if (newerLoadPromises[key]) {
     return;
   }
-  newerLoadPromises[key] = timed('newer messages load ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId),
+  newerLoadPromises[key] = timed('newer messages load ' + chatId, withTimeout(activePgjs().newerMessages(chatId, MESSAGE_PAGE_FETCH_ROWS, afterId, threadId),
                                             'newer messages timed out', MESSAGE_FETCH_TIMEOUT_MS)).then(function(newer) {
     delete newerLoadPromises[key];
     newer = newer || [];
     if (newer.length === 0) {
+      if (threadMode) {
+        done('messages_done', 0, 0, silent ? 'silent' : null);
+        return;
+      }
       newestComplete[chatId] = true;
+    }
+    if (threadMode) {
+      for (var i = 0; i < newer.length; i++) {
+        newer[i].thread_id = threadId;
+      }
+      sendNewerWindow(chatId, anchorId, afterId, silent);
+      return;
     }
     mergeHistoryMessages(chatId, newer);
     sendNewerWindow(chatId, anchorId, afterId, silent);
@@ -2381,6 +2454,7 @@ Pebble.addEventListener('appmessage', function(event) {
   var replyTo = payloadValue(event.payload, 'ReplyTo');
   var messageId = payloadValue(event.payload, 'MessageId');
   var editMessageId = payloadValue(event.payload, 'EditMessageId');
+  var threadId = payloadValue(event.payload, 'ThreadId');
 
   if (command === 'wake') {
     wakePhoneBackend();
@@ -2390,10 +2464,12 @@ Pebble.addEventListener('appmessage', function(event) {
     getChats(false);
   } else if (command === 'get_messages') {
     getMessages(chatId);
+  } else if (command === 'open_thread') {
+    getThreadMessages(chatId, messageId);
   } else if (command === 'get_older_messages') {
-    getOlderMessages(chatId, messageId, replyTo, text === 'silent');
+    getOlderMessages(chatId, messageId, replyTo, text === 'silent', threadId);
   } else if (command === 'get_newer_messages') {
-    getNewerMessages(chatId, messageId, replyTo, text === 'silent');
+    getNewerMessages(chatId, messageId, replyTo, text === 'silent', threadId);
   } else if (command === 'prefetch_older_messages') {
     prefetchOlderMessages(chatId, messageId);
   } else if (command === 'prefetch_newer_messages') {

@@ -1213,8 +1213,23 @@ function normalizeMessage(message, readOutboxMaxId) {
     image_width: imageDimensions ? imageDimensions.width : 0,
     image_height: imageDimensions ? imageDimensions.height : 0,
     voice_token: voice ? String(message.id) : null,
-    voice_duration_ms: voice ? Math.round(voice.durationSeconds * 1000) : 0
+    voice_duration_ms: voice ? Math.round(voice.durationSeconds * 1000) : 0,
+    thread_replies: messageRepliesCount(message)
   };
+}
+
+// Threaded-mode bot chats: a thread ROOT carries MessageReplies (the count of
+// bot responses nested under it). A non-zero count marks the message as a
+// thread root in the thread list view. Reply messages inside the thread carry
+// the nested count of THEIR replies; we ignore those here — only roots are
+// rendered as threads.
+function messageRepliesCount(message) {
+  var replies = message && message.replies;
+  if (!replies) {
+    return 0;
+  }
+  var count = replies.replies;
+  return (typeof count === 'number' && count > 0) ? count : 0;
 }
 
 function textWithEntitiesText(value) {
@@ -1362,23 +1377,43 @@ function chats(limit, options) {
   });
 }
 
-function messages(chatId, limit, beforeId) {
+function messages(chatId, limit, beforeId, threadId) {
   return auth.getClient().then(function(client) {
     var options = {limit: limit};
     if (beforeId) {
       options.offsetId = parseInt(beforeId, 10) || 0;
     }
+    if (threadId) {
+      // Thread-scoped page: messages.getReplies under the root message.
+      options.replyTo = parseInt(threadId, 10) || threadId;
+    }
     return client.getMessages(chatId, options).then(function(rows) {
-      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);
+      return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0)
+        .then(function(list) {
+          // Threaded-mode bot chat: the history of such a chat is a list of
+          // thread ROOTS (each carrying its MessageReplies count). Expose
+          // thread_mode on the array so the watch renders a thread list
+          // instead of bubbles. Only detected on the initial (non-thread)
+          // page to keep flat chats untouched.
+          if (!threadId && list.some(function(r) {
+            return r.thread_replies > 0;
+          })) {
+            list.thread_mode = true;
+          }
+          return list;
+        });
     });
   });
 }
 
-function newerMessages(chatId, limit, afterId) {
+function newerMessages(chatId, limit, afterId, threadId) {
   return auth.getClient().then(function(client) {
     var options = {limit: limit};
     if (afterId) {
       options.minId = parseInt(afterId, 10) || 0;
+    }
+    if (threadId) {
+      options.replyTo = parseInt(threadId, 10) || threadId;
     }
     return client.getMessages(chatId, options).then(function(rows) {
       return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0);

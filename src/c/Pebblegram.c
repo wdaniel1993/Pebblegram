@@ -53,6 +53,8 @@
 #define LONG_MESSAGE_SCROLL_DELTA PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 42, 42, 42, 42, 56, 56, 48)
 #define COMPOSE_BUBBLE_H 30
 #define COMPOSE_BUBBLE_GAP 8
+#define THREAD_ROW_H 34
+#define THREAD_ROW_GAP 2
 #define MESSAGE_COMMAND_RETRY_MS 3000
 #define MESSAGE_COMMAND_WAKE_RETRY_MS 650
 #define MESSAGE_COMMAND_MAX_ATTEMPTS 3
@@ -171,6 +173,7 @@ typedef struct {
   bool image_requested;
   bool image_failed;
   bool voice_placeholder;
+  uint16_t thread_replies;
   bool voice_playing;
   uint8_t image_progress;
   uint8_t image_retry_level;
@@ -288,6 +291,12 @@ static int s_voice_received;
 static int s_voice_total;
 static int s_voice_format;
 static bool s_voice_active;
+// Threaded bot chats (Telegram "threads" mode): s_thread_mode means the open
+// chat is displayed as a thread LIST (history = thread roots); s_thread_root
+// is set while viewing a single thread and anchors scoped pagination and
+// replies inside it.
+static bool s_thread_mode;
+static char s_thread_root[MAX_ID];
 static bool s_voice_playing;
 static bool s_voice_stream_open;
 static int s_avatar_size;
@@ -1642,6 +1651,16 @@ static bool send_command_with_status(const char *command, const char *chat_id, c
       return false;
     }
   }
+  if (s_thread_root[0]) {
+    // Inside a thread: anchor pagination and sends to the thread root.
+    dict_result = dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_root);
+    if (dict_result != DICT_OK) {
+      if (show_failures) {
+        show_status("Thread ID write fail");
+      }
+      return false;
+    }
+  }
   dict_write_end(iter);
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
@@ -2169,6 +2188,20 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
   } else {
     message->voice_duration_ms = 0;
   }
+  // Threaded bot chats: every row of a thread-LIST batch carries ThreadList=1
+  // (the watch switches the open chat to thread-list rendering); every row of
+  // a thread view carries ThreadId (the root) which anchors pagination and
+  // replies inside the thread. Both are batch-consistent flags sent by JS.
+  message->thread_replies = (uint16_t)PG_MIN(tuple_int(iter, MESSAGE_KEY_ThreadCount, 0), 999);
+  if (tuple_int(iter, MESSAGE_KEY_ThreadList, 0) != 0) {
+    s_thread_mode = true;
+    s_thread_root[0] = '\0';
+  }
+  char *incoming_thread_id = tuple_cstring(iter, MESSAGE_KEY_ThreadId);
+  if (incoming_thread_id && incoming_thread_id[0]) {
+    copy_cstr(s_thread_root, sizeof(s_thread_root), incoming_thread_id);
+    s_thread_mode = false;
+  }
   // Don't reset voice_playing here — it's set/cleared by the voice state
   // machine and poll timer, not by message stream updates.
 }
@@ -2393,6 +2426,18 @@ static int message_bubble_height(Message *message, int text_w, int bubble_w) {
 
 static void recalc_message_layout(void) {
   if (!s_messages_root) {
+    return;
+  }
+
+  if (s_thread_mode) {
+    // Thread list: fixed-height rows, no compose bubble.
+    for (int i = 0; i < s_message_count; i++) {
+      s_message_y[i] = 2 + i * (THREAD_ROW_H + THREAD_ROW_GAP);
+      s_message_h[i] = THREAD_ROW_H;
+    }
+    s_compose_bubble_y = s_chat_content_height + COMPOSE_BUBBLE_GAP;
+    s_chat_content_height = 2 + s_message_count * (THREAD_ROW_H + THREAD_ROW_GAP) + 4;
+    s_chat_scroll_offset = clamp_scroll_offset(s_chat_scroll_offset);
     return;
   }
 
@@ -2838,6 +2883,61 @@ static void close_touch_keyboard(void) {
 }
 #endif
 
+static void draw_thread_rows(GContext *ctx, GRect bounds) {
+  GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
+  GFont count_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  int first = 0;
+  while (first < s_message_count - 1 &&
+         s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
+    first++;
+  }
+  for (int i = first; i < s_message_count; i++) {
+    Message *message = &s_messages[i];
+    int y = s_message_y[i] - s_chat_scroll_offset;
+    if (y > bounds.size.h) {
+      break;
+    }
+    bool selected = i == s_selected_message;
+    GRect row = GRect(0, y, bounds.size.w, s_message_h[i]);
+    graphics_context_set_fill_color(ctx, selected
+        ? (BW_UI ? GColorLightGray : APP_COLOR_LIGHT)
+        : (BW_UI ? GColorWhite : CHAT_BG));
+    graphics_fill_rect(ctx, row, 0, GCornerNone);
+    if (selected) {
+      graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+      graphics_draw_rect(ctx, GRect(row.origin.x + 1, row.origin.y + 1,
+                                    row.size.w - 2, row.size.h - 2));
+    }
+    char preview[MESSAGE_PREVIEW_TEXT + 8];
+    copy_cstr(preview, sizeof(preview), message->text[0] ? message->text : "Message");
+    if ((int)strlen(preview) > MESSAGE_PREVIEW_TEXT) {
+      truncate_cstr_bytes(preview, sizeof(preview), MESSAGE_PREVIEW_TEXT, " ...");
+    }
+    int count_w = message->thread_replies > 0 ? 42 : 0;
+    int text_w = bounds.size.w - 12 - count_w;
+    graphics_context_set_text_color(ctx, BW_UI ? GColorBlack :
+                                    (message->outgoing ? GColorDarkGray : APP_COLOR));
+    graphics_draw_text(ctx, message->sender[0] ? message->sender :
+                       (message->outgoing ? "You" : "Bot"), sender_font,
+                       GRect(6, y + 2, text_w, 16), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, preview, text_font,
+                       GRect(6, y + 17, text_w, 18), GTextOverflowModeTrailingEllipsis,
+                       GTextAlignmentLeft, NULL);
+    if (message->thread_replies > 0) {
+      char count_text[10];
+      snprintf(count_text, sizeof(count_text), "» %d", message->thread_replies);
+      graphics_context_set_text_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+      graphics_draw_text(ctx, count_text, count_font,
+                         GRect(bounds.size.w - count_w - 2, y + (s_message_h[i] - 16) / 2,
+                               count_w, 16), GTextOverflowModeTrailingEllipsis,
+                         GTextAlignmentRight, NULL);
+    }
+  }
+}
+
 static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, CHAT_BG);
@@ -2852,6 +2952,12 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
 
   recalc_message_layout();
+  if (s_thread_mode) {
+    // Threaded bot chat: render the thread list (roots with reply counts)
+    // instead of bubbles; no compose bubble in list mode.
+    draw_thread_rows(ctx, bounds);
+    return;
+  }
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -3692,6 +3798,10 @@ static void request_messages(const char *chat_id) {
   s_chat_view_pending = false;
   s_loading_messages = true;
   s_message_request_attempts = 1;
+  // Fresh open: leave any previous thread state behind. The response batch
+  // re-establishes it (ThreadList for a thread list, ThreadId for a thread).
+  s_thread_mode = false;
+  s_thread_root[0] = '\0';
   show_status("Loading messages...");
   if (s_view_state != ViewStateChat || !s_messages_root) {
     s_chat_view_pending = false;
@@ -3730,6 +3840,10 @@ static void send_text_message(const char *text, bool as_reply) {
   const char *reply_to = NULL;
   if (as_reply && s_selected_message >= 0 && s_selected_message < s_message_count) {
     reply_to = s_messages[s_selected_message].id;
+  } else if (s_thread_root[0]) {
+    // Inside a thread, a plain send replies to the thread root so it lands
+    // in the thread instead of the chat's main history.
+    reply_to = s_thread_root;
   }
   show_status("Sending...");
   send_command("send_message", s_current_chat_id, text, reply_to, NULL);
@@ -5595,6 +5709,15 @@ static void action_click_config_provider(void *context) {
 
 static void main_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_view_state == ViewStateChat) {
+    if (s_thread_mode) {
+      // Thread list: SELECT opens the highlighted thread.
+      if (s_selected_message >= 0 && s_selected_message < s_message_count &&
+          s_messages[s_selected_message].id[0]) {
+        send_command_with_status("open_thread", s_current_chat_id, NULL, NULL,
+                                 s_messages[s_selected_message].id, false);
+      }
+      return;
+    }
     show_action_window(ActionMenuMain);
   } else if (s_view_state == ViewStateChatList && s_chat_menu) {
     if (s_loading_messages) {
@@ -5770,6 +5893,15 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
     return;
   }
   if (s_view_state == ViewStateChat) {
+    if (s_thread_root[0]) {
+      // Inside a thread: BACK returns to the thread list (re-fetch the
+      // chat's history, which the JS serves as the thread list).
+      s_thread_root[0] = '\0';
+      s_thread_mode = false;
+      request_messages(s_current_chat_id);
+      return;
+    }
+    s_thread_mode = false;
     cancel_message_timeout();
     cancel_message_retry();
     s_loading_messages = false;
