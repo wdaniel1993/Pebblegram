@@ -132,11 +132,11 @@ function main() {
 
       var streamer = voice.createStreamer({
         decoderFactory: voice.createDecoder,
-        formatName: '16kHz_16bit',
-        sampleRate: 16000,
+        formatName: '8kHz_16bit',
+        sampleRate: 8000,
         bitDepth: 16,
-        chunkBytes: 800,
-        // 2.5s * 16000 * 2 = 80000 bytes; allow 1MB so the test isn't
+        chunkBytes: 1600,
+        // 2.5s * 8000 * 2 = 40000 bytes; allow 1MB so the test isn't
         // exercising the truncation path (that's covered separately).
         maxBytes: 1048576,
         decoder: { driver: 'ffmpeg' }
@@ -160,10 +160,10 @@ function main() {
         assert(typeof start[MESSAGE_KEYS.VoiceSize] === 'number' &&
                start[MESSAGE_KEYS.VoiceSize] > 0,
           'voice_start carries positive VoiceSize (' + start[MESSAGE_KEYS.VoiceSize] + ' bytes)');
-        assert(start[MESSAGE_KEYS.VoiceSampleRate] === 16000,
-          'voice_start declares 16kHz sample rate');
-        assert(start[MESSAGE_KEYS.VoiceFormat] === 3,
-          'voice_start declares SpeakerPcmFormat 16kHz_16bit (value 3)');
+        assert(start[MESSAGE_KEYS.VoiceSampleRate] === 8000,
+          'voice_start declares 8kHz sample rate');
+        assert(start[MESSAGE_KEYS.VoiceFormat] === 2,
+          'voice_start declares SpeakerPcmFormat 8kHz_16bit (value 2)');
         assert(start[MESSAGE_KEYS.VoiceDuration] === Math.round(sourceDuration * 1000),
           'voice_start carries original durationMs');
 
@@ -209,22 +209,23 @@ function main() {
         }
         assert(reassembled.length === start[MESSAGE_KEYS.VoiceSize],
           'reassembled length matches VoiceSize');
-        // Sample rate sanity: at 16kHz, 2.5s = 40000 samples × 2 bytes = 80000 bytes
+        // Sample rate sanity: at 8kHz, 2.5s = 20000 samples × 2 bytes = 40000 bytes
         // (we may be slightly under if decoder drops a tail frame)
-        assert(reassembled.length >= 76000 && reassembled.length <= 82000,
-          'reassembled length is plausible for 2.5s @ 16kHz 16-bit (' +
-          reassembled.length + ' bytes; expected ~80000)');
+        assert(reassembled.length >= 38000 && reassembled.length <= 41000,
+          'reassembled length is plausible for 2.5s @ 8kHz 16-bit (' +
+          reassembled.length + ' bytes; expected ~40000)');
 
         // --- Assertion 4: every chunk < 2KB envelope ----------------
-        // Pebble AppMessage inbox cap is 2KB; PCM payload must leave
-        // headroom for the surrounding dictionary fields.
+        // Pebble AppMessage inbox cap is 2KB. A 1600B VoiceData payload +
+        // ~150B dict overhead (7 keys: Type/MessageId/VoiceToken/
+        // VoiceTransferId/Index/VoiceSeq/VoiceData) ≈ 1750B < 2048.
         var maxChunk = 0;
         for (var k = 0; k < dataFrames.length; k++) {
           if (dataFrames[k][MESSAGE_KEYS.VoiceData].length > maxChunk) {
             maxChunk = dataFrames[k][MESSAGE_KEYS.VoiceData].length;
           }
         }
-        assert(maxChunk <= 1024,
+        assert(maxChunk <= 1600,
           'max chunk size (' + maxChunk + ' bytes) fits in APP_INBOX_SIZE (2048) with envelope headroom');
 
         // --- Assertion 5: voice_done terminates the stream ----------
@@ -239,7 +240,7 @@ function main() {
           'voice_done marker set');
 
         // --- Assertion 6: round-trip the reassembled PCM through
-        //     ffmpeg at the target SpeakerPcmFormat (s16le 16k mono)
+        //     ffmpeg at the target SpeakerPcmFormat (s16le 8k mono)
         //     and verify the play duration matches the source within
         //     10% (libopus at 16kbps + sinc resampler has small jitter).
         var rawPath = path.join(tmpDir, 'reassembled.s16le');
@@ -247,14 +248,14 @@ function main() {
         fs.writeFileSync(rawPath, reassembled);
         return run('ffmpeg', [
           '-y', '-hide_banner', '-loglevel', 'error',
-          '-f', 's16le', '-ar', '16000', '-ac', '1',
+          '-f', 's16le', '-ar', '8000', '-ac', '1',
           '-i', rawPath, wavPath
         ]).then(function (r) {
           if (r.code !== 0) {
             assert(false, 'ffmpeg s16le→wav round-trip failed: ' + r.stderr);
             return;
           }
-          assert(true, 'reassembled PCM decodes cleanly as s16le 16kHz mono');
+          assert(true, 'reassembled PCM decodes cleanly as s16le 8kHz mono');
           return ffprobeDuration(wavPath);
         }).then(function (roundTripDuration) {
           var expectedMs = Math.round(sourceDuration * 1000);

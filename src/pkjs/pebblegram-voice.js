@@ -44,26 +44,30 @@
     '16kHz_16bit': 3
   };
 
-  // Default target: 16kHz 16-bit signed mono. 32KB/s — the emery speaker
-  // (and its OS resampler) handles this fine and it doubles the audible
-  // bandwidth vs 8kHz (4kHz Nyquist), which matters once the resampler
-  // stops aliasing. Chunk stays 800B (25ms @ 16kHz) so AppMessage framing
-  // and the C spill buffer are untouched.
-  var DEFAULT_PCM_FORMAT = '16kHz_16bit';
-  var DEFAULT_SAMPLE_RATE = 16000;
+  // Default target: 8kHz 16-bit signed mono. 16KB/s over AppMessage =
+  // 10 chunks/s at 1600B — well inside the BLE envelope (the OS converts
+  // to 16kHz 16-bit internally with a halfband cubic upsample, so 8k input
+  // is the DESIGNED path; the 8KB kernel ring holds 512ms @ 8k vs 256ms @
+  // 16k, and underrun inserts SILENCE = the crackle). 16kHz_16bit would
+  // need 40 chunks/s and halved jitter headroom — that made crackle worse.
+  var DEFAULT_PCM_FORMAT = '8kHz_16bit';
+  var DEFAULT_SAMPLE_RATE = 8000;
   var DEFAULT_BIT_DEPTH = 16;
 
-  // 800 bytes of 16-bit PCM = 400 samples = 50ms @ 8kHz, 25ms @ 16kHz.
-  // Under APP_INBOX_SIZE (2048) once envelope fields are accounted for.
-  var DEFAULT_VOICE_CHUNK_BYTES = 800;
+  // 1600 bytes of 16-bit PCM = 800 samples = 100ms @ 8kHz. Bigger chunks
+  // than the original 800B halve the AppMessage rate (10/s vs 20/s) —
+  // fewer BLE round-trips = fewer underrun windows. Soundboard (a shipping
+  // speaker app) uses 2048B; our inbox is 2048 so 1600B leaves envelope
+  // headroom for the keys.
+  var DEFAULT_VOICE_CHUNK_BYTES = 1600;
 
-  // ~1.9 MB upper bound on a single voice stream = 60s of 16kHz 16-bit PCM
-  // (32 KB/s at 16kHz_16bit). Telegram voice notes are typically 1-60s; 60s
-  // of Opus is ~120KB on the wire but decodes to ~1.9MB PCM. Larger
+  // 960 KB upper bound on a single voice stream = 60s of 8kHz 16-bit PCM
+  // (16 KB/s). Telegram voice notes are typically 1-60s; 60s
+  // of Opus is ~120KB on the wire but decodes to ~960KB PCM. Larger
   // messages get truncated. The watch buffers one stream at a time; JS
   // streams chunks with backpressure from speaker_stream_write, so size is
   // not a transport problem — this cap is only a sanity bound.
-  var DEFAULT_VOICE_MAX_BYTES = 1920000;
+  var DEFAULT_VOICE_MAX_BYTES = 960000;
 
   // ---- Anti-aliased windowed-sinc resampler --------------------------------
   // The old resampleLinear() had NO low-pass: decimating 24/48kHz audio to

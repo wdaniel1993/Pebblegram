@@ -64,8 +64,8 @@
 #define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
 // Voice playback: PebbleOS speaker_stream_* owns the 8KB PCM ring; we just feed
-// it from the AppMessage inbox. Format is 16kHz/16bit/mono (PCM value
-// 3 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
+// it from the AppMessage inbox. Format is 8kHz/16bit/mono (PCM value
+// 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
 // verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
 // Only emery (Time 2) and flint (Pebble 2 Duo) define PBL_SPEAKER — basalt,
 // diorite, chalk and gabbro (Round 2) have NO physical speaker. Everything
@@ -76,8 +76,8 @@
 #else
 #define HAS_SPEAKER 0
 #endif
-#define VOICE_DEFAULT_VOLUME 70
-#define VOICE_EXPECTED_FORMAT 3
+#define VOICE_DEFAULT_VOLUME 45
+#define VOICE_EXPECTED_FORMAT 2
 #define VOICE_POLL_MS 50
 #define VOICE_DRAIN_RETRY_MS 8
 #define VOICE_STALL_MS 10000
@@ -1116,10 +1116,10 @@ static bool find_message_by_voice_token(const char *token, Message **out_message
 }
 
 // Re-feed any chunk tail the OS ring couldn't accept. The spill buffer holds
-// at most one chunk (≤ ~800B; the JS framing default in
+// at most one chunk (≤ 1600B — the JS framing default in
 // DEFAULT_VOICE_CHUNK_BYTES). The drain timer fires at VOICE_DRAIN_RETRY_MS
 // when speaker_stream_write returned less than the chunk size.
-static uint8_t s_voice_spill[1024];
+static uint8_t s_voice_spill[2048];
 static int s_voice_spill_len;
 static int s_voice_spill_offset;
 
@@ -1231,7 +1231,7 @@ static void write_voice_chunk(const uint8_t *data, int len) {
   int remaining = len - (int)written;
   if (remaining > (int)sizeof(s_voice_spill)) {
     // Chunk larger than the spill can hold; drop the tail. Should not happen
-    // with the JS default of 800B chunks.
+    // with the JS default of 1600B chunks.
     remaining = (int)sizeof(s_voice_spill);
   }
   memcpy(s_voice_spill, data + written, remaining);
