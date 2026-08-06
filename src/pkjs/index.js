@@ -43,6 +43,14 @@ var sending = false;
 var messageStore = {};
 var messageStoreNewest = {};
 var messageHistoryStore = {};
+// Thread-scoped message rows: getThreadMessages() sends rows to the watch
+// but (unlike the chat path) never writes messageStore[chatId], so
+// storedMessage() looked up the TOPIC-LIST rows and failed for every
+// message inside a thread — Speak Message / Play Voice / View Context all
+// returned "not found" in threaded chats (the "speak sometimes doesn't
+// work on replies" report; in a threaded chat every message is a reply).
+// Keyed "chatId:threadId" so the flat store stays the topic list.
+var threadMessageStore = {};
 var oldestComplete = {};
 var newestComplete = {};
 var prefetching = {};
@@ -1485,6 +1493,17 @@ function storedMessage(chatId, messageId) {
       return rows[i];
     }
   }
+  // Threaded chats keep their message rows in a thread-scoped store (the
+  // flat store holds the topic list) — without this fallback every Speak /
+  // Play Voice / View Context inside a thread returned "not found".
+  if (currentThreadId) {
+    var threadRows = threadMessageStore[String(chatId || '') + ':' + String(currentThreadId)] || [];
+    for (var j = 0; j < threadRows.length; j += 1) {
+      if (String(threadRows[j].id) === String(messageId)) {
+        return threadRows[j];
+      }
+    }
+  }
   return null;
 }
 
@@ -1801,6 +1820,12 @@ function getThreadMessages(chatId, threadId) {
     currentChatId = chatId;
     currentChatSignature = messageSignature(rows);
     markRead(chatId);
+    // Keep thread rows reachable by storedMessage() (Speak Message, Play
+    // Voice, View Context): the flat messageStore[chatId] holds the TOPIC
+    // LIST for threaded chats, so thread messages live in their own
+    // chatId:threadId store. Without this, every Speak inside a thread
+    // failed with "Message not loaded".
+    threadMessageStore[String(chatId || '') + ':' + String(threadId)] = rows;
     sendMessageRows(rows, chatId, 'initial');
   }).catch(function(err) {
     delete threadLoadPromises[key];
