@@ -50,13 +50,18 @@ chats are out of scope.
 
 ## Settings
 
-The app includes `src/pkjs/config.html` for bridge URL and canned replies.
-The SDK can invoke it with:
+The app's settings page is **self-hosted at `pgjs/config.html`** and served from
+GitHub Pages (`https://wdaniel1993.github.io/Pebblegram/pgjs/config.html`) —
+that URL is baked into `src/pkjs/index.js` as `TELEGRAM_SETTINGS_PAGE_URL`, so
+the page ships independently of the PBW and can be fixed without a watch
+reinstall. It handles credentials, the login-code/password stages, canned
+replies, and the TTS voice picker.
+
+`src/pkjs/config.html` is the upstream emulator page (bridge URL + canned
+replies for `pebble emu-app-config`):
 
 ```sh
 pebble emu-app-config --emulator emery --file src/pkjs/config.html
 ```
 
-This environment does not currently have a browser installed, so the command can
-start the emulator-side configuration callback but cannot display the page here.
 The page itself is static HTML and is ready for the Core Devices app flow.

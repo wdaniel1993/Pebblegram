@@ -7,11 +7,12 @@ the voice-message feature protocol, and the pitfalls that cost real time.
 
 Pebblegram v3.5 (upstream: `TomBolger/Pebblegram`) — a Telegram client for
 Pebble smartwatches: C watch app (`src/c/Pebblegram.c`) ↔ AppMessage ↔
-PebbleKit JS on the phone (`src/pkjs/`) running GramJS (MTProto, user
-session; no companion app). This repo (fork `wdaniel1993/Pebblegram`) is the
-**Pebblegram AI** fork — voice-message playback, threaded bot chats, teleproto
-MTProto engine (layer 228), self-hosted settings page on GitHub Pages, and
-the AI-focused rebrand. All work happens on `main`.
+PebbleKit JS on the phone (`src/pkjs/`) running **teleproto** (MTProto, layer
+228, user session; migrated from GramJS 2026-08-05; no companion app). This
+repo (fork `wdaniel1993/Pebblegram`) is the **Pebblegram AI** fork —
+voice-message playback, threaded bot chats, TTS "Speak Message", teleproto
+engine, self-hosted settings page on GitHub Pages, and the AI-focused
+rebrand. All work happens on `main`.
 
 **License: upstream has NO license file. Never publish a fork as a standalone
 project. Contribute via issue first, then PR upstream.**
@@ -42,23 +43,26 @@ Install on device: `pebble install --emulator basalt` (QEMU) or
   streaming state machines. `include/` + `build/include/` are generated.
 - **Phone side (PKJS):** `src/pkjs/index.js` (dispatcher) + `pgjs/`
   (`telegram.js`, `backend.js`, `auth.js`, `cache.js`, `image.js`,
-  `gramjs.bundle.js`, `codecs.bundle.js`, `shims/`). Runtime: legacy WebView,
-  `target: es2015`, shims for crypto/fs/net/tls/stream/events/util/path/os/
-  assert/constants/socks/websocket. **No native fetch, no fs, no
-  child_process** → codecs must be WASM/asm.js or pure JS. `codecs.bundle.js`
-  = JPEG/UPNG only; audio decoding (Opus) is added separately
-  (candidate: `opus-decoder` eshaz/wasm-audio-decoders, MIT, ~200KB).
+  `gramjs.bundle.js` (teleproto engine bundle), `codecs.bundle.js`,
+  `shims/`, `vendor/` (ES5-vendored decoders), `tts.js`). Runtime: legacy
+  WebView, `target: es2015`, shims for crypto/fs/net/tls/stream/events/
+  util/path/os/assert/constants/socks/websocket. **No native fetch, no
+  global `require`, no child_process** — codecs must be WASM/asm.js or pure
+  JS; node builtins (`buffer`/`crypto`) are webpack EXTERNALS and must never
+  be touched at runtime (see TTS section). `codecs.bundle.js` = JPEG/UPNG
+  only; audio decoding (Opus, MP3) is vendored separately (`opus-decoder`,
+  `mpg123-decoder` — eshaz/wasm-audio-decoders family, ES5-transpiled).
 - **Message keys:** `package.json` → `pebble.messageKeys` (single source of
   truth). Voice keys: `VoiceToken, VoiceDuration, VoiceSize, VoiceSampleRate,
   VoiceFormat, VoiceData, VoiceSeq, VoiceTransferId, VoiceDone, VoiceError,
-  VoiceAction`.
+  VoiceAction`. TTS: `tts_status` rides `Type`/`MessageId`/`Text`.
 - **Test bridge:** `tools/bridge.py` — mock HTTP backend (no credentials) or
   Telethon mode via `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`/`TELEGRAM_PHONE`.
   Mirror the watch↔phone contract there when adding message types.
 
-## Voice-message protocol (Phase A, playback)
+## Voice-message protocol (Phase A, playback — DONE, user-confirmed)
 
-1. JS fetches voice file via GramJS → decodes **OGG Opus → 8kHz mono s16 PCM**
+1. JS fetches voice file via teleproto → decodes **OGG Opus → 8kHz mono s16 PCM**
    → builds 800B frames → streams over AppMessage as
    `VoiceData` + `VoiceSeq` (monotonic from 0) + `VoiceTransferId`;
    `VoiceDone` terminates. Chunk envelope also carries `Type`, `MessageId`,
@@ -75,6 +79,34 @@ Install on device: `pebble install --emulator basalt` (QEMU) or
 4. JS dispatcher commands: `sendVoice`, `get_voice`, `cancel_voice`,
    `cancelAllQueuedTransfers`; `messagePayload` carries
    `voice_token`/`voice_duration_ms`.
+
+## TTS "Speak Message" (v1.0.10→v1.0.18, DONE, user-confirmed working)
+
+- Action: message menu → "Speak Message" (HAS_SPEAKER-gated, text-only
+  messages); streams over the SAME voice channel (voice_start/voice/
+  voice_done) — zero new C plumbing beyond the status pill.
+- **Backend selection by UA (`speakFrames` in `pgjs/tts.js`):** `Edg/` in the
+  WebView UA → edge-tts WebSocket (neural voices); anything else → **Google
+  Translate TTS over XHR** (`translate.google.com/translate_tts`, any UA,
+  free, no key, chunked at 180 chars, concatenated MP3s decode gap-free).
+  Direct XHR first, `api.allorigins.win` CORS proxy fallback. edge-tts can
+  NEVER work from a stock Android/iOS WebView (it rejects non-Edge UAs with
+  close 1006 and the native WebSocket cannot set headers) — don't "fix" this.
+- **WebView landmines (each cost a version):** (1) node builtins
+  (`buffer`/`crypto`/`child_process`) are webpack EXTERNALS emitted as bare
+  `require("buffer")` — touching them at runtime throws `require is not
+  defined`; TTS's sha256 is Buffer-free (`cryptoShim.sha256Hex`, pure-JS
+  js-sha256). (2) WebSocket `binaryType` defaults to `blob` (async reads) —
+  set `'arraybuffer'` AND wait pending FileReader reads before assembling
+  MP3s. (3) Never settle on `ws.onerror` — browsers follow with `onclose`
+  carrying the diagnostic code.
+- C-side status pill: Synthesizing (live stage labels via `tts_status`
+  AppMessage) → "Speaking 0:03 / 0:12" + progress bar → readable 2-line
+  error ("Speak failed: <detail>", 12s). 30s stall → "stuck at <stage>".
+- v1.0.18: "Stop Speaking" action replaces "Speak Message" while a
+  synthesis/playback is in flight (same `cancel_voice` path).
+- Voices: settings page voice picker (7 edge-tts voices; on the Google
+  backend the choice selects the language). Default `en-US-JennyNeural`.
 
 ### Verified facts (SDK 4.17 headers, 2026-08)
 
@@ -107,26 +139,33 @@ Install on device: `pebble install --emulator basalt` (QEMU) or
 
 ## Project state
 
-- **Phase A (playback) — DONE, compiles clean on all 4 platforms.**
-  JS side verified by `tools/test-voice.js` (22/22, real ffmpeg OGG Opus →
-  8kHz s16 → 800B frames, 0.3% drift). C side reviewed + SDK-built; on-device
-  playback verification pending (watch hardware).
-- **Threaded bot chats (Telegram "threads" mode) — implemented.** JS detects
-  thread-mode chats (history = roots with `MessageReplies` counts), sends
-  `ThreadList` rows; watch renders a thread list (sender + preview + » count),
-  SELECT opens a thread via `open_thread` → `getMessages(chatId, {replyTo:
-  root})` (GetReplies), BACK returns to the list. Thread-scoped pagination via
-  `ThreadId` on older/newer; sends inside a thread reply to the root. Flat
-  chats untouched (detection requires `thread_replies > 0` on the first page).
-  On-device verification pending (Daniel's threaded bot chats).
+- **Phase A (playback) — DONE, compiles clean on all 4 platforms, works
+  on-device (Daniel confirmed).** JS verified by `tools/test-voice.js`
+  (22/22, real ffmpeg OGG Opus → 8kHz s16 → 800B frames, 0.3% drift) +
+  `scripts/verify-voice-pipeline-real.js` (real decode, peak 0.2265).
+- **TTS "Speak Message" — DONE, works on-device (Daniel: "Works well!").**
+  Google TTS backend for stock WebViews (UA-based selection), edge-tts for
+  Edge UAs. Status pill + stage tracer + Stop Speaking. See TTS section.
+- **Threaded bot chats (Telegram "threads" mode) — DONE, works on-device
+  (Daniel confirmed "It works.").** MenuLayer thread list from
+  `messages.getForumTopics` (detection + list), SELECT opens a thread via
+  `open_thread`, BACK returns, "New chat" row creates a topic via
+  `CreateForumTopic` + auto-opens it. Thread-scoped pagination via
+  `ThreadId` on older/newer. Flat chats untouched. Keys:
+  `ThreadCount/ThreadId/ThreadList`. Full wire contract:
+  `references/threaded-bot-chats.md` (skill).
+- **Media downloads (photos/voice/avatars) — DONE, works (v1.0.8 fs-shim
+  fix).** Root cause was teleproto `closeWriter()` `instanceof fs.WriteStream`
+  with `fs` aliased to an empty shim.
 - **Phase B (recording)** — blocked on upstream
   `coredevices/PebbleOS` **#1641** (on-device Speex recording + SDK API;
   `audio_recording_list()`/`audio_recording_transcribe()`). After it lands:
-  watch records Speex → PKJS decodes → encodes OGG Opus → GramJS send.
+  watch records Speex → PKJS decodes → encodes OGG Opus → teleproto send.
   Do not design Phase B around mic capture until #1641 ships.
-- Open PR-stage questions: drain-timer cadence needs hardware measurement;
-  voice_start format-mismatch policy; voice+image coexistence under RAM
-  pressure.
+- Backlog: long-press SELECT info screens (Daniel-approved design: chat
+  details in chat list, message details in message view); full-screen debug
+  overlay (Daniel-proposed; corner overlay removed at v1.0.3, `debug_info`
+  APP_LOG channel retained).
 - Upstream issue/PR: draft in `docs/upstream-issue.md`; post the issue only
   after Phase A proves out on hardware, linking this repo.
 

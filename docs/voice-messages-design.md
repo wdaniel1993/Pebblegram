@@ -2,11 +2,31 @@
 
 Status: Draft · Owner: Eve (orchestrator) + coder profile · Target: PR to TomBolger/Pebblegram
 
-## Implementation status (2026-08-03)
+## Implementation status (2026-08-06)
 
-- **JS side: DONE + COMMITTED** (on `main`): message keys added to `package.json` (SDK generates `message_keys.auto.h` at build time; `tools/gen-message-keys.py` can regenerate it for SDK-less builds); `src/pkjs/pebblegram-voice.js` (decoder interface, resampler, PCM converters, frame builder, streamer); `src/pkjs/pgjs/telegram.js` + `backend.js` (voice download + `voice_token`/`voice_duration_ms`); `src/pkjs/index.js` dispatcher wiring (`sendVoice`, `get_voice`/`cancel_voice`, `cancelAllQueuedTransfers`, `messagePayload` voice fields); `tools/test-voice.js` — **22/22 passing** (real ffmpeg-generated OGG Opus → 8kHz s16 → 800B frames, 0.3% drift).
-- **C side: DONE + COMMITTED** (2 commits, via OpenCode): `ff7fc41` voice playback state machine (fixed duplicate `write_voice_chunk` — kept void/spill version; forward decls for `schedule_voice_drain_retry` + `schedule_voice_poll`), `0c9cc51` play/stop UI (voice pill bubble with duration, `ActionItemPlayVoice`/`ActionItemStopVoice`, `cancel_voice` + `speaker_stop` wiring).
-- **SDK build: WORKING (2026-08-04, Eve)** — Pebble SDK 4.17 installed via `uv tool install pebble-tool` + `pebble sdk install latest`; `pebble build` passes clean on all 4 platforms (basalt/diorite/emery/gabbro), `build/pebblegram.pbw` produced. `speaker_stream_*` signatures confirmed by real SDK headers (open→bool, write→uint32 bytes-written). Basalt/diorite stub the speaker API to `(0)` — voice UI degrades gracefully there. On-device playback verification still pending (Daniel's hardware).
+- **Voice playback (Phase A): DONE + WORKING ON-DEVICE (Daniel confirmed).**
+  OGG Opus → PCM pipeline in `src/pkjs/pebblegram-voice.js` (vendored
+  `opus-decoder` ES5 + OGG demux), streamed as 800B AppMessage frames to the
+  watch speaker (`speaker_stream_open/write`, 8kHz_16bit). Hermetic proof:
+  `tools/test-voice.js` (22/22) + `scripts/verify-voice-pipeline-real.js`.
+  Media-download root cause (v1.0.8): teleproto `closeWriter()` instanceof on
+  an empty fs shim — fixed with a real `WriteStream` shim class.
+- **TTS "Speak Message": DONE + WORKING ON-DEVICE (Daniel: "Works well!").**
+  `src/pkjs/pgjs/tts.js` — backend auto-selected by UA: edge-tts WebSocket
+  (Edge UAs only; the stock WebView rejects at handshake with close 1006
+  because it can't send an `Edg/` UA) vs **Google Translate TTS over XHR**
+  (any UA, chunked 180 chars, concatenated MP3 decode gap-free). Status pill
+  with live stage labels + progress bar + readable errors; "Stop Speaking"
+  action (v1.0.18). Full history: `references/edge-tts-for-pebblegram.md`
+  (skill) — includes the three WebView landmines (node-builtin externals →
+  Buffer-free sha256; WS binaryType blob race; onerror/onclose ordering).
+- **Threaded bot chats: DONE + WORKING ON-DEVICE (Daniel: "It works.").**
+  Forum-topic detection via `messages.getForumTopics`, MenuLayer thread list,
+  topic creation from "New chat". See skill references.
+- **SDK build: WORKING** — `pebble build` passes clean on all 4 platforms
+  (basalt/diorite/emery/gabbro) in ~4s. Version line: v1.0.18 (2026-08-06),
+  PBW ~3.2MB. Basalt/diorite stub the speaker API to `(0)` — TTS/voice UI is
+  compiled out there via `HAS_SPEAKER`.
 
 ## Verified facts (2026-08-03, from coredevices/PebbleOS HEAD)
 
@@ -18,10 +38,13 @@ Status: Draft · Owner: Eve (orchestrator) + coder profile · Target: PR to TomB
 
 ## Open questions (PR stage)
 
-- C ring-buffer drain cadence (5-10ms timer?) — needs hardware measurement of `speaker_stream_write` consumption.
+- C ring-buffer drain cadence (5-10ms timer?) — hardware-measured during
+  playback; works, but the exact cadence tuning could still be tightened.
 - `voice_start` format-mismatch policy on the watch (accept/log/fail).
-- Voice+image coexistence under basalt RAM pressure (suspend image decode while playing?).
-- On-device playback verification (real Time 2 / Round 2 or emulator) + SDK build.
+- Voice+image coexistence under basalt RAM pressure (suspend image decode
+  while playing?).
+- TTS: Google Translate TTS is an unofficial endpoint (could break/rate-limit
+  someday); a self-hosted TTS relay would be the robust long-term fix.
 
 
 ## Goal
@@ -35,18 +58,18 @@ Bring Telegram voice messages to Pebblegram on the revival watches (Time 2 / `em
 
 ```
 Watch app (C, src/c/Pebblegram.c)  ←AppMessage→  PebbleKit JS on phone (src/pkjs/*)
-                                                    └─ GramJS (MTProto, user session) ←→ Telegram
+                                                    └─ teleproto (MTProto, layer 228) ←→ Telegram
 ```
 
-No separate companion app. PKJS runs inside the official Pebble/Rebble mobile app. Telegram voice messages are **OGG Opus**; the new PebbleOS recording API uses **Speex**.
+No separate companion app. PKJS runs inside the official Pebble/Rebble mobile app. Telegram voice messages are **OGG Opus**; the new PebbleOS recording API uses **Speex**. TTS (Speak Message) rides the same voice channel, synthesized on the phone (edge-tts for Edge UAs, Google Translate TTS otherwise).
 
 ## Phase A — Playback (no firmware dep)
 
 ### Phone side (PKJS)
-1. GramJS already surfaces `mediaVoice` on messages. Download via `client.downloadMedia(message.voice)` → OGG Opus bytes.
-2. Decode Opus → PCM. Constraints: PKJS is the Pebble app's legacy JS engine (old WebView/JSCore — verify actual feature level; GramJS already uses typed arrays + promises heavily, so ES2015-ish is safe; **WASM availability must be verified** — if unavailable, use an asm.js/pure-JS Opus decoder, e.g. libopus.js asm.js build or opus-recorder's decoder path).
-3. Resample to the watch's supported `SpeakerPcmFormat` (verify `src/fw/applib/ui/speaker.h` → `speaker_pcm_format.h` in coredevices/PebbleOS for supported rates; likely 8k/16k/22.05k variants — pick the lowest common rate to save bandwidth; watch is mono).
-4. Stream PCM to the watch as a chunked AppMessage sequence (new message type + keys, see below).
+1. teleproto already surfaces `mediaVoice` on messages. Download via `client.downloadMedia(message.voice)` → OGG Opus bytes (v1.0.8 fixed the cross-DC download crash).
+2. Decode Opus → PCM. Vendored `opus-decoder` (eshaz/wasm-audio-decoders, ES5-transpiled for the webpack-1 bundler; OGG demux + OpusHead/OpusTags strip; WASM embedded — no fetch).
+3. Resample to the watch's `SpeakerPcmFormat` (8kHz_16bit mono chosen; 16KB/s).
+4. Stream PCM to the watch as a chunked AppMessage sequence (800B frames, `VoiceSeq`/`VoiceData`/`VoiceDone`).
 
 ### Watch side (C)
 1. New incoming message type `voice` with a bubble affordance ("▶ play").

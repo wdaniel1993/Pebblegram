@@ -82,7 +82,7 @@ For local testing with embedded API credentials, keep them in an ignored environ
 - `src/c/Pebblegram.c`: watch UI, AppMessage handling, scrolling, image decoding, actions, dictation
 - `src/pkjs/index.js`: PebbleKit JS runtime and watch communication
 - `src/pkjs/pebblegram-voice.js`: voice message decoding (OGG Opus → PCM) and streaming
-- `src/pkjs/config.html`: Pebble settings page
+- `pgjs/config.html`: self-hosted settings page (served from GitHub Pages; voice picker, credentials, canned replies) — the app's configuration URL points here, so `src/pkjs/config.html` (upstream's emulator page) is legacy
 - `src/pkjs/pgjs/`: Telegram client, auth, settings storage, and image processing
 - `resources/images/menu_icon.png`: launcher/app-list icon bundled into the PBW
 - `store/screenshots/`: store listing screenshots

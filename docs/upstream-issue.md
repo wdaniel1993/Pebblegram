@@ -13,14 +13,15 @@ The revival watches (Time 2 / emery, Round 2 / gabbro) ship with mic + speaker. 
 ### Proposal — two phases
 
 **Phase A: Playback (no firmware dependency, can land now)**
-- Incoming `mediaVoice` → download via GramJS → decode OGG Opus → PCM in the PKJS runtime
+- Incoming `mediaVoice` → download via teleproto → decode OGG Opus → PCM in the PKJS runtime
 - Stream PCM to the watch over AppMessage (chunked, new message keys `VoiceSeq`/`VoiceData`/`VoiceDone`)
 - Play on the watch speaker via the new public `speaker_stream_open/write/close` API (PebbleOS `applib/ui/speaker.h`)
 - UI: voice bubble with ▶ play / ■ stop, duration from MTProto
+- Bonus: "Speak Message" — synthesize text messages to speech on the phone (edge-tts / Google Translate TTS) and stream over the same channel
 
 **Phase B: Recording (after PebbleOS mic API lands)**
 - PebbleOS issue coredevices/PebbleOS#1641 ("voice: add on-device audio recording with playback and SDK API", PR by julpel8, in review) will expose on-device mic recording (Speex) to apps
-- Compose menu gains "Voice message": record on watch → stream Speex to PKJS → decode → encode OGG Opus → send via GramJS `sendFile(voice)`
+- Compose menu gains "Voice message": record on watch → stream Speex to PKJS → decode → encode OGG Opus → send via teleproto `sendFile(voice)`
 - This doubles as the "companion pkjs side that receives/decodes/streams audio from watch" that @ericmigi asked for in #1641
 
 ### Why now

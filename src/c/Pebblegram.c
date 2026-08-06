@@ -154,7 +154,8 @@ typedef enum {
   ActionItemConfirmCancel,
   ActionItemPlayVoice,
   ActionItemStopVoice,
-  ActionItemSpeakMessage
+  ActionItemSpeakMessage,
+  ActionItemStopSpeaking
 } ActionItem;
 
 typedef struct {
@@ -5847,7 +5848,13 @@ static ActionMenuLevel *native_build_main_level(void) {
   }
   // TTS: speak any text message aloud (edge-tts on the phone side).
   if (selected_message_has_text()) {
-    native_add_action(level, "Speak Message", ActionItemSpeakMessage, -1);
+    if (s_tts_state != TTS_STATE_IDLE) {
+      // A synthesis/playback is in flight: offer to stop it instead of
+      // stacking another stream (single-stream-per-watch on the JS side).
+      native_add_action(level, "Stop Speaking", ActionItemStopSpeaking, -1);
+    } else {
+      native_add_action(level, "Speak Message", ActionItemSpeakMessage, -1);
+    }
   }
 #endif
   if (s_messages[s_selected_message].outgoing) {
@@ -6093,12 +6100,25 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
                       has_selected_message() ? s_messages[s_selected_message].id : NULL);
       }
       break;
+    case ActionItemStopSpeaking:
+      // Cancel an in-flight TTS synthesis/playback: tell JS to abort the
+      // stream (same cancel_voice command the voice-note stop uses; the
+      // JS side checks requestSeq staleness so the synthesis result is
+      // discarded), then hard-stop the local PCM ring.
+      send_command("cancel_voice", s_current_chat_id, NULL, NULL,
+                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      cancel_active_voice();
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+      break;
 #else
     // No speaker: the actions are never added to any menu, but the enum
     // cases must exist for -Werror=switch.
     case ActionItemPlayVoice:
     case ActionItemStopVoice:
     case ActionItemSpeakMessage:
+    case ActionItemStopSpeaking:
       break;
 #endif
     case ActionItemGoToBottom:
