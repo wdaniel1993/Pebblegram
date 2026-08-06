@@ -67,6 +67,15 @@
 // it from the AppMessage inbox. Format is fixed to 8kHz/16bit/mono (PCM value
 // 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
 // verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
+// Only emery (Time 2) and flint (Pebble 2 Duo) define PBL_SPEAKER — basalt,
+// diorite, chalk and gabbro (Round 2) have NO physical speaker. Everything
+// that needs speaker OUTPUT (voice-note playback, TTS) is compiled out there;
+// mic input (dictation) is unaffected (all revival platforms have mics).
+#ifdef PBL_SPEAKER
+#define HAS_SPEAKER 1
+#else
+#define HAS_SPEAKER 0
+#endif
 #define VOICE_DEFAULT_VOLUME 70
 #define VOICE_EXPECTED_FORMAT 2
 #define VOICE_POLL_MS 50
@@ -391,7 +400,9 @@ static void schedule_voice_drain_retry(void);
 static void schedule_voice_poll(void);
 static void reset_voice_transfer_state(void);
 static void cancel_active_voice(void);
+#if HAS_SPEAKER
 static bool send_voice_request(const char *message_id);
+#endif
 static bool find_message_by_voice_token(const char *token, Message **out_message);
 static void request_older_messages(bool silent);
 static void request_newer_messages(bool silent);
@@ -1217,6 +1228,7 @@ static void schedule_voice_poll(void) {
                                            voice_poll_timer_callback, NULL);
 }
 
+#if HAS_SPEAKER
 static bool send_voice_request(const char *message_id) {
   if (!message_id || !message_id[0]) {
     return false;
@@ -1234,6 +1246,7 @@ static bool send_voice_request(const char *message_id) {
   }
   return true;
 }
+#endif
 
 static bool message_needs_image(Message *message) {
   return message && message->image_placeholder && message->image_token[0] &&
@@ -2326,7 +2339,10 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
   } else {
     message->voice_token[0] = '\0';
   }
-  message->voice_placeholder = message->voice_token[0] != '\0';
+  // No physical speaker (basalt/diorite/gabbro): never mark voice rows —
+  // the pill, Play/Stop actions, and get_voice requests all derive from
+  // voice_placeholder, so one gate hides every speaker-output surface.
+  message->voice_placeholder = HAS_SPEAKER && message->voice_token[0] != '\0';
   int voice_duration = tuple_int(iter, MESSAGE_KEY_VoiceDuration, 0);
   if (voice_duration > 0) {
     message->voice_duration_ms = (uint32_t)PG_MIN(voice_duration, 600000);
@@ -4097,9 +4113,11 @@ static bool selected_message_has_voice(void) {
   return has_selected_message() && s_messages[s_selected_message].voice_placeholder;
 }
 
+#if HAS_SPEAKER
 static bool selected_message_voice_is_playing(void) {
   return selected_message_has_voice() && s_messages[s_selected_message].voice_playing;
 }
+#endif
 
 static bool selected_message_context_is_forward(void) {
   return selected_message_has_context() &&
@@ -5561,6 +5579,7 @@ static ActionMenuLevel *native_build_main_level(void) {
     native_add_action(level, selected_message_context_is_forward() ? "View Forward" : "View Quote",
                       ActionItemFullContext, -1);
   }
+#if HAS_SPEAKER
   if (selected_message_has_voice()) {
     if (selected_message_voice_is_playing()) {
       native_add_action(level, "Stop Voice", ActionItemStopVoice, -1);
@@ -5568,6 +5587,7 @@ static ActionMenuLevel *native_build_main_level(void) {
       native_add_action(level, "Play Voice", ActionItemPlayVoice, -1);
     }
   }
+#endif
   if (s_messages[s_selected_message].outgoing) {
     native_add_action(level, "Edit Message", ActionItemEdit, -1);
   }
@@ -5777,6 +5797,7 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
       s_full_text_scroll_offset = 0;
       native_defer_action_mode(ActionMenuFullText);
       break;
+#if HAS_SPEAKER
     case ActionItemPlayVoice:
       if (!selected_message_has_voice()) {
         break;
@@ -5797,6 +5818,13 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
         layer_mark_dirty(s_messages_root);
       }
       break;
+#else
+    // No speaker: the actions are never added to any menu, but the enum
+    // cases must exist for -Werror=switch.
+    case ActionItemPlayVoice:
+    case ActionItemStopVoice:
+      break;
+#endif
     case ActionItemGoToBottom:
       go_to_bottom();
       break;
