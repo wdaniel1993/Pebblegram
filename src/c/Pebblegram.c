@@ -241,6 +241,7 @@ static const char *const EMOJI_REPLY_CHOICES[] = {
 
 static Window *s_main_window;
 static MenuLayer *s_chat_menu;
+static MenuLayer *s_thread_menu;
 static TextLayer *s_status_layer;
 static Layer *s_messages_root;
 static PropertyAnimation *s_chat_menu_animation;
@@ -1938,6 +1939,146 @@ static void chat_menu_select_callback(struct MenuLayer *menu_layer, MenuIndex *c
   request_messages(s_current_chat_id);
 }
 
+// ---------------------------------------------------------------------------
+// Thread list (forum topics): a plain MenuLayer list shown in place of the
+// message bubble view when a chat is detected as threaded. Each row is one
+// forum topic; the last row is the "New chat" (create topic) composer.
+// ---------------------------------------------------------------------------
+static int thread_menu_row_count(void) {
+  // s_message_count rows for topics + 1 "New chat" row.
+  return s_message_count + 1;
+}
+
+static uint16_t thread_menu_get_num_sections_callback(MenuLayer *menu_layer, void *data) {
+  return 1;
+}
+
+static uint16_t thread_menu_get_num_rows_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  return (uint16_t)thread_menu_row_count();
+}
+
+static int16_t thread_menu_get_header_height_callback(MenuLayer *menu_layer, uint16_t section_index, void *data) {
+  return 0;
+}
+
+static int16_t thread_menu_get_cell_height_callback(struct MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  return ROUND_UI ? 40 : 44;
+}
+
+static void thread_menu_draw_row_callback(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index, void *data) {
+  GRect bounds = layer_get_bounds(cell_layer);
+  GRect safe = round_safe_rect(bounds);
+  bool selected = menu_layer_is_index_selected(s_thread_menu, cell_index);
+  int row = (int)cell_index->row;
+
+  graphics_context_set_fill_color(ctx, CHAT_BG);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  if (row >= s_message_count) {
+    // "New chat" compose row: create a new topic.
+    if (selected) {
+      graphics_context_set_fill_color(ctx, APP_COLOR_LIGHT);
+      graphics_fill_rect(ctx, GRect(safe.origin.x - 4, 1, safe.size.w + 8, bounds.size.h - 3),
+                         ROUND_UI ? 5 : 0, GCornersAll);
+    }
+    graphics_context_set_text_color(ctx, selected ? GColorWhite : APP_COLOR);
+    graphics_draw_text(ctx, "New chat", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(safe.origin.x + 8, (bounds.size.h - 20) / 2, safe.size.w - 16, 20),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    return;
+  }
+
+  if (selected) {
+    graphics_context_set_fill_color(ctx, APP_COLOR_LIGHT);
+    graphics_fill_rect(ctx, GRect(safe.origin.x - 4, 1, safe.size.w + 8, bounds.size.h - 3),
+                       ROUND_UI ? 5 : 0, GCornersAll);
+  }
+  graphics_context_set_stroke_color(ctx, GColorLightGray);
+  graphics_draw_line(ctx, GPoint(safe.origin.x, bounds.size.h - 1),
+                     GPoint(safe.origin.x + safe.size.w, bounds.size.h - 1));
+
+  const Message *message = &s_messages[row];
+  // Topic title: the JS puts the topic title in sender. Fall back to the
+  // message text if the title is empty.
+  const char *title = message->sender[0] ? message->sender : (message->text[0] ? message->text : "Topic");
+  int count_w = message->thread_replies > 0 ? 36 : 0;
+  int text_w = safe.size.w - 12 - count_w;
+
+  graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorBlack);
+  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(safe.origin.x + 6, (bounds.size.h - 20) / 2, text_w, 20),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  if (count_w > 0) {
+    char count_text[12];
+    snprintf(count_text, sizeof(count_text), "» %d", message->thread_replies);
+    graphics_context_set_text_color(ctx, selected ? GColorWhite : GColorDarkGray);
+    graphics_draw_text(ctx, count_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(safe.origin.x + safe.size.w - count_w, (bounds.size.h - 18) / 2,
+                             count_w - 6, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+  }
+}
+
+static void thread_menu_select_callback(struct MenuLayer *menu_layer, MenuIndex *cell_index, void *data) {
+  int row = (int)cell_index->row;
+  if (s_loading_messages) {
+    show_status("Loading messages...");
+    return;
+  }
+  if (row >= s_message_count) {
+    // "New chat" row: start a new topic. Voice-dictate the first message;
+    // the confirm flow routes through send_text_message, which in thread
+    // list mode (s_thread_mode && !s_thread_root) sends create_thread.
+    s_pending_edit_message_id[0] = '\0';
+    s_pending_chat_command[0] = '\0';
+    s_pending_send_as_reply = false;
+    s_native_deferred_dictation = true;
+    start_dictation();
+    return;
+  }
+  if (row >= 0 && row < s_message_count && s_messages[row].id[0]) {
+    send_command_with_status("open_thread", s_current_chat_id, NULL, NULL,
+                             s_messages[row].id, false);
+  }
+}
+
+static void create_thread_menu(Layer *window_layer) {
+  if (s_thread_menu) {
+    return;
+  }
+  GRect bounds = layer_get_bounds(window_layer);
+  int content_y = chat_content_y();
+  int bottom_pad = chat_bottom_pad();
+  s_thread_menu = menu_layer_create(GRect(0, content_y, bounds.size.w, bounds.size.h - content_y - bottom_pad));
+  if (ROUND_UI) {
+    menu_layer_set_center_focused(s_thread_menu, false);
+  }
+  menu_layer_set_callbacks(s_thread_menu, NULL, (MenuLayerCallbacks) {
+    .get_num_sections = thread_menu_get_num_sections_callback,
+    .get_num_rows = thread_menu_get_num_rows_callback,
+    .get_header_height = thread_menu_get_header_height_callback,
+    .draw_row = thread_menu_draw_row_callback,
+    .get_cell_height = thread_menu_get_cell_height_callback,
+    .select_click = thread_menu_select_callback
+  });
+  layer_add_child(window_layer, menu_layer_get_layer(s_thread_menu));
+}
+
+static void destroy_thread_menu(void) {
+  if (s_thread_menu) {
+    menu_layer_destroy(s_thread_menu);
+    s_thread_menu = NULL;
+  }
+}
+
+static void thread_menu_reload(void) {
+  if (s_thread_menu) {
+    menu_layer_reload_data(s_thread_menu);
+    menu_layer_set_selected_index(s_thread_menu, (MenuIndex) {.row = 0, .section = 0},
+                                  MenuRowAlignNone, false);
+  }
+}
+
 static int clamp_scroll_offset(int offset) {
   if (!s_messages_root) {
     return 0;
@@ -2196,11 +2337,26 @@ static void populate_message_from_tuple(Message *message, DictionaryIterator *it
   if (tuple_int(iter, MESSAGE_KEY_ThreadList, 0) != 0) {
     s_thread_mode = true;
     s_thread_root[0] = '\0';
+    // Switch to the thread list MenuLayer; hide the message bubble layer.
+    if (s_thread_menu) {
+      layer_set_hidden(menu_layer_get_layer(s_thread_menu), false);
+      thread_menu_reload();
+    }
+    if (s_messages_root) {
+      layer_set_hidden(s_messages_root, true);
+    }
   }
   char *incoming_thread_id = tuple_cstring(iter, MESSAGE_KEY_ThreadId);
   if (incoming_thread_id && incoming_thread_id[0]) {
     copy_cstr(s_thread_root, sizeof(s_thread_root), incoming_thread_id);
     s_thread_mode = false;
+    // Inside a thread: show the message bubble layer; hide the thread list.
+    if (s_messages_root) {
+      layer_set_hidden(s_messages_root, false);
+    }
+    if (s_thread_menu) {
+      layer_set_hidden(menu_layer_get_layer(s_thread_menu), true);
+    }
   }
   // Don't reset voice_playing here — it's set/cleared by the voice state
   // machine and poll timer, not by message stream updates.
@@ -3193,6 +3349,7 @@ static void destroy_chat_view(void) {
     layer_destroy(s_messages_root);
     s_messages_root = NULL;
   }
+  destroy_thread_menu();
 }
 
 static void clear_layer_animation(PropertyAnimation **animation_ref) {
@@ -3262,6 +3419,12 @@ static void show_chat_view(void) {
   s_messages_root = layer_create(messages_from);
   layer_set_update_proc(s_messages_root, messages_root_update_proc);
   layer_add_child(window_layer, s_messages_root);
+  // Thread list MenuLayer: created here but kept hidden until a thread-list
+  // batch arrives (s_thread_mode true). It covers the same content area.
+  create_thread_menu(window_layer);
+  if (s_thread_menu) {
+    layer_set_hidden(menu_layer_get_layer(s_thread_menu), true);
+  }
   s_chat_scroll_offset = 0;
   s_chat_content_height = 0;
   recalc_message_layout();
@@ -4378,6 +4541,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_newer_anchor_id[0] = '\0';
     reset_message_stream_state();
     s_expected_rows = count;
+    // Thread list batch finished: refresh the MenuLayer with the final row
+    // count and make sure it is visible (initial selection row 0).
+    if (s_thread_mode && s_thread_menu) {
+      thread_menu_reload();
+      layer_set_hidden(menu_layer_get_layer(s_thread_menu), false);
+      if (s_messages_root) {
+        layer_set_hidden(s_messages_root, true);
+      }
+    }
     if (!loading_older && !loading_newer && s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       s_chats[s_selected_chat].unread = false;
       s_chats[s_selected_chat].unread_count = 0;
@@ -5753,18 +5925,11 @@ static void action_click_config_provider(void *context) {
 
 static void main_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   if (s_view_state == ViewStateChat) {
-    if (s_thread_mode) {
-      // Thread list: SELECT opens the highlighted thread, or the compose
-      // target at the bottom starts a NEW chat (new topic).
-      if (compose_target_is_selected()) {
-        show_action_window(ActionMenuMain);
-        return;
-      }
-      if (s_selected_message >= 0 && s_selected_message < s_message_count &&
-          s_messages[s_selected_message].id[0]) {
-        send_command_with_status("open_thread", s_current_chat_id, NULL, NULL,
-                                 s_messages[s_selected_message].id, false);
-      }
+    if (s_thread_mode && s_thread_menu) {
+      // Thread list: SELECT handled by the MenuLayer (open_thread /
+      // create_thread). MenuLayer drives its own select callback.
+      MenuIndex index = menu_layer_get_selected_index(s_thread_menu);
+      thread_menu_select_callback(s_thread_menu, &index, NULL);
       return;
     }
     show_action_window(ActionMenuMain);
@@ -5799,6 +5964,11 @@ static void main_up_click_handler(ClickRecognizerRef recognizer, void *context) 
     if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
     }
+    return;
+  }
+  if (s_view_state == ViewStateChat && s_thread_mode && s_thread_menu) {
+    // Thread list: MenuLayer scrolls its own rows.
+    menu_layer_set_selected_next(s_thread_menu, true, MenuRowAlignCenter, !repeating);
     return;
   }
   if (s_view_state != ViewStateChat || !s_messages_root || s_message_count == 0) {
@@ -5874,6 +6044,11 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
     if (s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       copy_cstr(s_chat_list_selected_id, sizeof(s_chat_list_selected_id), s_chats[s_selected_chat].id);
     }
+    return;
+  }
+  if (s_view_state == ViewStateChat && s_thread_mode && s_thread_menu) {
+    // Thread list: MenuLayer scrolls its own rows.
+    menu_layer_set_selected_next(s_thread_menu, false, MenuRowAlignCenter, !repeating);
     return;
   }
   if (s_view_state != ViewStateChat || !s_messages_root || s_message_count == 0) {
