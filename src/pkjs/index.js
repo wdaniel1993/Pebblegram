@@ -78,6 +78,7 @@ var imageTransferActive = false;
 var voiceTransferSeq = 0;
 var voiceRequestSeq = 0;
 var voiceTransferActive = false;
+var voicePaceTimer = null;
 var cancelledVoiceTransferSeq = 0;
 var messageStreamSeq = 0;
 var messageStreamTimer = null;
@@ -294,6 +295,48 @@ function sendToWatch(payload) {
   flushQueue();
 }
 
+// Voice/TTS frame pump. The watch's OS ring drains at REAL-TIME (8KB/s @
+// 8k 8-bit, 2048B = 256ms audio per chunk). ACK-paced sending alone floods
+// 2-4x faster than that (watch ACKs arrive in ~50-150ms), which fills the
+// 8KB ring after ~1s of audio and then corrupts the middle of long clips
+// via the C-side spill race (first words fine, middle garbled, last words
+// clear). Pacing: prime the ring with the first 4 chunks (1s) immediately,
+// then one chunk per VOICE_PACE_MS — EXACTLY the drain rate, so the ring
+// stays at its primed level (1s jitter buffer) instead of overflowing or
+// underrunning. Brief BLE hiccups are absorbed by the primed ring.
+var VOICE_PACE_MS = 256;   // 2048B @ 8k 8-bit = 256ms of audio
+var VOICE_PRIME_CHUNKS = 4;  // 4 x 256ms = 1s = full 8KB OS ring
+
+function sendVoiceFramesPaced(frames, isCurrent) {
+  if (!frames || !frames.length) {
+    return;
+  }
+  if (voicePaceTimer) {
+    clearTimeout(voicePaceTimer);
+    voicePaceTimer = null;
+  }
+  var i = 0;
+  // Prime: send voice_start + first few data chunks immediately so the OS
+  // ring is full before playback begins (absorbs BLE jitter up to ~1s).
+  for (; i < frames.length && i < VOICE_PRIME_CHUNKS; i += 1) {
+    sendToWatch(frames[i]);
+  }
+  function pump() {
+    voicePaceTimer = null;
+    if (!isCurrent() || i >= frames.length) {
+      return;
+    }
+    sendToWatch(frames[i]);
+    i += 1;
+    if (i < frames.length) {
+      voicePaceTimer = setTimeout(pump, VOICE_PACE_MS);
+    }
+  }
+  if (i < frames.length) {
+    voicePaceTimer = setTimeout(pump, VOICE_PACE_MS);
+  }
+}
+
 function isAvatarTransferPayload(payload) {
   var type = payloadType(payload);
   return type === 'avatar_start' || type === 'avatar' || type === 'avatar_done';
@@ -350,6 +393,10 @@ function cancelQueuedVoiceTransfers() {
   voiceRequestSeq += 1;
   cancelledVoiceTransferSeq = voiceTransferSeq;
   voiceTransferActive = false;
+  if (voicePaceTimer) {
+    clearTimeout(voicePaceTimer);
+    voicePaceTimer = null;
+  }
   if (pgjs && typeof pgjs.cancelVoiceRequests === 'function') {
     pgjs.cancelVoiceRequests();
   }
@@ -2542,9 +2589,9 @@ function sendVoice(chatId, messageId) {
     if (DEBUG_LOGS) {
       logDuration('voice decode ' + messageId, startedAt);
     }
-    for (var i = 0; i < frames.length; i++) {
-      sendToWatch(frames[i]);
-    }
+    sendVoiceFramesPaced(frames, function() {
+      return requestSeq === voiceRequestSeq && currentChatId === chatId;
+    });
   }).catch(function(err) {
     if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
       return;
@@ -2637,9 +2684,9 @@ function speakMessageInner(chatId, messageId, startedAt) {
     if (DEBUG_LOGS) {
       logDuration('tts synth ' + messageId, startedAt);
     }
-    for (var i = 0; i < frames.length; i++) {
-      sendToWatch(frames[i]);
-    }
+    sendVoiceFramesPaced(frames, function() {
+      return requestSeq === voiceRequestSeq && currentChatId === chatId;
+    });
   }).catch(function(err) {
     if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
       return;

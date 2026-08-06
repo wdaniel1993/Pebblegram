@@ -1232,6 +1232,34 @@ static void write_voice_chunk(const uint8_t *data, int len) {
   if (!data || len <= 0) {
     return;
   }
+  // ORDER GUARANTEE: drain any pending spill BEFORE writing new data. The
+  // OS ring drains at real-time (8KB/s @ 8k 8-bit) while ACK-paced chunks
+  // can arrive 3-5x faster — without this, a new chunk arriving between
+  // drain-timer ticks would overwrite the still-pending spill and the tail
+  // bytes would land in the ring at the WRONG position (garbled middle of
+  // long audio: "first words fine, middle unintelligible, last words
+  // clear"). Drain loop first, THEN write the new chunk.
+  while (s_voice_spill_len > 0 && s_voice_stream_open) {
+    const uint8_t *p = s_voice_spill + s_voice_spill_offset;
+    (void)p;  // basalt/diorite stub speaker_stream_write() to (0)
+    uint32_t written = speaker_stream_write(p, (uint32_t)s_voice_spill_len);
+    if (written == 0) {
+      break;  // ring full — the new chunk must wait behind the spill
+    }
+    s_voice_spill_offset += (int)written;
+    s_voice_spill_len -= (int)written;
+    if (s_voice_spill_len == 0) {
+      s_voice_spill_offset = 0;
+    }
+  }
+  // If the ring is still full (spill couldn't drain), drop the NEW chunk
+  // rather than overwrite the pending spill — a lost 256ms slice is a
+  // brief gap; corrupted order makes the whole stream unintelligible.
+  // With JS pacing at real-time (v1.0.24) this should be a rare edge.
+  if (s_voice_spill_len > 0) {
+    APP_LOG(APP_LOG_LEVEL_WARNING, "voice: ring full, dropping chunk (%dB pending spill)", s_voice_spill_len);
+    return;
+  }
   uint32_t written = speaker_stream_write(data, (uint32_t)len);
   if (written == (uint32_t)len) {
     return;
@@ -1239,7 +1267,7 @@ static void write_voice_chunk(const uint8_t *data, int len) {
   int remaining = len - (int)written;
   if (remaining > (int)sizeof(s_voice_spill)) {
     // Chunk larger than the spill can hold; drop the tail. Should not happen
-    // with the JS default of 1600B chunks.
+    // with the JS default of 2048B chunks.
     remaining = (int)sizeof(s_voice_spill);
   }
   memcpy(s_voice_spill, data + written, remaining);
