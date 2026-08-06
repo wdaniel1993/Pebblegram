@@ -80,8 +80,8 @@ var deferredStartupChats = null;
 var launchStartedAt = Date.now();
 var IMAGE_PREPARE_TIMEOUT_MS = 25000;
 var MESSAGE_FETCH_TIMEOUT_MS = 25000;
-var MESSAGE_CACHE_ORDER_KEY = 'pebblegram.messageCache.v4.order';
-var MESSAGE_CACHE_PREFIX = 'pebblegram.messageCache.v4.';
+var MESSAGE_CACHE_ORDER_KEY = 'pebblegram.messageCache.v5.order';
+var MESSAGE_CACHE_PREFIX = 'pebblegram.messageCache.v5.';
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
