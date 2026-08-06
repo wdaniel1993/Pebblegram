@@ -1578,6 +1578,7 @@ function messages(chatId, limit, beforeId, threadId) {
             return r.thread_replies > 0;
           })) {
             list.thread_mode = true;
+            list.debug_info = 'primary';
           }
           // If not detected yet, try the proper API (messages.getForumTopics)
           // and see if the chat has forum topics. This catches the common
@@ -1586,29 +1587,18 @@ function messages(chatId, limit, beforeId, threadId) {
           if (!threadId && !list.thread_mode) {
             return fetchForumTopics(client, chatId).then(function(topicList) {
               if (topicList && topicList.error) {
-                // Diagnostic: getForumTopics failed — surface the reason as a
-                // visible row so the failure is not silent (TEMP).
-                var dbgRow = {
-                  id: 'dbg-topic-err',
-                  sender: 'DBG',
-                  text: 'Topics fail: ' + topicList.error,
-                  reactions: '',
-                  meta: '',
-                  outgoing: false,
-                  image_token: null,
-                  image_width: 0,
-                  image_height: 0,
-                  voice_token: null,
-                  voice_duration_ms: 0,
-                  thread_replies: 0
-                };
-                list.unshift(dbgRow);
+                // getForumTopics failed — report through the debug channel
+                // (the caller sends it as a debug_info AppMessage; it is NOT
+                // a data row, so it can't be scrolled away or cached).
+                list.debug_info = 'topics_err=' + topicList.error;
                 return list;
               }
               if (topicList && topicList.length) {
                 topicList.thread_mode = true;
+                topicList.debug_info = 'topics_ok=' + topicList.length;
                 return topicList;
               }
+              list.debug_info = 'topics_empty';
               return list;
             });
           }

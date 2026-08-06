@@ -1458,6 +1458,16 @@ function sendStoredMessages(chatId) {
   touchChatCache(chatId);
   markRead(chatId);
   sendMessageRows(messages, chatId, 'initial');
+  // Debug channel: report that this open was served from cache (so the watch
+  // can distinguish 'cache hit' from 'fresh fetch, detection failed').
+  try {
+    var dbgPayload = {};
+    dbgPayload[MessageKeys.Type] = 'debug_info';
+    dbgPayload[MessageKeys.Text] = 'cache rows=' + messages.length;
+    Pebble.sendAppMessage(dbgPayload, function() {}, function() {});
+  } catch (e) {
+    debugLog('debug_info (cache) exception: ' + (e && e.message ? e.message : e));
+  }
   return true;
 }
 
@@ -1722,25 +1732,26 @@ function getMessages(chatId) {
       for (var i = 0; i < messages.length; i++) {
         messages[i].thread_list = true;
       }
-    } else {
-      // Diagnostic: detection failed — prepend a visible row with the JS-side
-      // state so the on-watch DBG line (v101 FLAT TM:0) can be cross-checked
-      // with what the phone actually decided (TEMP).
-      var detDbg = {
-        id: 'dbg-detect',
-        sender: 'DBG',
-        text: 'no-thread-mode rows=' + messages.length,
-        reactions: '',
-        meta: '',
-        outgoing: false,
-        image_token: null,
-        image_width: 0,
-        image_height: 0,
-        voice_token: null,
-        voice_duration_ms: 0,
-        thread_replies: 0
-      };
-      messages.unshift(detDbg);
+    }
+    // Send detection diagnostics through the dedicated debug channel — a
+    // separate AppMessage type that the watch shows in its status line,
+    // NOT a data row (data rows scroll away / get cached / get summarized).
+    if (DEBUG_LOGS || true) {
+      var debugText = (messages.thread_mode ? 'tm=1' : 'tm=0') +
+                      ' rows=' + messages.length +
+                      (messages.debug_info ? ' ' + messages.debug_info : '');
+      try {
+        var dbgPayload = {};
+        dbgPayload[MessageKeys.Type] = 'debug_info';
+        dbgPayload[MessageKeys.Text] = clampText(debugText, 100);
+        Pebble.sendAppMessage(dbgPayload, function() {
+          debugLog('debug_info sent: ' + debugText);
+        }, function(err) {
+          debugLog('debug_info send failed: ' + (err && err.message ? err.message : err));
+        });
+      } catch (e) {
+        debugLog('debug_info exception: ' + (e && e.message ? e.message : e));
+      }
     }
     rememberMessages(chatId, messages);
     currentChatSignature = messageSignature(messages);
