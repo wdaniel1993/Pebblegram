@@ -3235,7 +3235,8 @@ static void tts_set_state(int state, const char *detail, const char *message_id)
   }
   if (state == TTS_STATE_ERROR) {
     // Auto-clear the error pill after a few seconds so it doesn't linger.
-    s_tts_clear_timer = app_timer_register(6000, tts_clear_timer_callback, NULL);
+    // 12s: long enough to READ the detail (that's the point of the pill).
+    s_tts_clear_timer = app_timer_register(12000, tts_clear_timer_callback, NULL);
   } else if (state == TTS_STATE_SYNTHESIZING) {
     // Synthesis has ~30s (JS timeout is 45s) — if no voice_start arrives
     // by then, the pipeline is stuck; report it.
@@ -3253,7 +3254,14 @@ static void draw_tts_status(GContext *ctx, GRect bounds) {
   if (s_tts_state == TTS_STATE_IDLE || !s_messages_root) {
     return;
   }
-  int pill_h = 24;
+  bool is_error = s_tts_state == TTS_STATE_ERROR;
+  // Errors get a taller pill with a smaller wrapped font so the full
+  // detail (e.g. "tts: websocket closed (1006)") is readable — the
+  // one-line Gothic-18 pill truncates it to "Speak failed: tts: we…".
+  int pill_h = is_error ? 40 : 24;
+  int text_h = is_error ? 32 : 18;
+  GFont font = is_error ? fonts_get_system_font(FONT_KEY_GOTHIC_14) :
+                          fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD);
   int margin = 6;
   GRect compose_rect = compose_rect_for_bounds(bounds);
   int compose_y = compose_rect.origin.y;
@@ -3265,7 +3273,6 @@ static void draw_tts_status(GContext *ctx, GRect bounds) {
   }
   GRect pill = GRect(margin, y, bounds.size.w - 2 * margin, pill_h);
 
-  bool is_error = s_tts_state == TTS_STATE_ERROR;
   graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : (is_error ? APP_COLOR_LIGHT : GColorLightGray));
   graphics_fill_rect(ctx, pill, 4, GCornersAll);
   graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (is_error ? APP_COLOR : GColorDarkGray));
@@ -3286,10 +3293,11 @@ static void draw_tts_status(GContext *ctx, GRect bounds) {
     snprintf(label, sizeof(label), "Speaking %d:%02d / %d:%02d",
              played_s / 60, played_s % 60, total_s / 60, total_s % 60);
   }
-  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(pill.origin.x + 6, pill.origin.y + 1,
-                           pill.size.w - 12, 18),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, label, font,
+                     GRect(pill.origin.x + 6, pill.origin.y + (is_error ? 2 : 1),
+                           pill.size.w - 12, text_h),
+                     is_error ? GTextOverflowModeWordWrap : GTextOverflowModeTrailingEllipsis,
+                     GTextAlignmentLeft, NULL);
 
   // Progress bar under the label while playing.
   if (s_tts_state == TTS_STATE_PLAYING && s_voice_total > 0) {

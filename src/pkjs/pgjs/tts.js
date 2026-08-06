@@ -163,26 +163,9 @@
       var ws;
       var chunks = [];
       var total = 0;
-      var settled = false;
       var timer = setTimeout(function () {
         finish(null, new Error('tts: synthesis timed out'));
       }, options.timeoutMs || 30000);
-
-      function finish(mp3, err) {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timer);
-        try {
-          ws && ws.close();
-        } catch (e) { /* already closed */ }
-        if (err) {
-          reject(err);
-        } else {
-          resolve(mp3);
-        }
-      }
 
       try {
         ws = wsFactory(url);
@@ -199,6 +182,80 @@
         return;
       }
 
+      var pendingReads = [];   // in-flight FileReader promises (Blob mode)
+      var settled = false;
+
+      function finish(mp3, err) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        try {
+          if (ws && typeof ws.close === 'function') {
+            ws.close();
+          }
+        } catch (e) { /* already closed */ }
+        if (err) {
+          reject(err);
+        } else {
+          resolve(mp3 || new Uint8Array(0));
+        }
+      }
+
+      // Await any in-flight Blob reads, then finish with all chunks.
+      function finishAfterPendingReads() {
+        if (!pendingReads.length) {
+          finish(buildMp3(), null);
+          return;
+        }
+        Promise.all(pendingReads).then(function() {
+          finish(buildMp3(), null);
+        }, function(err) {
+          finish(null, err);
+        });
+      }
+
+      function buildMp3() {
+        var mp3 = new Uint8Array(total);
+        var offset = 0;
+        for (var i = 0; i < chunks.length; i++) {
+          mp3.set(chunks[i], offset);
+          offset += chunks[i].length;
+        }
+        return mp3;
+      }
+
+      function onBlobRead(blob) {
+        var p = new Promise(function(resolve, reject) {
+          var reader = new FileReader();
+          reader.onload = function() {
+            var b = new Uint8Array(reader.result);
+            chunks.push(b);
+            total += b.length;
+            resolve();
+          };
+          reader.onerror = function() {
+            reject(new Error('tts: blob read failed'));
+          };
+          reader.readAsArrayBuffer(blob);
+        });
+        pendingReads.push(p);
+        // Keep the array bounded — settled reads can drop their slot.
+        p.then(function() {
+          var idx = pendingReads.indexOf(p);
+          if (idx >= 0) {
+            pendingReads.splice(idx, 1);
+          }
+        }, function() {
+          var idx = pendingReads.indexOf(p);
+          if (idx >= 0) {
+            pendingReads.splice(idx, 1);
+          }
+        });
+        return p;
+      }
+
       ws.onopen = function () {
         try {
           ws.send(buildConfigFrame());
@@ -211,15 +268,11 @@
       ws.onmessage = function (event) {
         var data = event && event.data;
         if (typeof data === 'string') {
-          // Metadata text frame; end-of-stream marker.
+          // Metadata text frame; end-of-stream marker. Wait for any
+          // in-flight Blob reads before finishing (binaryType may have
+          // been ignored by an old WebView → blob mode is async).
           if (data.indexOf('Path:turn.end') >= 0) {
-            var mp3 = new Uint8Array(total);
-            var offset = 0;
-            for (var i = 0; i < chunks.length; i++) {
-              mp3.set(chunks[i], offset);
-              offset += chunks[i].length;
-            }
-            finish(mp3, null);
+            finishAfterPendingReads();
           }
           return;
         }
@@ -229,16 +282,7 @@
           chunks.push(arr);
           total += arr.length;
         } else if (typeof Blob !== 'undefined' && data instanceof Blob) {
-          var reader = new FileReader();
-          reader.onload = function () {
-            var b = new Uint8Array(reader.result);
-            chunks.push(b);
-            total += b.length;
-          };
-          reader.onerror = function () {
-            finish(null, new Error('tts: blob read failed'));
-          };
-          reader.readAsArrayBuffer(data);
+          onBlobRead(data);
         } else if (data && data.byteLength !== undefined) {
           var u = new Uint8Array(data.buffer || data, data.byteOffset || 0,
                                  data.byteLength || data.length);
