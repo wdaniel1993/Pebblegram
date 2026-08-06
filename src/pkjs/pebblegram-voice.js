@@ -7,10 +7,11 @@
  * the PCM to the watch over AppMessage as a chunked `voice_start` /
  * `voice` / `voice_done` sequence.
  *
- * Decoder is pluggable. The default exported factory returns a
- * `StubOpusDecoder` that emits silence; the production integration
- * is expected to wire in `opus-decoder` (eshaz/wasm-audio-decoders,
- * ~200KB, streaming WebAssembly) — see docs/voice-messages-design.md.
+ * Decoder is pluggable. Production decoder: `opus-decoder`
+ * (eshaz/wasm-audio-decoders, MIT) vendored as `pgjs/vendor/opus-decoder.es5.js`
+ * (ES5 transpile — the SDK webpack 1.x cannot parse the original modern
+ * bundle). WASM is embedded (yenc), no fetch needed. `StubOpusDecoder`
+ * remains as a fallback for WebViews without WebAssembly; it emits silence.
  *
  * Chunking math (see package.json messageKeys): APP_INBOX_SIZE on the
  * watch is 2KB. We cap each voice chunk at 800 bytes of raw PCM data
@@ -55,12 +56,13 @@
   // Under APP_INBOX_SIZE (2048) once envelope fields are accounted for.
   var DEFAULT_VOICE_CHUNK_BYTES = 800;
 
-  // 20 KB upper bound on a single voice stream. Telegram voice notes
-  // are typically 5-60s at 16kbps Opus; 20KB of 8kHz 16-bit PCM ~= 10s
-  // of audio. Larger messages get truncated unless the caller raises
-  // this. The watch only buffers one stream at a time; we free the
-  // previous one's state when a new one starts.
-  var DEFAULT_VOICE_MAX_BYTES = 20000;
+  // 960 KB upper bound on a single voice stream = 60s of 8kHz 16-bit PCM
+  // (16 KB/s). Telegram voice notes are typically 1-60s; 60s of Opus is
+  // ~120KB on the wire but decodes to ~960KB PCM. Larger messages get
+  // truncated. The watch buffers one stream at a time; JS streams chunks
+  // with backpressure from speaker_stream_write, so size is not a
+  // transport problem — this cap is only a sanity bound.
+  var DEFAULT_VOICE_MAX_BYTES = 960000;
 
   // ---- Linear-interpolation resampler --------------------------------------
   // Cheap and good enough for speech band-limited to ~4kHz (8kHz output).
@@ -186,9 +188,154 @@
     this.opusBytes = null;
   };
 
+  // ---- OGG demuxer ---------------------------------------------------------
+  // Telegram voice notes are OGG Opus. opus-decoder's decodeFrames() takes
+  // raw Opus packets, so we must demux the OGG container: walk pages, follow
+  // the segment table (lacing values; 255 = continuation, <255 = packet end).
+  // Single-pass, stateful across pages (packets may span page boundaries).
+  // Returns an array of Uint8Array packets (OpusHead/OpusTags included —
+  // the decoder ignores non-audio packets).
+  function oggDemuxPackets(bytes) {
+    if (!bytes || bytes.length < 27) {
+      return [];
+    }
+    var packets = [];
+    var offset = 0;
+    var n = bytes.length;
+    var partial = null;  // { start, len } of a packet spanning pages
+    while (offset + 27 <= n) {
+      if (bytes[offset] !== 0x4f || bytes[offset + 1] !== 0x67 ||
+          bytes[offset + 2] !== 0x67 || bytes[offset + 3] !== 0x53) {
+        break;  // "OggS" magic — stop on corruption/truncation
+      }
+      var segCount = bytes[offset + 26];
+      var segTableStart = offset + 27;
+      if (segTableStart + segCount > n) {
+        break;
+      }
+      var payloadStart = segTableStart + segCount;
+      var segSum = 0;
+      for (var i = 0; i < segCount; i++) {
+        segSum += bytes[segTableStart + i];
+      }
+      if (payloadStart + segSum > n) {
+        break;  // truncated page payload
+      }
+      var cursor = payloadStart;
+      for (var s = 0; s < segCount; s++) {
+        var lacing = bytes[segTableStart + s];
+        if (partial) {
+          // Continue a packet that began on a previous page.
+          partial.len += lacing;
+          if (lacing < 255) {
+            packets.push(bytes.subarray(partial.start, partial.start + partial.len));
+            partial = null;
+          }
+          // If lacing === 255, keep accumulating across more segments/pages.
+        } else {
+          partial = { start: cursor, len: lacing };
+          if (lacing < 255) {
+            packets.push(bytes.subarray(cursor, cursor + lacing));
+            partial = null;
+          }
+        }
+        cursor += lacing;
+      }
+      offset = payloadStart + segSum;
+    }
+    return packets;
+  }
+  // WasmOpusDecoder wraps opus-decoder (eshaz/wasm-audio-decoders). The
+  // WASM binary is embedded in the vendored bundle (yenc/base91-encoded),
+  // so no fetch/fs is required — WebAssembly.compile + instantiate only.
+  // The phone's WebView (WKWebView/Android WebView) supports WebAssembly.
+  // NOTE: the vendored file is the ES5 transpile (opus-decoder.es5.js) —
+  // the SDK's webpack 1.x cannot parse the original modern-syntax min.js.
+  function WasmOpusDecoder(options) {
+    options = options || {};
+    this.opusBytes = null;
+    this.decoder = null;
+    this.readyPromise = null;
+    this.inputSampleRate = 48000;
+    this.channels = 1;
+    this._lib = require('./pgjs/vendor/opus-decoder.es5.js');
+    var self = this;
+    // opus-decoder exports { OpusDecoder, OpusDecoderWebWorker } via UMD.
+    var Ctor = (this._lib && (this._lib.OpusDecoder || this._lib.default)) || null;
+    if (!Ctor) {
+      throw new Error('opus-decoder library missing OpusDecoder export');
+    }
+    this.decoder = new Ctor({ channels: 1 });
+    this.readyPromise = Promise.resolve(this.decoder.ready).then(function() {
+      if (self.decoder && self.decoder.sampleRate) {
+        self.inputSampleRate = self.decoder.sampleRate;
+      }
+      return self;
+    });
+  }
+  WasmOpusDecoder.prototype.feed = function (opusBytes) {
+    this.opusBytes = opusBytes;
+  };
+  WasmOpusDecoder.prototype.decodeAll = function () {
+    if (!this.opusBytes || !this.opusBytes.length) {
+      return Promise.resolve(new Float32Array(0));
+    }
+    var self = this;
+    return this.readyPromise.then(function() {
+      // Demux OGG → raw Opus packets, then decode all frames at once.
+      // decodeFrames returns { channelData: Float32Array[], samplesDecoded,
+      // sampleRate, errors } — take channel 0 (mono stream).
+      var packets = oggDemuxPackets(self.opusBytes);
+      if (!packets || !packets.length) {
+        return new Float32Array(0);
+      }
+      // Strip OGG Opus header packets (OpusHead "OpS", OpusTags "OpT").
+      // The first packet is OpusHead (magic 0x4f 0x70 0x75 0x73 0x48 —
+      // "OpusH"); the second is OpusTags. Feeding them to decodeFrames
+      // produces OPUS_INVALID_PACKET errors (harmless but noisy).
+      var audio = [];
+      for (var i = 0; i < packets.length; i++) {
+        var p = packets[i];
+        if (p.length >= 8 && p[0] === 0x4f && p[1] === 0x70 &&
+            p[2] === 0x75 && p[3] === 0x73 && p[4] === 0x48) {
+          continue;  // OpusHead
+        }
+        if (p.length >= 8 && p[0] === 0x4f && p[1] === 0x70 &&
+            p[2] === 0x75 && p[3] === 0x73 && p[4] === 0x54) {
+          continue;  // OpusTags
+        }
+        audio.push(p);
+      }
+      if (!audio.length) {
+        return new Float32Array(0);
+      }
+      var result = self.decoder.decodeFrames(audio);
+      var channelData = result && result.channelData;
+      var mono = (channelData && channelData[0]) || new Float32Array(0);
+      return mono;
+    });
+  };
+  WasmOpusDecoder.prototype.close = function () {
+    this.opusBytes = null;
+    if (this.decoder && this.decoder.free) {
+      try { this.decoder.free(); } catch (err) { /* already freed */ }
+      this.decoder = null;
+    }
+  };
+
   function createDecoder(options) {
     if (options && options.driver === 'ffmpeg') {
       return new FfmpegOpusDecoder(options);
+    }
+    // Production: WASM Opus decoder (opus-decoder, embedded in the bundle —
+    // no fetch needed; WebAssembly is available in the phone's WebView).
+    // Fall back to the silence stub only if WebAssembly is missing.
+    try {
+      if (typeof WebAssembly !== 'undefined' && WebAssembly.instantiate) {
+        return new WasmOpusDecoder(options);
+      }
+    } catch (err) {
+      // Fall through to the stub if WASM cannot be used.
     }
     return new StubOpusDecoder(options);
   }
@@ -309,6 +456,8 @@
     floatToPcm8: floatToPcm8,
     StubOpusDecoder: StubOpusDecoder,
     FfmpegOpusDecoder: FfmpegOpusDecoder,
+    WasmOpusDecoder: WasmOpusDecoder,
+    oggDemuxPackets: oggDemuxPackets,
     createDecoder: createDecoder,
     buildVoiceFrames: buildVoiceFrames,
     createStreamer: createStreamer

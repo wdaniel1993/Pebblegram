@@ -1,7 +1,7 @@
 {
   "name": "Pebblegram AI",
   "author": "Daniel Wallner",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "keywords": [
     "pebble-app"
   ],
@@ -91,5 +91,8 @@
     "pako": "2.1.0",
     "teleproto": "1.228.5",
     "upng-js": "2.1.0"
+  },
+  "dependencies": {
+    "opus-decoder": "^0.7.11"
   }
 }
