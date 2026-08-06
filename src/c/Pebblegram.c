@@ -3062,7 +3062,7 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
   // survives screenshots (status bar gets overwritten). TEMP: remove after
   // the thread-list interaction is verified on device.
   char dbg[40];
-  snprintf(dbg, sizeof(dbg), "TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+  snprintf(dbg, sizeof(dbg), "v101 TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
            s_thread_menu ? 1 : 0, s_message_count);
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
@@ -3167,7 +3167,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
   // Diagnostic: flat mode state (TEMP until thread interaction verified).
   char dbg[40];
-  snprintf(dbg, sizeof(dbg), "FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+  snprintf(dbg, sizeof(dbg), "v101 FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
            s_thread_menu ? 1 : 0, s_message_count);
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
