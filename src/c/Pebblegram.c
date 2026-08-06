@@ -3058,16 +3058,6 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont count_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
-  // Diagnostic: thread mode + menu state drawn directly in the layer so it
-  // survives screenshots (status bar gets overwritten). TEMP: remove after
-  // the thread-list interaction is verified on device.
-  char dbg[40];
-  snprintf(dbg, sizeof(dbg), "v101 TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
-           s_thread_menu ? 1 : 0, s_message_count);
-  graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 14),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   int first = 0;
   while (first < s_message_count - 1 &&
          s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
@@ -3117,6 +3107,14 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
                          GTextAlignmentRight, NULL);
     }
   }
+  // Diagnostic drawn LAST so rows cannot cover it (TEMP until verified).
+  char dbg[40];
+  snprintf(dbg, sizeof(dbg), "v101 TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+           s_thread_menu ? 1 : 0, s_message_count);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(4, 2, bounds.size.w - 8, 14),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void draw_compose_bubble(GContext *ctx, GRect bounds) {
@@ -3166,13 +3164,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     return;
   }
   // Diagnostic: flat mode state (TEMP until thread interaction verified).
-  char dbg[40];
-  snprintf(dbg, sizeof(dbg), "v101 FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
-           s_thread_menu ? 1 : 0, s_message_count);
-  graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 14),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  // (The visible copy is drawn at the END of this function, after bubbles.)
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -3340,6 +3332,14 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
 
   draw_compose_bubble(ctx, bounds);
+  // Diagnostic drawn LAST so bubbles cannot cover it (TEMP until verified).
+  char dbg[40];
+  snprintf(dbg, sizeof(dbg), "v101 FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+           s_thread_menu ? 1 : 0, s_message_count);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(4, 2, bounds.size.w - 8, 14),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
 #if TOUCH_KEYBOARD_AVAILABLE
   if (s_touch_keyboard_open) {
