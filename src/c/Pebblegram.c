@@ -3421,9 +3421,20 @@ static void show_chat_view(void) {
   layer_add_child(window_layer, s_messages_root);
   // Thread list MenuLayer: created here but kept hidden until a thread-list
   // batch arrives (s_thread_mode true). It covers the same content area.
+  // NOTE: for a first open, the message batch (and s_thread_mode) may
+  // already be established BEFORE this view is created (messages_done
+  // schedules show_chat_view via a 1ms timer). So check s_thread_mode now,
+  // not just when rows stream in later.
   create_thread_menu(window_layer);
   if (s_thread_menu) {
-    layer_set_hidden(menu_layer_get_layer(s_thread_menu), true);
+    bool show_thread_menu = s_thread_mode;
+    layer_set_hidden(menu_layer_get_layer(s_thread_menu), !show_thread_menu);
+    if (show_thread_menu) {
+      thread_menu_reload();
+    }
+    if (show_thread_menu && s_messages_root) {
+      layer_set_hidden(s_messages_root, true);
+    }
   }
   s_chat_scroll_offset = 0;
   s_chat_content_height = 0;
