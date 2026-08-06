@@ -3058,6 +3058,16 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont count_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
+  // Diagnostic: thread mode + menu state drawn directly in the layer so it
+  // survives screenshots (status bar gets overwritten). TEMP: remove after
+  // the thread-list interaction is verified on device.
+  char dbg[40];
+  snprintf(dbg, sizeof(dbg), "TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+           s_thread_menu ? 1 : 0, s_message_count);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(4, 2, bounds.size.w - 8, 14),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   int first = 0;
   while (first < s_message_count - 1 &&
          s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
@@ -3155,6 +3165,14 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     draw_compose_bubble(ctx, bounds);
     return;
   }
+  // Diagnostic: flat mode state (TEMP until thread interaction verified).
+  char dbg[40];
+  snprintf(dbg, sizeof(dbg), "FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+           s_thread_menu ? 1 : 0, s_message_count);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(4, 2, bounds.size.w - 8, 14),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -4554,15 +4572,19 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_expected_rows = count;
     // Thread list batch finished: refresh the MenuLayer with the final row
     // count and make sure it is visible (initial selection row 0).
-    if (s_thread_mode && s_thread_menu) {
-      thread_menu_reload();
-      layer_set_hidden(menu_layer_get_layer(s_thread_menu), false);
+    if (s_thread_mode) {
+      if (!s_thread_menu && s_messages_root) {
+        // The menu may not exist yet if show_chat_view hasn't run (batch
+        // arrived first). Create it on demand so SELECT always has a menu.
+        create_thread_menu(window_get_root_layer(s_main_window));
+      }
+      if (s_thread_menu) {
+        thread_menu_reload();
+        layer_set_hidden(menu_layer_get_layer(s_thread_menu), false);
+      }
       if (s_messages_root) {
         layer_set_hidden(s_messages_root, true);
       }
-      char thread_status[32];
-      snprintf(thread_status, sizeof(thread_status), "Threads: %d", (int)count);
-      show_status(thread_status);
     }
     if (!loading_older && !loading_newer && s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       s_chats[s_selected_chat].unread = false;
