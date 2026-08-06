@@ -4560,6 +4560,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       if (s_messages_root) {
         layer_set_hidden(s_messages_root, true);
       }
+      char thread_status[32];
+      snprintf(thread_status, sizeof(thread_status), "Threads: %d", (int)count);
+      show_status(thread_status);
     }
     if (!loading_older && !loading_newer && s_selected_chat >= 0 && s_selected_chat < s_chat_count) {
       s_chats[s_selected_chat].unread = false;
