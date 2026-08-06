@@ -34,8 +34,8 @@ const commonOptions = {
   alias: {
     crypto: "./src/pkjs/pgjs/shims/crypto.js",
     "node:crypto": "./src/pkjs/pgjs/shims/crypto.js",
-    fs: "./src/pkjs/pgjs/shims/empty.js",
-    "node:fs": "./src/pkjs/pgjs/shims/empty.js",
+    fs: "./src/pkjs/pgjs/shims/fs.js",
+    "node:fs": "./src/pkjs/pgjs/shims/fs.js",
     net: "./src/pkjs/pgjs/shims/empty.js",
     "node:net": "./src/pkjs/pgjs/shims/empty.js",
     tls: "./src/pkjs/pgjs/shims/empty.js",
