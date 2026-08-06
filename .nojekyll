@@ -1,0 +1,5 @@
+# Pebblegram AI settings page is a pure static site (pgjs/config.html +
+# JS). Skip the Jekyll pass — legacy GitHub Pages builds were failing/
+# hanging on the large vendored JS bundles in the repo (gramjs 2.2MB,
+# mp3-decoder 150KB, opus-decoder 166KB). With .nojekyll, Pages serves
+# the repo tree as-is: fast, deterministic, nothing to parse.
