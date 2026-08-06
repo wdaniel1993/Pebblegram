@@ -219,6 +219,29 @@ function errorText(err) {
   return s || (typeof err);
 }
 
+// First meaningful stack frame (function + file), e.g.
+// "downloadMedia (downloads.js:3xx)" — pinpoints WHERE a TypeError is thrown.
+function errorWhere(err) {
+  if (!err || !err.stack) {
+    return '';
+  }
+  var lines = String(err.stack).split('\n');
+  for (var i = 1; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (line && line.indexOf('telegram.js') === -1 && line.indexOf('index.js') === -1) {
+      var m = line.match(/at\s+(.+?)\s+\(?(.+?):(\d+)/);
+      if (m) {
+        return m[1] + '@' + (m[2].split('/').pop()) + ':' + m[3];
+      }
+      m = line.match(/at\s+(.+?):(\d+)/);
+      if (m) {
+        return m[1].split('/').pop() + ':' + m[2];
+      }
+    }
+  }
+  return '';
+}
+
 function messageDocument(message) {
   var media = message && message.media;
   return (message && message.document) || (media && media.document) || null;
@@ -1952,8 +1975,15 @@ function downloadMedia(chatId, messageId, options) {
         return downloadFullMediaBytes(client, photo || message.media, {cancelled: options && options.cancelled}).catch(function(photoErr) {
           var dc = photo && photo.dcId !== undefined && photo.dcId !== null
             ? 'dc=' + photo.dcId + ' ' : '';
-          throw new Error('media download failed: ' + dc + 'message=' + errorText(fullErr) +
-                          '; photo=' + errorText(photoErr));
+          // 95-char budget: location FIRST (that's the actionable bit),
+          // then the message text. errorWhere = file:line of the throw.
+          var where = errorWhere(fullErr) || errorWhere(photoErr);
+          var text = errorText(fullErr);
+          var msg = 'img failed ' + dc + '@' + where + ' ' + text;
+          if (msg.length > 92) {
+            msg = msg.slice(0, 92);
+          }
+          throw new Error(msg);
         });
       });
     });
