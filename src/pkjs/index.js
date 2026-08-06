@@ -1737,9 +1737,12 @@ function getMessages(chatId) {
     // separate AppMessage type that the watch shows in its status line,
     // NOT a data row (data rows scroll away / get cached / get summarized).
     if (DEBUG_LOGS || true) {
-      var debugText = (messages.thread_mode ? 'tm=1' : 'tm=0') +
-                      ' rows=' + messages.length +
-                      (messages.debug_info ? ' ' + messages.debug_info : '');
+      // Topics outcome first: it is the diagnostic that matters most and the
+      // watch overlay word-wraps, so the head of the string is guaranteed
+      // visible.
+      var debugText = (messages.debug_info ? messages.debug_info + ' ' : '') +
+                      (messages.thread_mode ? 'tm=1' : 'tm=0') +
+                      ' rows=' + messages.length;
       try {
         var dbgPayload = {};
         dbgPayload[MessageKeys.Type] = 'debug_info';

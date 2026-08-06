@@ -1590,7 +1590,11 @@ function messages(chatId, limit, beforeId, threadId) {
                 // getForumTopics failed — report through the debug channel
                 // (the caller sends it as a debug_info AppMessage; it is NOT
                 // a data row, so it can't be scrolled away or cached).
-                list.debug_info = 'topics_err=' + topicList.error;
+                var errText = String(topicList.error);
+                if (errText.length > 42) {
+                  errText = errText.slice(0, 42);
+                }
+                list.debug_info = 'topics_err=' + errText;
                 return list;
               }
               if (topicList && topicList.length) {

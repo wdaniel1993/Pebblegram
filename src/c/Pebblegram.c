@@ -3112,14 +3112,16 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
     }
   }
   // Diagnostic drawn LAST so rows cannot cover it (TEMP until verified).
+  // Word-wrapped into up to 3 lines so the JS debug text (topics outcome)
+  // is readable instead of truncating at the first 20 chars.
   char dbg[110];
   snprintf(dbg, sizeof(dbg), "v%s TM:%d MN:%d N:%d%s%s", PG_APP_VERSION,
            s_thread_mode ? 1 : 0, s_thread_menu ? 1 : 0, s_message_count,
            s_js_debug_set ? " | " : "", s_js_debug_set ? s_js_debug : "");
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 14),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+                     GRect(4, 2, bounds.size.w - 8, 46),
+                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 }
 
 static void draw_compose_bubble(GContext *ctx, GRect bounds) {
@@ -3338,14 +3340,15 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 
   draw_compose_bubble(ctx, bounds);
   // Diagnostic drawn LAST so bubbles cannot cover it (TEMP until verified).
+  // Word-wrapped so the JS debug text (topics outcome) stays readable.
   char dbg[110];
   snprintf(dbg, sizeof(dbg), "v%s FLAT TM:%d MN:%d N:%d%s%s", PG_APP_VERSION,
            s_thread_mode ? 1 : 0, s_thread_menu ? 1 : 0, s_message_count,
            s_js_debug_set ? " | " : "", s_js_debug_set ? s_js_debug : "");
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 14),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+                     GRect(4, 2, bounds.size.w - 8, 46),
+                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 
 #if TOUCH_KEYBOARD_AVAILABLE
   if (s_touch_keyboard_open) {
