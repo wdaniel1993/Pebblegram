@@ -22,7 +22,10 @@
 #define MAX_LOADED_IMAGES 1
 #define IMAGE_THUMB_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 132, 108, 108, 108, 198, 164, 144)
 #define IMAGE_FRAME_EXTRA_W PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 10, 8, 8, 6, 14, 14, 10)
-#define APP_INBOX_SIZE 2048
+// Inbox 4096 so voice chunks can carry 2048B of PCM (soundboard's proven
+// envelope: 2048B @ 8kHz 8-bit = 256ms of audio per ACK-paced message,
+// which outruns the BLE round-trip and keeps the OS ring topped up).
+#define APP_INBOX_SIZE 4096
 #define APP_OUTBOX_SIZE PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 512, 512, 512, 512, 1024, 1024, 1024)
 #define BW_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 1, 0, 0, 0)
 #define ROUND_UI PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 0, 0, 0, 0, 0, 0, 1)
@@ -64,8 +67,8 @@
 #define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
 // Voice playback: PebbleOS speaker_stream_* owns the 8KB PCM ring; we just feed
-// it from the AppMessage inbox. Format is 8kHz/16bit/mono (PCM value
-// 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
+// it from the AppMessage inbox. Format is 8kHz/8bit/mono (PCM value
+// 0 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
 // verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
 // Only emery (Time 2) and flint (Pebble 2 Duo) define PBL_SPEAKER — basalt,
 // diorite, chalk and gabbro (Round 2) have NO physical speaker. Everything
@@ -77,7 +80,7 @@
 #define HAS_SPEAKER 0
 #endif
 #define VOICE_DEFAULT_VOLUME 45
-#define VOICE_EXPECTED_FORMAT 2
+#define VOICE_EXPECTED_FORMAT 0
 #define VOICE_POLL_MS 50
 #define VOICE_DRAIN_RETRY_MS 8
 #define VOICE_STALL_MS 10000
@@ -312,6 +315,10 @@ static bool s_thread_mode;
 static char s_thread_root[MAX_ID];
 static bool s_voice_playing;
 static bool s_voice_stream_open;
+// Priming flag: voice_start arrives, then we wait for the FIRST voice chunk
+// before opening the speaker (so the OS never drains an empty ring while
+// the first chunk is in the BLE round-trip).
+static bool s_voice_started;
 static int s_avatar_size;
 // TTS (Speak Message) status UI: a pill at the bottom of the chat view
 // showing the synthesis phase, playback duration + progress, or the error
@@ -1187,6 +1194,7 @@ static void reset_voice_transfer_state(void) {
   s_voice_playing = false;
   s_voice_spill_len = 0;
   s_voice_spill_offset = 0;
+  s_voice_started = false;
   // Clear any voice_playing flags on messages so the UI returns to the
   // idle "▶ voice" affordance.
   for (int i = 0; i < s_message_count; i++) {
@@ -5333,19 +5341,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_voice_received = 0;
     s_voice_spill_len = 0;
     s_voice_spill_offset = 0;
+    s_voice_stream_open = false;
+    s_voice_started = false;
 #if HAS_SPEAKER
     s_voice_duration_ms = voice_duration > 0 ? voice_duration : 0;
 #endif
-    s_voice_stream_open = speaker_stream_open(
-        (SpeakerPcmFormat)voice_format, VOICE_DEFAULT_VOLUME);
-    if (!s_voice_stream_open) {
-      APP_LOG(APP_LOG_LEVEL_WARNING,
-              "speaker_stream_open failed for msg=%s fmt=%d",
-              message_id, voice_format);
-      // Tear down — JS will see no further voice frames and may time out.
-      reset_voice_transfer_state();
-      return;
-    }
+    // Priming: do NOT open the speaker here. The OS starts draining its
+    // ring immediately on open; if the first chunk is still in the BLE
+    // round-trip, the OS inserts silence (underrun) — a startup click.
+    // We open lazily on the FIRST voice chunk (see the "voice" handler).
     s_voice_playing = true;
     if (message) {
       message->voice_playing = true;
@@ -5374,8 +5378,25 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     int data_len = data ? data->length : 0;
     const char *token = voice_token && voice_token[0] ? voice_token : message_id;
     if (!message_id || !token || transfer_id != s_voice_transfer_id ||
-        !s_voice_active || !s_voice_stream_open || !data) {
+        !s_voice_active || !data) {
       return;
+    }
+    if (!s_voice_started) {
+      // Priming: first chunk has landed — NOW open the speaker so the OS
+      // ring is fed before the DMA starts draining. (Opening at voice_start
+      // caused a startup underrun: the OS drains an empty ring for one BLE
+      // round-trip and inserts silence.)
+      s_voice_stream_open = speaker_stream_open(
+          (SpeakerPcmFormat)s_voice_format, VOICE_DEFAULT_VOLUME);
+      if (!s_voice_stream_open) {
+        APP_LOG(APP_LOG_LEVEL_WARNING,
+                "speaker_stream_open failed for msg=%s fmt=%d",
+                message_id, s_voice_format);
+        // Tear down — JS will see no further voice frames and may time out.
+        reset_voice_transfer_state();
+        return;
+      }
+      s_voice_started = true;
     }
     int expected = seq >= 0 ? seq : index;
     if (expected < 0) {
@@ -5436,6 +5457,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
       speaker_stream_close();
       s_voice_stream_open = false;
     }
+    s_voice_started = false;
     s_voice_active = false;
     // Keep s_voice_playing true until the OS reports idle — voice_poll_timer
     // will flip it. Schedule a poll in case no timer is active yet.

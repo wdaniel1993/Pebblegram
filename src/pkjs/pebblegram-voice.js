@@ -44,30 +44,29 @@
     '16kHz_16bit': 3
   };
 
-  // Default target: 8kHz 16-bit signed mono. 16KB/s over AppMessage =
-  // 10 chunks/s at 1600B — well inside the BLE envelope (the OS converts
-  // to 16kHz 16-bit internally with a halfband cubic upsample, so 8k input
-  // is the DESIGNED path; the 8KB kernel ring holds 512ms @ 8k vs 256ms @
-  // 16k, and underrun inserts SILENCE = the crackle). 16kHz_16bit would
-  // need 40 chunks/s and halved jitter headroom — that made crackle worse.
-  var DEFAULT_PCM_FORMAT = '8kHz_16bit';
+  // Default target: 8kHz 8-bit signed mono — the exact transport envelope
+  // proven by the shipping soundboard app (mattnovelli/soundboard: 8kHz
+  // 8-bit, 2048B chunks, volume 5-40). 8KB/s halves the OS ring drain rate
+  // vs 16-bit (8KB ring = 1 FULL SECOND of audio @8k 8-bit), and each
+  // ACK-paced chunk carries 256ms of audio vs a ~100ms BLE round-trip, so
+  // the ring accumulates surplus instead of underrunning. The OS converts
+  // 8-bit -> 16-bit internally (prv_decode_sample: (int8_t)raw << 8).
+  var DEFAULT_PCM_FORMAT = '8kHz_8bit';
   var DEFAULT_SAMPLE_RATE = 8000;
-  var DEFAULT_BIT_DEPTH = 16;
+  var DEFAULT_BIT_DEPTH = 8;
 
-  // 1600 bytes of 16-bit PCM = 800 samples = 100ms @ 8kHz. Bigger chunks
-  // than the original 800B halve the AppMessage rate (10/s vs 20/s) —
-  // fewer BLE round-trips = fewer underrun windows. Soundboard (a shipping
-  // speaker app) uses 2048B; our inbox is 2048 so 1600B leaves envelope
-  // headroom for the keys.
-  var DEFAULT_VOICE_CHUNK_BYTES = 1600;
+  // 2048 bytes of 8-bit PCM = 2048 samples = 256ms @ 8kHz. Matches
+  // soundboard's CHUNK_SIZE; requires the watch inbox at 4096 (soundboard's
+  // inbox) so the envelope (7 keys + 2048B payload ~ 2150B) fits.
+  var DEFAULT_VOICE_CHUNK_BYTES = 2048;
 
-  // 960 KB upper bound on a single voice stream = 60s of 8kHz 16-bit PCM
-  // (16 KB/s). Telegram voice notes are typically 1-60s; 60s
-  // of Opus is ~120KB on the wire but decodes to ~960KB PCM. Larger
+  // 480 KB upper bound on a single voice stream = 60s of 8kHz 8-bit PCM
+  // (8 KB/s). Telegram voice notes are typically 1-60s; 60s
+  // of Opus is ~120KB on the wire but decodes to ~480KB PCM. Larger
   // messages get truncated. The watch buffers one stream at a time; JS
   // streams chunks with backpressure from speaker_stream_write, so size is
   // not a transport problem — this cap is only a sanity bound.
-  var DEFAULT_VOICE_MAX_BYTES = 960000;
+  var DEFAULT_VOICE_MAX_BYTES = 480000;
 
   // ---- Anti-aliased windowed-sinc resampler --------------------------------
   // The old resampleLinear() had NO low-pass: decimating 24/48kHz audio to
