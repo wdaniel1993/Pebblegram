@@ -1717,6 +1717,25 @@ function getMessages(chatId) {
       for (var i = 0; i < messages.length; i++) {
         messages[i].thread_list = true;
       }
+    } else {
+      // Diagnostic: detection failed — prepend a visible row with the JS-side
+      // state so the on-watch DBG line (v101 FLAT TM:0) can be cross-checked
+      // with what the phone actually decided (TEMP).
+      var detDbg = {
+        id: 'dbg-detect',
+        sender: 'DBG',
+        text: 'no-thread-mode rows=' + messages.length,
+        reactions: '',
+        meta: '',
+        outgoing: false,
+        image_token: null,
+        image_width: 0,
+        image_height: 0,
+        voice_token: null,
+        voice_duration_ms: 0,
+        thread_replies: 0
+      };
+      messages.unshift(detDbg);
     }
     rememberMessages(chatId, messages);
     currentChatSignature = messageSignature(messages);

@@ -1357,7 +1357,7 @@ function topicCreationRowIds(rows) {
 // set from the topic's top_message — compatible with the existing watch
 // ThreadList rendering.
 function fetchForumTopics(client, chatId) {
-  return client.getForumTopics(chatId, {limit: 30}).then(function(result) {
+  return client.getForumTopics(chatId, {search: '', limit: 30}).then(function(result) {
     var topics = result && result.topics ? result.topics : [];
     var topicMessages = result && result.messages ? result.messages : [];
     // Build a quick lookup for the top message of each topic — the watch
@@ -1406,8 +1406,11 @@ function fetchForumTopics(client, chatId) {
     });
     return rows;
   }).catch(function(err) {
-    debugLog('getForumTopics failed: ' + (err && err.message ? err.message : err));
-    return null;
+    var reason = err && err.message ? err.message : String(err);
+    debugLog('getForumTopics failed: ' + reason);
+    // Return the failure as a marker list so the caller can surface it
+    // on the watch instead of silently falling back to flat mode.
+    return {error: reason};
   });
 }
 
@@ -1582,6 +1585,26 @@ function messages(chatId, limit, beforeId, threadId) {
           // (T>0, R=0) — the forum-topics API is the authoritative source.
           if (!threadId && !list.thread_mode) {
             return fetchForumTopics(client, chatId).then(function(topicList) {
+              if (topicList && topicList.error) {
+                // Diagnostic: getForumTopics failed — surface the reason as a
+                // visible row so the failure is not silent (TEMP).
+                var dbgRow = {
+                  id: 'dbg-topic-err',
+                  sender: 'DBG',
+                  text: 'Topics fail: ' + topicList.error,
+                  reactions: '',
+                  meta: '',
+                  outgoing: false,
+                  image_token: null,
+                  image_width: 0,
+                  image_height: 0,
+                  voice_token: null,
+                  voice_duration_ms: 0,
+                  thread_replies: 0
+                };
+                list.unshift(dbgRow);
+                return list;
+              }
               if (topicList && topicList.length) {
                 topicList.thread_mode = true;
                 return topicList;
