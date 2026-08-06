@@ -1710,9 +1710,6 @@ static void schedule_status_clear(const char *message) {
   }
 }
 
-static char s_js_debug[110];
-static char s_js_debug_set;
-
 static void status_clear_timer_callback(void *data) {
   s_status_clear_timer = NULL;
   if (!s_chats_loading) {
@@ -3111,17 +3108,6 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
                          GTextAlignmentRight, NULL);
     }
   }
-  // Diagnostic drawn LAST so rows cannot cover it (TEMP until verified).
-  // Word-wrapped into up to 3 lines so the JS debug text (topics outcome)
-  // is readable instead of truncating at the first 20 chars.
-  char dbg[110];
-  snprintf(dbg, sizeof(dbg), "v%s TM:%d MN:%d N:%d%s%s", PG_APP_VERSION,
-           s_thread_mode ? 1 : 0, s_thread_menu ? 1 : 0, s_message_count,
-           s_js_debug_set ? " | " : "", s_js_debug_set ? s_js_debug : "");
-  graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 46),
-                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 }
 
 static void draw_compose_bubble(GContext *ctx, GRect bounds) {
@@ -3339,16 +3325,6 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
 
   draw_compose_bubble(ctx, bounds);
-  // Diagnostic drawn LAST so bubbles cannot cover it (TEMP until verified).
-  // Word-wrapped so the JS debug text (topics outcome) stays readable.
-  char dbg[110];
-  snprintf(dbg, sizeof(dbg), "v%s FLAT TM:%d MN:%d N:%d%s%s", PG_APP_VERSION,
-           s_thread_mode ? 1 : 0, s_thread_menu ? 1 : 0, s_message_count,
-           s_js_debug_set ? " | " : "", s_js_debug_set ? s_js_debug : "");
-  graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(4, 2, bounds.size.w - 8, 46),
-                     GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 
 #if TOUCH_KEYBOARD_AVAILABLE
   if (s_touch_keyboard_open) {
@@ -3522,6 +3498,13 @@ static void render_chat_list_with_transition(void) {
     animate_layer_frame(&s_messages_animation, s_messages_root, messages_from, messages_to,
                         messages_slide_back_stopped);
   }
+  // Leaving the chat view must also hide the thread list MenuLayer —
+  // otherwise it stays drawn over the chat list (BACK bug).
+  if (s_thread_menu) {
+    layer_set_hidden(menu_layer_get_layer(s_thread_menu), true);
+  }
+  s_thread_mode = false;
+  s_thread_root[0] = '\0';
   show_status("Pebblegram AI");
 }
 
@@ -4272,19 +4255,11 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
   }
 
   if (strcmp(type, "debug_info") == 0) {
-    // Dedicated debug channel from JS (detection state etc.). Shown in the
-    // status line and logged — NOT a data row, so it can't scroll away or
-    // get cached/summarized. Prefix keeps it distinguishable from chat
-    // titles and normal status messages. Also kept in s_js_debug so the
-    // persistent corner overlay can render it.
+    // Debug channel from JS (detection state etc.) — kept for APP_LOG
+    // only (pebble logs over Dev Connect). No on-watch rendering.
     char *dbg_text = tuple_cstring(iter, MESSAGE_KEY_Text);
     if (dbg_text && dbg_text[0]) {
-      copy_cstr(s_js_debug, sizeof(s_js_debug), dbg_text);
-      s_js_debug_set = 1;
-      char dbg_line[120];
-      snprintf(dbg_line, sizeof(dbg_line), "DBG %s", dbg_text);
-      APP_LOG(APP_LOG_LEVEL_INFO, "%s", dbg_line);
-      show_status(dbg_line);
+      APP_LOG(APP_LOG_LEVEL_INFO, "DBG %s", dbg_text);
     }
     return;
   }
