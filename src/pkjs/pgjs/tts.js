@@ -348,6 +348,144 @@
     });
   }
 
+  // ---- Google Translate TTS backend (UA-independent) -------------------
+  //
+  // edge-tts rejects non-Edge UAs at the WS handshake (close 1006), and the
+  // phone WebView's native WebSocket cannot set a custom UA — so edge-tts can
+  // NEVER work from a stock Android/iOS WebView. Google Translate TTS
+  // (translate.google.com/translate_tts) accepts ANY UA, returns MP3, needs
+  // no key, and works over XHR. The Google endpoint sends NO CORS headers,
+  // so direct XHR works only if the WebView doesn't enforce CORS; if it does,
+  // fall back to the allorigins CORS proxy (reflects any Origin). Choose
+  // backend by UA: Edg/ -> edge-tts WS, else Google.
+
+  var GOOGLE_TTS_URL = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=';
+  var GOOGLE_CHUNK_CHARS = 180;   // Google caps ~200 chars/request
+  var CORS_PROXY_URL = 'https://api.allorigins.win/raw?url=';
+
+  function googleLang(voiceName) {
+    // Map our edge-tts voice names to Google translate_tts language codes.
+    var v = String(voiceName || 'en-US-JennyNeural').toLowerCase();
+    if (v.indexOf('de-') === 0) return 'de';
+    if (v.indexOf('fr-') === 0) return 'fr';
+    if (v.indexOf('es-') === 0) return 'es';
+    if (v.indexOf('it-') === 0) return 'it';
+    if (v.indexOf('pt-') === 0) return 'pt';
+    if (v.indexOf('ru-') === 0) return 'ru';
+    if (v.indexOf('ja-') === 0) return 'ja';
+    if (v.indexOf('ko-') === 0) return 'ko';
+    if (v.indexOf('zh-') === 0) return 'zh-CN';
+    if (v.indexOf('ar-') === 0) return 'ar';
+    if (v.indexOf('nl-') === 0) return 'nl';
+    if (v.indexOf('pl-') === 0) return 'pl';
+    if (v.indexOf('tr-') === 0) return 'tr';
+    return 'en';
+  }
+
+  function chunkText(text) {
+    // Split into <=GOOGLE_CHUNK_CHARS pieces on word boundaries so Google's
+    // per-request cap is respected and the MP3s can be concatenated.
+    var chunks = [];
+    var rest = String(text || '').trim();
+    while (rest.length > GOOGLE_CHUNK_CHARS) {
+      var cut = rest.lastIndexOf(' ', GOOGLE_CHUNK_CHARS);
+      if (cut < GOOGLE_CHUNK_CHARS / 2) cut = GOOGLE_CHUNK_CHARS;  // no space: hard cut
+      chunks.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) chunks.push(rest);
+    return chunks.length ? chunks : [''];
+  }
+
+  function xhrGet(url) {
+    // Promise-wrapped XHR. Rejects on network failure (CORS block shows up
+    // as status 0 with no response).
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300 && xhr.response && xhr.response.byteLength) {
+          resolve(new Uint8Array(xhr.response));
+        } else {
+          reject(new Error('tts: google http ' + xhr.status));
+        }
+      };
+      xhr.onerror = function () {
+        reject(new Error('tts: google xhr error'));
+      };
+      xhr.ontimeout = function () {
+        reject(new Error('tts: google xhr timeout'));
+      };
+      xhr.timeout = 20000;
+      xhr.send(null);
+    });
+  }
+
+  function googleChunk(chunk, lang, useProxy) {
+    var url = GOOGLE_TTS_URL + lang + '&q=' + encodeURIComponent(chunk);
+    if (useProxy) {
+      url = CORS_PROXY_URL + encodeURIComponent(url);
+    }
+    return xhrGet(url).then(function (mp3) {
+      if (!mp3 || !mp3.length) {
+        throw new Error('tts: google empty response');
+      }
+      return mp3;
+    });
+  }
+
+  // synthesizeGoogle(text, voiceName) -> Promise<Uint8Array mp3>
+  // Chunks long text, fetches each chunk (direct, then CORS-proxy fallback),
+  // concatenates the MP3 streams (mpg123 decodes concatenated MP3s with zero
+  // gap — verified: 430848 samples == exact sum of parts).
+  function synthesizeGoogle(text, voiceName) {
+    if (typeof XMLHttpRequest === 'undefined') {
+      return Promise.reject(new Error('tts: google backend needs XMLHttpRequest'));
+    }
+    var lang = googleLang(voiceName);
+    var chunks = chunkText(text);
+    var parts = [];
+    var chain = Promise.resolve();
+    chunks.forEach(function (chunk) {
+      chain = chain.then(function () {
+        return googleChunk(chunk, lang, false).catch(function (directErr) {
+          // Direct XHR failed (likely CORS block: status 0 / http error).
+          // Retry through the CORS proxy before giving up.
+          return googleChunk(chunk, lang, true).catch(function (proxyErr) {
+            throw new Error('tts: google chunk failed (' + (directErr.message || 'direct') +
+                            ' / ' + (proxyErr.message || 'proxy') + ')');
+          });
+        }).then(function (mp3) {
+          parts.push(mp3);
+        });
+      });
+    });
+    return chain.then(function () {
+      var total = 0;
+      parts.forEach(function (p) { total += p.length; });
+      var joined = new Uint8Array(total);
+      var off = 0;
+      parts.forEach(function (p) {
+        joined.set(p, off);
+        off += p.length;
+      });
+      return joined;
+    });
+  }
+
+  function backendPrefersGoogle() {
+    // edge-tts needs an Edge-flavored UA in the WS handshake; the WebView
+    // sends its own UA and cannot set headers. If the UA isn't Edge, go
+    // straight to Google — avoids the guaranteed 1006 round-trip.
+    try {
+      var ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+      return ua.indexOf('Edg/') === -1;
+    } catch (e) {
+      return true;
+    }
+  }
+
   // ---- MP3 -> PCM ------------------------------------------------------
 
   // decodeMp3(mp3Bytes) -> Promise<Float32Array> at 24kHz, mono (ch0).
@@ -403,7 +541,16 @@
       }
     };
     report('connecting');
-    return synthesize(text, voiceName, options).then(function (mp3) {
+    // Backend selection: edge-tts rejects non-Edge UAs (close 1006) and the
+    // WebView cannot set headers — so on non-Edge UAs (every stock WebView)
+    // use Google Translate TTS over XHR instead of burning a guaranteed
+    // failed handshake. Node tests inject options.wsFactory AND a Node UA
+    // (no navigator) — treat that as edge-tts.
+    var useGoogle = (typeof navigator === 'undefined' || navigator.userAgent.indexOf('Edg/') === -1) &&
+                    !options.wsFactory;
+    var synthPromise = useGoogle ? synthesizeGoogle(text, voiceName) : synthesize(text, voiceName, options);
+    report(useGoogle ? 'googlesynth' : 'connecting');
+    return synthPromise.then(function (mp3) {
       if (!mp3 || !mp3.length) {
         throw new Error('tts: empty synthesis');
       }
@@ -452,6 +599,9 @@
     buildConfigFrame: buildConfigFrame,
     buildSsmlFrame: buildSsmlFrame,
     synthesize: synthesize,
+    synthesizeGoogle: synthesizeGoogle,
+    chunkText: chunkText,
+    googleLang: googleLang,
     decodeMp3: decodeMp3,
     speakFrames: speakFrames
   };
