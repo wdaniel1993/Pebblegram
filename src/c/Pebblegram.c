@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 #include "message_keys.auto.h"
+#include "version.auto.h"
 
 #define MAX_CHATS 20
 #define MAX_MESSAGES 9
@@ -3109,7 +3110,7 @@ static void draw_thread_rows(GContext *ctx, GRect bounds) {
   }
   // Diagnostic drawn LAST so rows cannot cover it (TEMP until verified).
   char dbg[40];
-  snprintf(dbg, sizeof(dbg), "v101 TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+  snprintf(dbg, sizeof(dbg), "v%s TM:%d MN:%d N:%d", PG_APP_VERSION, s_thread_mode ? 1 : 0,
            s_thread_menu ? 1 : 0, s_message_count);
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),
@@ -3334,7 +3335,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   draw_compose_bubble(ctx, bounds);
   // Diagnostic drawn LAST so bubbles cannot cover it (TEMP until verified).
   char dbg[40];
-  snprintf(dbg, sizeof(dbg), "v101 FLAT TM:%d MN:%d N:%d", s_thread_mode ? 1 : 0,
+  snprintf(dbg, sizeof(dbg), "v%s FLAT TM:%d MN:%d N:%d", PG_APP_VERSION, s_thread_mode ? 1 : 0,
            s_thread_menu ? 1 : 0, s_message_count);
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, dbg, fonts_get_system_font(FONT_KEY_GOTHIC_14),

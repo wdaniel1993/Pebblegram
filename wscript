@@ -35,6 +35,12 @@ def omit_js_source_maps_from_app_bundle(task_gen):
 def build(ctx):
     ctx.load('pebble_sdk')
 
+    # Regenerate version constants from package.json BEFORE any compile step.
+    # This is what binds the JS cache version and the C debug line to the app
+    # version — every build with a bumped version invalidates the phone-side
+    # message cache automatically (no more stale v4/v5 manual bumps).
+    ctx.exec_command('node tools/gen-version.js', cwd=ctx.path.abspath())
+
     build_worker = os.path.exists('worker_src')
     binaries = []
 
