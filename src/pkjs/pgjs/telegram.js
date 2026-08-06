@@ -1507,6 +1507,11 @@ function messages(chatId, limit, beforeId, threadId) {
       options.replyTo = parseInt(threadId, 10) || threadId;
     }
     return client.getMessages(chatId, options).then(function(rows) {
+      // Diagnostic: ALWAYS attach the raw history classification, even when
+      // threaded-mode detection succeeds — so we can see what the server
+      // actually returns regardless of which detection path fires.
+      var debugSummary = summarizeHistoryCounts(rows);
+      var debugSummaryDetail = summarizeHistoryRows(rows);
       return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0)
         .then(function(list) {
           // Threaded-mode bot chat: the history of such a chat is a list of
@@ -1536,22 +1541,27 @@ function messages(chatId, limit, beforeId, threadId) {
                 return roots.then(function(rootList) {
                   if (rootList.length) {
                     rootList.thread_mode = true;
+                    rootList.debug_summary = debugSummary;
+                    rootList.debug_summary_detail = debugSummaryDetail;
                     return rootList;
                   }
+                  list.debug_summary = debugSummary;
+                  list.debug_summary_detail = debugSummaryDetail;
                   return list;
                 });
               }).catch(function(err) {
                 debugLog('Thread fallback detection failed: ' + (err && err.message ? err.message : err));
+                list.debug_summary = debugSummary;
+                list.debug_summary_detail = debugSummaryDetail;
                 return list;
               });
             }
           }
-          // Diagnostic: summarize the RAW rows so an undetected threaded
-          // chat can be identified on-device. Attached to the initial page
-          // only; the watch can surface it as a status line.
-          if (!threadId && list.debug_summary === undefined) {
-            list.debug_summary = summarizeHistoryCounts(rows);
-            list.debug_summary_detail = summarizeHistoryRows(rows);
+          // Always attach diagnostic so we can see what the server returns
+          // regardless of which detection path (or none) fires.
+          if (!threadId) {
+            list.debug_summary = debugSummary;
+            list.debug_summary_detail = debugSummaryDetail;
           }
           return list;
         });

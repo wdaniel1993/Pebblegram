@@ -1721,10 +1721,9 @@ function getMessages(chatId) {
     rememberMessages(chatId, messages);
     currentChatSignature = messageSignature(messages);
     markRead(chatId);
-    // Diagnostic: when a chat is NOT detected as threaded, inject the raw
-    // history classification as a visible row (survives title overwrites and
-    // screenshots) and log the per-row detail to the JS console.
-    if (!messages.thread_mode && messages.debug_summary) {
+    // Diagnostic: ALWAYS inject the raw history classification as a visible
+    // row so we can see what the server returns regardless of detection.
+    if (messages.debug_summary) {
       messages.push({
         id: 'dbg-' + Date.now(),
         sender: 'DBG',
