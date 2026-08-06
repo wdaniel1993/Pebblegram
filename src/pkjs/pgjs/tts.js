@@ -365,7 +365,13 @@
     }
     // Live stage reporting for the watch pill: options.onStage(stageName)
     // is called at each pipeline step so a hang is VISIBLE immediately.
-    var report = options.onStage || function () {};
+    var lastStage = 'connecting';
+    var report = function (s) {
+      lastStage = s;
+      if (options.onStage) {
+        options.onStage(s);
+      }
+    };
     report('connecting');
     return synthesize(text, voiceName, options).then(function (mp3) {
       if (!mp3 || !mp3.length) {
@@ -393,6 +399,14 @@
     }).then(function (frames) {
       report('streaming');
       return frames;
+    }).catch(function (err) {
+      // Annotate timeouts with the stage where the pipeline stalled so
+      // the watch pill shows exactly which layer hung.
+      var msg = err && err.message ? err.message : String(err || 'tts error');
+      if (msg.indexOf('timed out') >= 0 || msg.indexOf('timeout') >= 0) {
+        throw new Error('tts: stuck at ' + lastStage + ' (' + msg + ')');
+      }
+      throw err;
     });
   }
 

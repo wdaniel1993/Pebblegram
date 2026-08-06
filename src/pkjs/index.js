@@ -2537,6 +2537,19 @@ function sendVoice(chatId, messageId) {
 // voice_done) — the watch needs no new plumbing beyond the action item.
 function speakMessage(chatId, messageId) {
   var startedAt = DEBUG_LOGS ? Date.now() : 0;
+  try {
+    speakMessageInner(chatId, messageId, startedAt);
+  } catch (e) {
+    // A synchronous crash anywhere in the pipeline must never be silent:
+    // surface it on-watch so the pill shows the reason.
+    var crash = e && e.message ? e.message : String(e || 'unknown speak error');
+    debugLog('PGTTS sync crash: ' + crash);
+    voiceTransferActive = false;
+    sendVoiceError(messageId, crash);
+  }
+}
+
+function speakMessageInner(chatId, messageId, startedAt) {
   var message = storedMessage(chatId, messageId);
   if (!message) {
     debugLog('PGTTS chat=' + chatId + ' msg=' + messageId + ' not in store; ignoring');

@@ -3207,9 +3207,16 @@ static void tts_clear_timer_callback(void *data) {
   s_tts_clear_timer = NULL;
   // If we were stuck in SYNTHESIZING (no voice_start ever arrived), the
   // speak pipeline hung — surface it as an error instead of vanishing.
+  // Include the last stage label JS reported so the stall pinpoints the
+  // layer (e.g. "stuck at Connecting..." = socket never opened;
+  // "stuck at Decoding audio..." = MP3/WASM decode hung).
   if (s_tts_state == TTS_STATE_SYNTHESIZING) {
     s_tts_state = TTS_STATE_ERROR;
-    copy_cstr(s_tts_error, sizeof(s_tts_error), "timed out");
+    if (s_tts_stage[0]) {
+      snprintf(s_tts_error, sizeof(s_tts_error), "stuck at %s", s_tts_stage);
+    } else {
+      copy_cstr(s_tts_error, sizeof(s_tts_error), "timed out");
+    }
     show_status("Speak failed");
     // Keep the error pill visible a while longer.
     s_tts_clear_timer = app_timer_register(6000, tts_clear_timer_callback, NULL);
