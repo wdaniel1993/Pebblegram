@@ -153,7 +153,8 @@ typedef enum {
   ActionItemConfirmSend,
   ActionItemConfirmCancel,
   ActionItemPlayVoice,
-  ActionItemStopVoice
+  ActionItemStopVoice,
+  ActionItemSpeakMessage
 } ActionItem;
 
 typedef struct {
@@ -4105,6 +4106,16 @@ static bool selected_message_is_truncated(void) {
          (int)strlen(s_messages[s_selected_message].text) > MESSAGE_PREVIEW_TEXT;
 }
 
+#if HAS_SPEAKER
+// A message is speakable (TTS) when it carries real text and is not itself
+// a voice note (voice notes show the Play/Stop pill instead).
+static bool selected_message_has_text(void) {
+  return has_selected_message() &&
+         s_messages[s_selected_message].text[0] != '\0' &&
+         !s_messages[s_selected_message].voice_placeholder;
+}
+#endif
+
 static bool selected_message_has_context(void) {
   return has_selected_message() && message_has_context(&s_messages[s_selected_message]);
 }
@@ -5381,7 +5392,11 @@ static int action_item_count(void) {
              (s_messages[s_selected_message].outgoing ? 1 : 0) +
              (selected_message_has_context() ? 1 : 0) +
              (selected_message_is_truncated() ? 1 : 0) +
-             (selected_message_has_voice() ? 1 : 0);
+             (selected_message_has_voice() ? 1 : 0)
+#if HAS_SPEAKER
+             + (selected_message_has_text() ? 1 : 0)
+#endif
+             ;
     case ActionMenuChat:
       return 5;
     case ActionMenuCanned:
@@ -5586,6 +5601,10 @@ static ActionMenuLevel *native_build_main_level(void) {
     } else {
       native_add_action(level, "Play Voice", ActionItemPlayVoice, -1);
     }
+  }
+  // TTS: speak any text message aloud (edge-tts on the phone side).
+  if (selected_message_has_text()) {
+    native_add_action(level, "Speak Message", ActionItemSpeakMessage, -1);
   }
 #endif
   if (s_messages[s_selected_message].outgoing) {
@@ -5818,11 +5837,18 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
         layer_mark_dirty(s_messages_root);
       }
       break;
+    case ActionItemSpeakMessage:
+      // TTS: the phone fetches the message text, synthesizes it with
+      // edge-tts, and streams the audio over the same voice channel.
+      send_command("speak_message", s_current_chat_id, NULL, NULL,
+                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      break;
 #else
     // No speaker: the actions are never added to any menu, but the enum
     // cases must exist for -Werror=switch.
     case ActionItemPlayVoice:
     case ActionItemStopVoice:
+    case ActionItemSpeakMessage:
       break;
 #endif
     case ActionItemGoToBottom:

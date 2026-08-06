@@ -30,7 +30,8 @@ function create(options) {
         '&hasSession=' + encodeURIComponent(state.hasSession ? '1' : '0') +
         '&authStage=' + encodeURIComponent(state.authStage || '') +
         '&hasCodeRequest=' + encodeURIComponent(state.hasCodeRequest ? '1' : '0') +
-        '&cannedReplies=' + encodeURIComponent(options.cannedReplies());
+        '&cannedReplies=' + encodeURIComponent(options.cannedReplies()) +
+        '&ttsVoice=' + encodeURIComponent(options.ttsVoice ? options.ttsVoice() : '');
     },
     applySettings: function(data) {
       if (data && data.mode === 'pgjs') {

@@ -102,6 +102,21 @@
     <button id="addReply" class="inline" type="button">Add a canned message</button>
   </section>
 
+  <section>
+    <h2>Message voice (TTS)</h2>
+    <label for="ttsVoice">Voice for "Speak Message"</label>
+    <select id="ttsVoice">
+      <option value="en-US-JennyNeural">English (US) — Jenny</option>
+      <option value="en-US-AriaNeural">English (US) — Aria</option>
+      <option value="en-US-GuyNeural">English (US) — Guy</option>
+      <option value="en-GB-RyanNeural">English (UK) — Ryan</option>
+      <option value="de-DE-KatjaNeural">German (DE) — Katja</option>
+      <option value="de-DE-ConradNeural">German (DE) — Conrad</option>
+      <option value="de-AT-IngridNeural">German (AT) — Ingrid</option>
+    </select>
+    <div class="hint">Reads text messages aloud on watches with a speaker (Time 2, Pebble 2 Duo).</div>
+  </section>
+
   <div class="row">
     <button id="reset" class="secondary" type="button">Log out</button>
     <button id="save" type="button">Save</button>
@@ -143,6 +158,7 @@
   var password = document.getElementById('password');
   var cannedReplies = document.getElementById('cannedReplies');
   var addReply = document.getElementById('addReply');
+  var ttsVoice = document.getElementById('ttsVoice');
   var status = document.getElementById('status');
   var staleNotice = document.getElementById('staleNotice');
   var resetSession = false;
@@ -207,6 +223,11 @@
     addReplyField('');
   }
 
+  // TTS voice: pre-select the saved voice, fall back to the app default.
+  if (query.ttsVoice) {
+    ttsVoice.value = query.ttsVoice;
+  }
+
   // Stage decision — robust to cleared authStage:
   // - saved session (and no pending code) -> session saved, fields disabled
   // - pending login code (authStage=code OR hasCodeRequest=1) -> code input
@@ -266,6 +287,7 @@
       // Pipe-joined like the default so localStorage round-trips stay
       // parseable (arrays would be coerced to comma-separated strings).
       cannedReplies: replyValues().join('|'),
+      ttsVoice: ttsVoice.value,
       resetSession: resetSession
     };
     if (!codeBlock.hidden) {

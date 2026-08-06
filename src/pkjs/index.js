@@ -1,6 +1,7 @@
 var MessageKeys = require('message_keys');
 var pgjsBackend = require('./pgjs/backend');
 var pebblegramVoice = require('./pebblegram-voice');
+var pebblegramTts = require('./pgjs/tts');
 
 var DEBUG_LOGS = false;
 var TELEGRAM_SETTINGS_PAGE_URL = 'https://wdaniel1993.github.io/Pebblegram/pgjs/config.html';
@@ -30,6 +31,9 @@ var AVATAR_CHUNK_SIZE = 500;
 var AVATAR_ROWS = MAX_ROWS;
 var VOICE_DOWNLOAD_TIMEOUT_MS = 60000;
 var VOICE_DECODE_TIMEOUT_MS = 15000;
+// TTS: WS synthesis + MP3 decode happens phone-side; give it a generous
+// budget (network + decode of ~1 min of MP3).
+var TTS_SYNTHESIS_TIMEOUT_MS = 45000;
 // 8kHz 16-bit = 16KB/s; default chunk = 50ms of audio (800 bytes).
 // Keep the value in sync with pebblegram-voice.js DEFAULT_VOICE_CHUNK_BYTES.
 var VOICE_CHUNK_BYTES = 800;
@@ -111,6 +115,9 @@ function activePgjs() {
   if (!pgjs) {
     pgjs = pgjsBackend.create({
       cannedReplies: cannedReplies,
+      ttsVoice: function() {
+        return getSetting('ttsVoice', 'en-US-JennyNeural');
+      },
       status: status
     });
   }
@@ -2528,6 +2535,60 @@ function sendVoice(chatId, messageId) {
   });
 }
 
+// TTS: speak a TEXT message aloud. The watch sent 'speak_message' with the
+// message id; we fetch the stored text, synthesize it with edge-tts, and
+// stream the resulting PCM over the SAME voice channel (voice_start/voice/
+// voice_done) — the watch needs no new plumbing beyond the action item.
+function speakMessage(chatId, messageId) {
+  var startedAt = DEBUG_LOGS ? Date.now() : 0;
+  var message = storedMessage(chatId, messageId);
+  if (!message || !message.text) {
+    debugLog('PGTTS chat=' + chatId + ' msg=' + messageId + ' no text; ignoring');
+    return;
+  }
+  if (message.voice_token) {
+    debugLog('PGTTS msg=' + messageId + ' is a voice note; use Play Voice');
+    return;
+  }
+  // Single-stream-per-watch: cancel any prior voice/TTS transfer.
+  cancelQueuedVoiceTransfers();
+  voiceTransferActive = true;
+  var requestSeq = voiceRequestSeq;
+  var transferId = ++voiceTransferSeq;
+  var voiceName = getSetting('ttsVoice', 'en-US-JennyNeural');
+  var text = String(message.text);
+  withTimeout(
+    pebblegramTts.speakFrames(MessageKeys, String(messageId), transferId, text, voiceName, {}),
+    'tts synthesis timed out', TTS_SYNTHESIS_TIMEOUT_MS
+  ).then(function(frames) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return;
+    }
+    if (!frames || !frames.length) {
+      voiceTransferActive = false;
+      return;
+    }
+    if (DEBUG_LOGS) {
+      logDuration('tts synth ' + messageId, startedAt);
+    }
+    for (var i = 0; i < frames.length; i++) {
+      sendToWatch(frames[i]);
+    }
+  }).catch(function(err) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return;
+    }
+    var detail = err && err.message ? err.message : String(err || 'unknown tts error');
+    debugLog('TTS failed for ' + messageId + ': ' + detail);
+    voiceTransferActive = false;
+    var failed = {};
+    failed[MessageKeys.Type] = 'voice_error';
+    failed[MessageKeys.MessageId] = String(messageId || '');
+    failed[MessageKeys.Error] = diagnosticText(detail, 95);
+    sendToWatch(failed);
+  });
+}
+
 function sendAvatar(chatId, bytes) {
   var start = {};
   var transferId = ++avatarTransferSeq;
@@ -2672,6 +2733,8 @@ Pebble.addEventListener('appmessage', function(event) {
     cancelQueuedImageTransfers();
   } else if (command === 'get_voice') {
     sendVoice(chatId, messageId);
+  } else if (command === 'speak_message') {
+    speakMessage(chatId, messageId);
   } else if (command === 'cancel_voice') {
     cancelQueuedVoiceTransfers();
   } else {
@@ -2703,6 +2766,9 @@ Pebble.addEventListener('webviewclosed', function(event) {
       canned = canned.join('|');
     }
     localStorage.setItem('cannedReplies', canned);
+  }
+  if (data.ttsVoice) {
+    localStorage.setItem('ttsVoice', String(data.ttsVoice));
   }
   sendSettings();
   status('Requesting Telegram login...');
