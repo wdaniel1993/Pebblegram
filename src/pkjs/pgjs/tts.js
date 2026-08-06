@@ -192,6 +192,7 @@
 
       var pendingReads = [];   // in-flight FileReader promises (Blob mode)
       var settled = false;
+      var errorTimer = null;   // onerror fallback (close code may follow)
       // Fast connect watchdog: if onopen hasn't fired shortly after
       // construction, the WebView's socket is silently stuck (no onerror,
       // no onclose) — e.g. egress to speech.platform.bing.com blocked.
@@ -208,6 +209,7 @@
         settled = true;
         clearTimeout(timer);
         clearTimeout(connectTimer);
+        clearTimeout(errorTimer);
         try {
           if (ws && typeof ws.close === 'function') {
             ws.close();
@@ -312,15 +314,35 @@
       };
 
       ws.onerror = function () {
-        finish(null, new Error('tts: websocket error'));
+        // Browsers ALWAYS follow onerror with onclose — do NOT settle here,
+        // or we swallow the close code (the single most diagnostic value).
+        // If an ancient WebView never fires onclose, a short fallback timer
+        // settles with the generic message instead of hanging forever.
+        errorTimer = setTimeout(function () {
+          finish(null, new Error('tts: websocket error'));
+        }, 1500);
       };
 
       ws.onclose = function (event) {
+        clearTimeout(errorTimer);
         // Normal close only happens after turn.end; anything earlier is a
-        // failure (e.g. close 1007 unsupported format, 1006 no UA).
+        // failure (e.g. close 1007 unsupported format, 1006 no UA/network).
         if (!settled) {
-          finish(null, new Error('tts: websocket closed (' +
-                                 (event && event.code !== undefined ? event.code : '?') + ')'));
+          var code = (event && event.code !== undefined) ? event.code : '?';
+          // UA echo: edge-tts ONLY accepts Edge-flavored User-Agents
+          // (verified: Chrome-only UA -> close 1006, Edg/ UA -> accepted).
+          // The phone WebView's native WebSocket cannot set headers, so if
+          // its own UA isn't Edge-flavored the handshake dies here. Echo
+          // UA + XHR availability so the watch pill names the exact cause.
+          var ua = '';
+          var xhr = '0';
+          try {
+            if (typeof navigator !== 'undefined' && navigator.userAgent) {
+              ua = ' ua=' + String(navigator.userAgent).slice(0, 48);
+            }
+            xhr = (typeof XMLHttpRequest !== 'undefined') ? '1' : '0';
+          } catch (e2) { /* environment quirks */ }
+          finish(null, new Error('tts: websocket closed (' + code + ')' + ua + ' xhr=' + xhr));
         }
       };
     });
