@@ -64,8 +64,8 @@
 #define IMAGE_PREPARE_STALL_MS 30000
 #define IMAGE_TRANSFER_STALL_MS 12000
 // Voice playback: PebbleOS speaker_stream_* owns the 8KB PCM ring; we just feed
-// it from the AppMessage inbox. Format is fixed to 8kHz/16bit/mono (PCM value
-// 2 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
+// it from the AppMessage inbox. Format is 16kHz/16bit/mono (PCM value
+// 3 — matches the JS-side default in src/pkjs/pebblegram-voice.js and the
 // verified SpeakerPcmFormat bitfield in coredevices/PebbleOS speaker_service.c).
 // Only emery (Time 2) and flint (Pebble 2 Duo) define PBL_SPEAKER — basalt,
 // diorite, chalk and gabbro (Round 2) have NO physical speaker. Everything
@@ -77,7 +77,7 @@
 #define HAS_SPEAKER 0
 #endif
 #define VOICE_DEFAULT_VOLUME 70
-#define VOICE_EXPECTED_FORMAT 2
+#define VOICE_EXPECTED_FORMAT 3
 #define VOICE_POLL_MS 50
 #define VOICE_DRAIN_RETRY_MS 8
 #define VOICE_STALL_MS 10000

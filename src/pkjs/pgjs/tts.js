@@ -36,10 +36,10 @@
   var OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3';
   var DEFAULT_VOICE = 'en-US-JennyNeural';
 
-  // TTS output is 24kHz; the watch channel is 8kHz 16-bit mono.
-  var TARGET_SAMPLE_RATE = 8000;
-  // 60s of 8kHz 16-bit PCM — same cap as voice notes.
-  var MAX_PCM_BYTES = 960000;
+  // TTS output is 24kHz; the watch channel is 16kHz 16-bit mono.
+  var TARGET_SAMPLE_RATE = 16000;
+  // 60s of 16kHz 16-bit PCM — same cap as voice notes.
+  var MAX_PCM_BYTES = 1920000;
   // Long messages would take minutes to speak; cap text length (~1 min
   // of speech ≈ 250-300 chars for English at a natural pace).
   var MAX_TEXT_CHARS = 600;
@@ -561,16 +561,16 @@
         throw new Error('tts: empty decode');
       }
       report('framing');
-      var resampled = voice.resampleLinear(float32, 24000, TARGET_SAMPLE_RATE);
+      var resampled = voice.resampleSinc(float32, 24000, TARGET_SAMPLE_RATE);
       var pcmBytes = voice.floatToPcm16LE(resampled);
       if (pcmBytes.length > MAX_PCM_BYTES) {
         pcmBytes = pcmBytes.subarray(0, MAX_PCM_BYTES);
       }
       var meta = {
         sampleRate: TARGET_SAMPLE_RATE,
-        format: voice.PCM_FORMAT['8kHz_16bit'],
-        formatName: '8kHz_16bit',
-        durationMs: Math.round(pcmBytes.length / 16)
+        format: voice.PCM_FORMAT['16kHz_16bit'],
+        formatName: '16kHz_16bit',
+        durationMs: Math.round(pcmBytes.length / 32)
       };
       return voice.buildVoiceFrames(messageKeys, token, transferId, pcmBytes, meta);
     }).then(function (frames) {
