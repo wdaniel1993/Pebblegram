@@ -2560,8 +2560,33 @@ function speakMessage(chatId, messageId) {
   var transferId = ++voiceTransferSeq;
   var voiceName = getSetting('ttsVoice', 'en-US-JennyNeural');
   var text = String(message.text);
+
+  // Live stage reporting: tell the watch pill where the pipeline is, so a
+  // hang is visible (Connecting → Synthesizing → Decoding → Framing →
+  // Streaming) instead of a static "Synthesizing...".
+  function reportStage(stage) {
+    if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {
+      return;
+    }
+    var labels = {
+      connecting: 'Connecting...',
+      synthesizing: 'Synthesizing...',
+      decoding: 'Decoding audio...',
+      framing: 'Preparing frames...',
+      streaming: 'Streaming...'
+    };
+    var payload = {};
+    payload[MessageKeys.Type] = 'tts_status';
+    payload[MessageKeys.MessageId] = String(messageId || '');
+    payload[MessageKeys.Text] = labels[stage] || 'Synthesizing...';
+    sendToWatch(payload);
+  }
+
   withTimeout(
-    pebblegramTts.speakFrames(MessageKeys, String(messageId), transferId, text, voiceName, {}),
+    pebblegramTts.speakFrames(MessageKeys, String(messageId), transferId, text, voiceName, {
+      voice: pebblegramVoice,
+      onStage: reportStage
+    }),
     'tts synthesis timed out', TTS_SYNTHESIS_TIMEOUT_MS
   ).then(function(frames) {
     if (requestSeq !== voiceRequestSeq || currentChatId !== chatId) {

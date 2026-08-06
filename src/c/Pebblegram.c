@@ -328,6 +328,9 @@ static char s_tts_error[96];
 static char s_tts_message_id[MAX_ID];
 static AppTimer *s_tts_clear_timer;
 static int s_voice_duration_ms;
+// Live stage label from JS ("Connecting...", "Decoding audio..." etc.) —
+// shown in the pill while SYNTHESIZING so a hang pinpoints the stage.
+static char s_tts_stage[32];
 #else
 // Speakerless builds: the speak action never exists, so the whole TTS
 // status UI is compiled out. Stub the one call site (no-op) so the shared
@@ -3213,6 +3216,7 @@ static void tts_clear_timer_callback(void *data) {
   } else {
     s_tts_state = TTS_STATE_IDLE;
     s_tts_error[0] = '\0';
+    s_tts_stage[0] = '\0';
   }
   if (s_messages_root) {
     layer_mark_dirty(s_messages_root);
@@ -3225,6 +3229,7 @@ static void tts_set_state(int state, const char *detail, const char *message_id)
     s_tts_clear_timer = NULL;
   }
   s_tts_state = state;
+  s_tts_stage[0] = '\0';
   if (detail && detail[0]) {
     copy_cstr(s_tts_error, sizeof(s_tts_error), detail);
   } else {
@@ -3281,7 +3286,7 @@ static void draw_tts_status(GContext *ctx, GRect bounds) {
 
   char label[110];
   if (s_tts_state == TTS_STATE_SYNTHESIZING) {
-    snprintf(label, sizeof(label), "Synthesizing\u2026");
+    snprintf(label, sizeof(label), "%s", s_tts_stage[0] ? s_tts_stage : "Synthesizing\u2026");
   } else if (s_tts_state == TTS_STATE_ERROR) {
     snprintf(label, sizeof(label), "Speak failed: %s", s_tts_error[0] ? s_tts_error : "unknown");
   } else {
@@ -3527,6 +3532,7 @@ static void destroy_chat_view(void) {
   }
   s_tts_state = TTS_STATE_IDLE;
   s_tts_error[0] = '\0';
+  s_tts_stage[0] = '\0';
 #endif
   if (s_chat_menu_animation) {
     animation_unschedule((Animation *)s_chat_menu_animation);
@@ -5432,6 +5438,23 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
+    return;
+  }
+
+  if (strcmp(type, "tts_status") == 0) {
+    // Live TTS stage label from JS — refresh the pill while synthesizing
+    // so a hang shows exactly where the pipeline is stuck.
+#if HAS_SPEAKER
+    char *stage = tuple_cstring(iter, MESSAGE_KEY_Text);
+    if (s_tts_state == TTS_STATE_SYNTHESIZING && stage && stage[0]) {
+      copy_cstr(s_tts_stage, sizeof(s_tts_stage), stage);
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+    }
+#else
+    (void)iter;
+#endif
     return;
   }
 

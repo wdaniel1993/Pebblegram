@@ -184,6 +184,14 @@
 
       var pendingReads = [];   // in-flight FileReader promises (Blob mode)
       var settled = false;
+      // Fast connect watchdog: if onopen hasn't fired shortly after
+      // construction, the WebView's socket is silently stuck (no onerror,
+      // no onclose) — e.g. egress to speech.platform.bing.com blocked.
+      var connectTimer = setTimeout(function () {
+        if (!settled && (!ws || ws.readyState !== 1)) {
+          finish(null, new Error('tts: connect timeout'));
+        }
+      }, options.connectTimeoutMs || 8000);
 
       function finish(mp3, err) {
         if (settled) {
@@ -191,6 +199,7 @@
         }
         settled = true;
         clearTimeout(timer);
+        clearTimeout(connectTimer);
         try {
           if (ws && typeof ws.close === 'function') {
             ws.close();
@@ -258,6 +267,9 @@
 
       ws.onopen = function () {
         try {
+          if (options.onStage) {
+            options.onStage('synthesizing');
+          }
           ws.send(buildConfigFrame());
           ws.send(buildSsmlFrame(text, voiceName, requestId));
         } catch (e) {
@@ -351,15 +363,21 @@
     if (!voice) {
       return Promise.reject(new Error('tts: voice module not available'));
     }
+    // Live stage reporting for the watch pill: options.onStage(stageName)
+    // is called at each pipeline step so a hang is VISIBLE immediately.
+    var report = options.onStage || function () {};
+    report('connecting');
     return synthesize(text, voiceName, options).then(function (mp3) {
       if (!mp3 || !mp3.length) {
         throw new Error('tts: empty synthesis');
       }
+      report('decoding');
       return decodeMp3(mp3, options);
     }).then(function (float32) {
       if (!float32 || !float32.length) {
         throw new Error('tts: empty decode');
       }
+      report('framing');
       var resampled = voice.resampleLinear(float32, 24000, TARGET_SAMPLE_RATE);
       var pcmBytes = voice.floatToPcm16LE(resampled);
       if (pcmBytes.length > MAX_PCM_BYTES) {
@@ -372,6 +390,9 @@
         durationMs: Math.round(pcmBytes.length / 16)
       };
       return voice.buildVoiceFrames(messageKeys, token, transferId, pcmBytes, meta);
+    }).then(function (frames) {
+      report('streaming');
+      return frames;
     });
   }
 
