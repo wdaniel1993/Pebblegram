@@ -1721,15 +1721,21 @@ function getMessages(chatId) {
     rememberMessages(chatId, messages);
     currentChatSignature = messageSignature(messages);
     markRead(chatId);
-    sendMessageRows(messages, chatId, 'initial');
-    warmChatHistory(chatId);
-    // Diagnostic: when a chat is NOT detected as threaded, surface the raw
-    // history classification on the watch (compact counts) and in the JS
-    // console (per-row detail) so we can see what the server returned.
+    // Diagnostic: when a chat is NOT detected as threaded, inject the raw
+    // history classification as a visible row (survives title overwrites and
+    // screenshots) and log the per-row detail to the JS console.
     if (!messages.thread_mode && messages.debug_summary) {
-      status('DBG ' + messages.debug_summary);
+      messages.push({
+        id: 'dbg-' + Date.now(),
+        sender: 'DBG',
+        text: messages.debug_summary,
+        outgoing: false,
+        thread_replies: 0
+      });
       debugLog('DBG history ' + chatId + ': ' + (messages.debug_summary_detail || messages.debug_summary));
     }
+    sendMessageRows(messages, chatId, 'initial');
+    warmChatHistory(chatId);
   }).catch(function(err) {
     delete messageLoadPromises[key];
     promiseError('Messages failed', err);
