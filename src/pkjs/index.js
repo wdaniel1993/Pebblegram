@@ -2527,11 +2527,7 @@ function sendVoice(chatId, messageId) {
     var detail = err && err.message ? err.message : String(err || 'unknown voice error');
     debugLog('Voice failed for ' + messageId + ': ' + detail);
     voiceTransferActive = false;
-    var failed = {};
-    failed[MessageKeys.Type] = 'voice_error';
-    failed[MessageKeys.MessageId] = String(messageId || '');
-    failed[MessageKeys.Error] = diagnosticText(detail, 95);
-    sendToWatch(failed);
+    sendVoiceError(messageId, detail);
   });
 }
 
@@ -2542,12 +2538,19 @@ function sendVoice(chatId, messageId) {
 function speakMessage(chatId, messageId) {
   var startedAt = DEBUG_LOGS ? Date.now() : 0;
   var message = storedMessage(chatId, messageId);
-  if (!message || !message.text) {
-    debugLog('PGTTS chat=' + chatId + ' msg=' + messageId + ' no text; ignoring');
+  if (!message) {
+    debugLog('PGTTS chat=' + chatId + ' msg=' + messageId + ' not in store; ignoring');
+    sendVoiceError(messageId, 'Message not loaded');
+    return;
+  }
+  if (!message.text) {
+    debugLog('PGTTS msg=' + messageId + ' no text; ignoring');
+    sendVoiceError(messageId, 'No text to speak');
     return;
   }
   if (message.voice_token) {
     debugLog('PGTTS msg=' + messageId + ' is a voice note; use Play Voice');
+    sendVoiceError(messageId, 'Voice note, not text');
     return;
   }
   // Single-stream-per-watch: cancel any prior voice/TTS transfer.
@@ -2581,12 +2584,17 @@ function speakMessage(chatId, messageId) {
     var detail = err && err.message ? err.message : String(err || 'unknown tts error');
     debugLog('TTS failed for ' + messageId + ': ' + detail);
     voiceTransferActive = false;
-    var failed = {};
-    failed[MessageKeys.Type] = 'voice_error';
-    failed[MessageKeys.MessageId] = String(messageId || '');
-    failed[MessageKeys.Error] = diagnosticText(detail, 95);
-    sendToWatch(failed);
+    sendVoiceError(messageId, detail);
   });
+}
+
+// Send a visible voice_error to the watch (C shows a status + error pill).
+function sendVoiceError(messageId, detail) {
+  var failed = {};
+  failed[MessageKeys.Type] = 'voice_error';
+  failed[MessageKeys.MessageId] = String(messageId || '');
+  failed[MessageKeys.Error] = diagnosticText(detail, 95);
+  sendToWatch(failed);
 }
 
 function sendAvatar(chatId, bytes) {

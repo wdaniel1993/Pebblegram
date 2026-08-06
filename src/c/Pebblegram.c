@@ -312,6 +312,28 @@ static char s_thread_root[MAX_ID];
 static bool s_voice_playing;
 static bool s_voice_stream_open;
 static int s_avatar_size;
+// TTS (Speak Message) status UI: a pill at the bottom of the chat view
+// showing the synthesis phase, playback duration + progress, or the error
+// detail — so a stalled/failed speak is VISIBLE instead of silent.
+// 0 = idle, 1 = synthesizing (command sent, awaiting voice_start),
+// 2 = playing (voice_start seen, progress from s_voice_received/total),
+// 3 = error (voice_error detail shown, auto-clears).
+#define TTS_STATE_IDLE 0
+#define TTS_STATE_SYNTHESIZING 1
+#define TTS_STATE_PLAYING 2
+#define TTS_STATE_ERROR 3
+#if HAS_SPEAKER
+static int s_tts_state;
+static char s_tts_error[96];
+static char s_tts_message_id[MAX_ID];
+static AppTimer *s_tts_clear_timer;
+static int s_voice_duration_ms;
+#else
+// Speakerless builds: the speak action never exists, so the whole TTS
+// status UI is compiled out. Stub the one call site (no-op) so the shared
+// voice handlers stay untouched.
+#define tts_set_state(state, detail, message_id) ((void)0)
+#endif
 static int s_avatar_received;
 static int s_avatar_expected_offset;
 static int s_avatar_transfer_id;
@@ -401,6 +423,10 @@ static void schedule_voice_drain_retry(void);
 static void schedule_voice_poll(void);
 static void reset_voice_transfer_state(void);
 static void cancel_active_voice(void);
+#if HAS_SPEAKER
+static void tts_set_state(int state, const char *detail, const char *message_id);
+static void tts_clear_timer_callback(void *data);
+#endif
 #if HAS_SPEAKER
 static bool send_voice_request(const char *message_id);
 #endif
@@ -1150,6 +1176,9 @@ static void reset_voice_transfer_state(void) {
   s_voice_received = 0;
   s_voice_total = 0;
   s_voice_format = 0;
+#if HAS_SPEAKER
+  s_voice_duration_ms = 0;
+#endif
   s_voice_active = false;
   s_voice_playing = false;
   s_voice_spill_len = 0;
@@ -1173,6 +1202,16 @@ static void cancel_active_voice(void) {
     speaker_stop();
   }
   reset_voice_transfer_state();
+  // TTS: cancelled/stopped — clear the status pill (keeps error detail if
+  // the cancel came from a failure path).
+#if HAS_SPEAKER
+  if (s_tts_state != TTS_STATE_ERROR) {
+    s_tts_state = TTS_STATE_IDLE;
+    if (s_messages_root) {
+      layer_mark_dirty(s_messages_root);
+    }
+  }
+#endif
 }
 
 // Forward one chunk to the OS ring, spilling any partial-write tail into
@@ -1213,6 +1252,12 @@ static void voice_poll_timer_callback(void *data) {
       }
     }
     cancel_voice_poll_timer();
+    // TTS: playback finished — clear the status pill.
+#if HAS_SPEAKER
+    if (s_tts_state == TTS_STATE_PLAYING) {
+      s_tts_state = TTS_STATE_IDLE;
+    }
+#endif
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -3154,6 +3199,114 @@ static void draw_compose_bubble(GContext *ctx, GRect bounds) {
   }
 }
 
+#if HAS_SPEAKER
+static void tts_clear_timer_callback(void *data) {
+  s_tts_clear_timer = NULL;
+  // If we were stuck in SYNTHESIZING (no voice_start ever arrived), the
+  // speak pipeline hung — surface it as an error instead of vanishing.
+  if (s_tts_state == TTS_STATE_SYNTHESIZING) {
+    s_tts_state = TTS_STATE_ERROR;
+    copy_cstr(s_tts_error, sizeof(s_tts_error), "timed out");
+    show_status("Speak failed");
+    // Keep the error pill visible a while longer.
+    s_tts_clear_timer = app_timer_register(6000, tts_clear_timer_callback, NULL);
+  } else {
+    s_tts_state = TTS_STATE_IDLE;
+    s_tts_error[0] = '\0';
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+static void tts_set_state(int state, const char *detail, const char *message_id) {
+  if (s_tts_clear_timer) {
+    app_timer_cancel(s_tts_clear_timer);
+    s_tts_clear_timer = NULL;
+  }
+  s_tts_state = state;
+  if (detail && detail[0]) {
+    copy_cstr(s_tts_error, sizeof(s_tts_error), detail);
+  } else {
+    s_tts_error[0] = '\0';
+  }
+  if (message_id && message_id[0]) {
+    copy_cstr(s_tts_message_id, sizeof(s_tts_message_id), message_id);
+  }
+  if (state == TTS_STATE_ERROR) {
+    // Auto-clear the error pill after a few seconds so it doesn't linger.
+    s_tts_clear_timer = app_timer_register(6000, tts_clear_timer_callback, NULL);
+  } else if (state == TTS_STATE_SYNTHESIZING) {
+    // Synthesis has ~30s (JS timeout is 45s) — if no voice_start arrives
+    // by then, the pipeline is stuck; report it.
+    s_tts_clear_timer = app_timer_register(30000, tts_clear_timer_callback, NULL);
+  }
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+}
+
+// TTS status pill: a compact bar above the compose bubble showing the
+// speak pipeline state — "Synthesizing…", "Speaking 0:03 / 0:12" with a
+// progress fill, or the error detail. Drawn LAST so nothing covers it.
+static void draw_tts_status(GContext *ctx, GRect bounds) {
+  if (s_tts_state == TTS_STATE_IDLE || !s_messages_root) {
+    return;
+  }
+  int pill_h = 24;
+  int margin = 6;
+  GRect compose_rect = compose_rect_for_bounds(bounds);
+  int compose_y = compose_rect.origin.y;
+  // Sit directly above the compose bubble (or at the bottom edge when the
+  // compose bubble is hidden).
+  int y = compose_y - pill_h - 3;
+  if (y < margin) {
+    y = margin;
+  }
+  GRect pill = GRect(margin, y, bounds.size.w - 2 * margin, pill_h);
+
+  bool is_error = s_tts_state == TTS_STATE_ERROR;
+  graphics_context_set_fill_color(ctx, BW_UI ? GColorWhite : (is_error ? APP_COLOR_LIGHT : GColorLightGray));
+  graphics_fill_rect(ctx, pill, 4, GCornersAll);
+  graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : (is_error ? APP_COLOR : GColorDarkGray));
+  graphics_draw_round_rect(ctx, pill, 4);
+  graphics_context_set_text_color(ctx, GColorBlack);
+
+  char label[110];
+  if (s_tts_state == TTS_STATE_SYNTHESIZING) {
+    snprintf(label, sizeof(label), "Synthesizing\u2026");
+  } else if (s_tts_state == TTS_STATE_ERROR) {
+    snprintf(label, sizeof(label), "Speak failed: %s", s_tts_error[0] ? s_tts_error : "unknown");
+  } else {
+    // Playing: "Speaking 0:03 / 0:12" (duration from voice_start).
+    int total_s = (s_voice_duration_ms + 500) / 1000;
+    int played_s = (s_voice_total > 0)
+      ? (int)((long long)s_voice_received * s_voice_duration_ms / s_voice_total / 1000)
+      : 0;
+    snprintf(label, sizeof(label), "Speaking %d:%02d / %d:%02d",
+             played_s / 60, played_s % 60, total_s / 60, total_s % 60);
+  }
+  graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(pill.origin.x + 6, pill.origin.y + 1,
+                           pill.size.w - 12, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  // Progress bar under the label while playing.
+  if (s_tts_state == TTS_STATE_PLAYING && s_voice_total > 0) {
+    int bar_h = 3;
+    int bar_y = pill.origin.y + pill_h - bar_h - 3;
+    GRect bar = GRect(pill.origin.x + 6, bar_y, pill.size.w - 12, bar_h);
+    graphics_context_set_fill_color(ctx, BW_UI ? GColorBlack : GColorDarkGray);
+    graphics_fill_rect(ctx, bar, 1, GCornersAll);
+    int fill_w = (int)((long long)bar.size.w * s_voice_received / s_voice_total);
+    if (fill_w > 0) {
+      graphics_context_set_fill_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
+      graphics_fill_rect(ctx, GRect(bar.origin.x, bar.origin.y, fill_w, bar_h), 1, GCornersAll);
+    }
+  }
+}
+#endif  // HAS_SPEAKER
+
 static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   graphics_context_set_fill_color(ctx, CHAT_BG);
@@ -3351,9 +3504,22 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
     draw_touch_keyboard(ctx, bounds);
   }
 #endif
+
+  // TTS status pill drawn LAST so nothing covers it.
+#if HAS_SPEAKER
+  draw_tts_status(ctx, bounds);
+#endif
 }
 
 static void destroy_chat_view(void) {
+#if HAS_SPEAKER
+  if (s_tts_clear_timer) {
+    app_timer_cancel(s_tts_clear_timer);
+    s_tts_clear_timer = NULL;
+  }
+  s_tts_state = TTS_STATE_IDLE;
+  s_tts_error[0] = '\0';
+#endif
   if (s_chat_menu_animation) {
     animation_unschedule((Animation *)s_chat_menu_animation);
     property_animation_destroy(s_chat_menu_animation);
@@ -5145,6 +5311,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     s_voice_received = 0;
     s_voice_spill_len = 0;
     s_voice_spill_offset = 0;
+#if HAS_SPEAKER
+    s_voice_duration_ms = voice_duration > 0 ? voice_duration : 0;
+#endif
     s_voice_stream_open = speaker_stream_open(
         (SpeakerPcmFormat)voice_format, VOICE_DEFAULT_VOLUME);
     if (!s_voice_stream_open) {
@@ -5162,6 +5331,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
         message->voice_duration_ms = (uint16_t)PG_MIN(voice_duration, 600000);
       }
     }
+    // TTS: synthesis finished — the audio stream has started. Flip the
+    // status pill to playback mode (duration + progress). Voice notes get
+    // the same pill treatment so both paths show live progress.
+    tts_set_state(TTS_STATE_PLAYING, NULL, token);
     schedule_voice_poll();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
@@ -5201,6 +5374,15 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     write_voice_chunk(data->value->data, data_len);
     s_voice_expected_seq = expected + data_len;
     s_voice_received += data_len;
+    // Live progress: redraw the TTS status pill as chunks land. Throttle
+    // to every 4th chunk (50ms each) so we don't redraw at 20fps.
+#if HAS_SPEAKER
+    if (s_tts_state == TTS_STATE_PLAYING && (s_voice_received & 0x7FF) < 800) {
+      if (s_messages_root) {
+        layer_mark_dirty(s_messages_root);
+      }
+    }
+#endif
     return;
   }
 
@@ -5236,6 +5418,9 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     // Keep s_voice_playing true until the OS reports idle — voice_poll_timer
     // will flip it. Schedule a poll in case no timer is active yet.
     schedule_voice_poll();
+    // TTS: playback transfer complete. Keep the pill in PLAYING state until
+    // the OS reports idle (voice_poll flips it), then it clears — so the
+    // progress bar reaches 100% before disappearing.
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -5249,6 +5434,16 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
             "voice_error msg=%s detail=%s",
             message_id ? message_id : "(null)",
             detail && detail[0] ? detail : "");
+    // TTS: surface the failure on-watch — the pill shows the detail so a
+    // stuck speak is diagnosable instead of silent.
+#if HAS_SPEAKER
+    if (s_tts_state != TTS_STATE_IDLE) {
+      tts_set_state(TTS_STATE_ERROR, detail ? detail : "voice failed", message_id);
+      show_status("Speak failed");
+    }
+#else
+    (void)detail;
+#endif
     cancel_active_voice();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
@@ -5366,6 +5561,16 @@ static void outbox_failed_callback(DictionaryIterator *iter, AppMessageResult re
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
+    return;
+  }
+  if (command && strcmp(command, "speak_message") == 0) {
+    // JS never received the speak request — surface it in the TTS pill.
+    char *message_id = tuple_cstring(iter, MESSAGE_KEY_MessageId);
+    tts_set_state(TTS_STATE_ERROR, "send failed", message_id);
+    show_status("Speak failed");
+    APP_LOG(APP_LOG_LEVEL_WARNING,
+            "speak_message send failed for msg=%s reason=%d",
+            message_id ? message_id : "(null)", (int)reason);
     return;
   }
   show_status("Send failed");
@@ -5840,8 +6045,15 @@ static void native_action_perform(ActionMenu *action_menu, const ActionMenuItem 
     case ActionItemSpeakMessage:
       // TTS: the phone fetches the message text, synthesizes it with
       // edge-tts, and streams the audio over the same voice channel.
-      send_command("speak_message", s_current_chat_id, NULL, NULL,
-                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      // Show the synthesis phase immediately so the user sees progress.
+      tts_set_state(TTS_STATE_SYNTHESIZING, NULL,
+                    has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      show_status("Synthesizing...");
+      if (!send_command("speak_message", s_current_chat_id, NULL, NULL,
+                        has_selected_message() ? s_messages[s_selected_message].id : NULL)) {
+        tts_set_state(TTS_STATE_ERROR, "send failed",
+                      has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      }
       break;
 #else
     // No speaker: the actions are never added to any menu, but the enum

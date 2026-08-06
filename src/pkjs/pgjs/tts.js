@@ -186,6 +186,14 @@
 
       try {
         ws = wsFactory(url);
+        // CRITICAL: native WebSocket defaults to binaryType='blob' — Blob
+        // reads are ASYNC, so Path:turn.end can arrive before the blobs
+        // are read (→ "empty synthesis"). ArrayBuffer delivers binary
+        // frames synchronously; both the WebView and the ws package
+        // support setting it before open.
+        if (ws && typeof ws.binaryType === 'string') {
+          ws.binaryType = 'arraybuffer';
+        }
       } catch (e) {
         finish(null, e);
         return;
