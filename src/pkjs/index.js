@@ -2217,6 +2217,10 @@ function createThreadAndSend(chatId, text) {
     var payload = {};
     payload[MessageKeys.Type] = 'thread_created';
     sendToWatch(payload);
+    // The cached thread list no longer reflects reality (new topic is
+    // missing) — drop it so the next getMessages fetch is fresh and the
+    // new thread shows up in the list.
+    removeChatCache(chatId, true);
     // Open the fresh thread so the user sees their message + bot reply.
     if (rootId) {
       getThreadMessages(chatId, rootId);

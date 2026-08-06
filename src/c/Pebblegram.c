@@ -2030,10 +2030,13 @@ static void thread_menu_select_callback(struct MenuLayer *menu_layer, MenuIndex 
     // "New chat" row: start a new topic. Voice-dictate the first message;
     // the confirm flow routes through send_text_message, which in thread
     // list mode (s_thread_mode && !s_thread_root) sends create_thread.
+    // NOTE: dictation starts HERE directly — do NOT set
+    // s_native_deferred_dictation (that flag is only for menu-deferred
+    // dictation; leaving it set makes native_action_menu_did_close start
+    // a SECOND dictation when the confirm menu closes).
     s_pending_edit_message_id[0] = '\0';
     s_pending_chat_command[0] = '\0';
     s_pending_send_as_reply = false;
-    s_native_deferred_dictation = true;
     start_dictation();
     return;
   }
