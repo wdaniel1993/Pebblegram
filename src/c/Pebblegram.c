@@ -1255,6 +1255,15 @@ static void voice_poll_timer_callback(void *data) {
   if (!s_voice_playing) {
     return;
   }
+  if (!s_voice_started) {
+    // Priming: voice_start landed but the speaker is opened lazily on the
+    // FIRST voice chunk (BLE round-trip away). speaker_get_status() is
+    // Idle because nothing is open yet — that is NOT "finished". Keep
+    // polling so the pill survives the priming gap.
+    s_voice_poll_timer = app_timer_register(VOICE_POLL_MS,
+                                             voice_poll_timer_callback, NULL);
+    return;
+  }
   SpeakerStatus status = speaker_get_status();
   if (status == SpeakerStatusIdle) {
     s_voice_playing = false;
