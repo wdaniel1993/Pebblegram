@@ -202,7 +202,21 @@ function validMediaBytes(bytes) {
 }
 
 function errorText(err) {
-  return err && err.message ? err.message : String(err || 'unknown');
+  if (err && err.message) {
+    return err.message;
+  }
+  if (err === undefined || err === null) {
+    return 'unknown';
+  }
+  if (Array.isArray(err)) {
+    return 'array[' + err.length + ']';
+  }
+  if (typeof err === 'object' && err.constructor && err.constructor.name &&
+      err.constructor.name !== 'Object') {
+    return err.constructor.name + (err.errorMessage ? ': ' + err.errorMessage : '');
+  }
+  var s = String(err);
+  return s || (typeof err);
 }
 
 function messageDocument(message) {
@@ -1936,7 +1950,9 @@ function downloadMedia(chatId, messageId, options) {
       return downloadFullMediaBytes(client, message, {cancelled: options && options.cancelled}).catch(function(fullErr) {
         throwIfImageRequestCancelled(options);
         return downloadFullMediaBytes(client, photo || message.media, {cancelled: options && options.cancelled}).catch(function(photoErr) {
-          throw new Error('media download failed: message=' + errorText(fullErr) +
+          var dc = photo && photo.dcId !== undefined && photo.dcId !== null
+            ? 'dc=' + photo.dcId + ' ' : '';
+          throw new Error('media download failed: ' + dc + 'message=' + errorText(fullErr) +
                           '; photo=' + errorText(photoErr));
         });
       });

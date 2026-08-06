@@ -16,7 +16,7 @@
 #define MAX_META 16
 #define MAX_CONTEXT_TEXT PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 60, 60, 60, 56, 72, 72, 64)
 #define MAX_ID 24
-#define MAX_IMAGE_ERROR 32
+#define MAX_IMAGE_ERROR 96
 #define MAX_IMAGE_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 13000, 9500, 9500, 8500, 40000, 23000, 23000)
 #define MAX_AVATAR_BYTES PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3000, 3000, 3000, 2200, 3000, 3000, 3000)
 #define MAX_LOADED_IMAGES 1
@@ -3257,7 +3257,7 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 	        graphics_draw_round_rect(ctx, image_rect, 4);
 	        graphics_context_set_text_color(ctx, GColorBlack);
 		        int requested_h = loading_detail[0] && image_rect.size.h >= 64 ? 58 : 42;
-		        int label_h = message->image_failed ? PG_MIN(image_rect.size.h - 4, 46) : 24;
+		        int label_h = message->image_failed ? PG_MIN(image_rect.size.h - 4, 92) : 24;
 		        int label_y = image_rect.origin.y + PG_MAX(2, (image_rect.size.h - (message->image_requested ? requested_h : label_h)) / 2);
 		        graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
 		                           GRect(image_rect.origin.x + 4, label_y, image_rect.size.w - 8, label_h),
