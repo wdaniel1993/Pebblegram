@@ -1721,18 +1721,6 @@ function getMessages(chatId) {
     rememberMessages(chatId, messages);
     currentChatSignature = messageSignature(messages);
     markRead(chatId);
-    // Diagnostic: ALWAYS inject the raw history classification as a visible
-    // row so we can see what the server returns regardless of detection.
-    if (messages.debug_summary) {
-      messages.push({
-        id: 'dbg-' + Date.now(),
-        sender: 'DBG',
-        text: messages.debug_summary,
-        outgoing: false,
-        thread_replies: 0
-      });
-      debugLog('DBG history ' + chatId + ': ' + (messages.debug_summary_detail || messages.debug_summary));
-    }
     sendMessageRows(messages, chatId, 'initial');
     warmChatHistory(chatId);
   }).catch(function(err) {

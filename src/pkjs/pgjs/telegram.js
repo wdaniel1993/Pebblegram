@@ -1351,6 +1351,66 @@ function topicCreationRowIds(rows) {
   return ids;
 }
 
+// Build a thread list for a forum-style bot chat by calling the proper API
+// (messages.getForumTopics) instead of trying to infer threads from history
+// rows. Returns normalized rows with thread_list=true and thread_replies
+// set from the topic's top_message — compatible with the existing watch
+// ThreadList rendering.
+function fetchForumTopics(client, chatId) {
+  return client.getForumTopics(chatId, {limit: 30}).then(function(result) {
+    var topics = result && result.topics ? result.topics : [];
+    var topicMessages = result && result.messages ? result.messages : [];
+    // Build a quick lookup for the top message of each topic — the watch
+    // needs id, text, sender, and a reply count for the thread list row.
+    var msgById = {};
+    topicMessages.forEach(function(m) {
+      if (m && m.id !== undefined && m.id !== null) {
+        msgById[String(m.id)] = m;
+      }
+    });
+    var rows = topics.map(function(topic) {
+      var topId = topic.topMessage || topic.id;
+      var topMsg = msgById[String(topId)] || msgById[String(topic.id)] || null;
+      // If we have the top message, normalize it so sender/preview look
+      // right. Otherwise synthesize a minimal row from the topic title.
+      if (topMsg) {
+        var row = normalizeMessage(topMsg, 0);
+        // thread_replies = reply count on the top message if available;
+        // otherwise use the topic's unreadCount as a weaker signal.
+        row.thread_replies = messageRepliesCount(topMsg) || topic.unreadCount || 0;
+        // The thread root id for open_thread/to send replies under.
+        // ForumTopic.id IS the root message id.
+        row.id = String(topic.id);
+        // If the topic has a title, use it as the sender label so the
+        // watch shows the topic name prominently.
+        if (topic.title) {
+          row.sender = topic.title;
+        }
+        return row;
+      }
+      // No top message body in the response — synthesize from the title.
+      return {
+        id: String(topic.id),
+        sender: topic.title || 'Topic',
+        text: topic.title || '',
+        reactions: '',
+        meta: '',
+        outgoing: false,
+        image_token: null,
+        image_width: 0,
+        image_height: 0,
+        voice_token: null,
+        voice_duration_ms: 0,
+        thread_replies: topic.unreadCount || 0
+      };
+    });
+    return rows;
+  }).catch(function(err) {
+    debugLog('getForumTopics failed: ' + (err && err.message ? err.message : err));
+    return null;
+  });
+}
+
 function textWithEntitiesText(value) {
   if (!value) {
     return '';
@@ -1507,61 +1567,27 @@ function messages(chatId, limit, beforeId, threadId) {
       options.replyTo = parseInt(threadId, 10) || threadId;
     }
     return client.getMessages(chatId, options).then(function(rows) {
-      // Diagnostic: ALWAYS attach the raw history classification, even when
-      // threaded-mode detection succeeds — so we can see what the server
-      // actually returns regardless of which detection path fires.
-      var debugSummary = summarizeHistoryCounts(rows);
-      var debugSummaryDetail = summarizeHistoryRows(rows);
       return normalizeMessageRows(client, chatId, rows.slice().reverse(), readOutboxByChatId[chatId] || 0)
         .then(function(list) {
-          // Threaded-mode bot chat: the history of such a chat is a list of
-          // thread ROOTS (each carrying its MessageReplies count). Expose
-          // thread_mode on the array so the watch renders a thread list
-          // instead of bubbles. Only detected on the initial (non-thread)
-          // page to keep flat chats untouched.
+          // Primary detection: any row with thread_replies > 0 (root
+          // carrying a MessageReplies count) → this is a threaded chat.
           if (!threadId && list.some(function(r) {
             return r.thread_replies > 0;
           })) {
             list.thread_mode = true;
           }
-          // Fallback detection: a page can contain only in-thread replies
-          // (each carries replyToTopId pointing at its root) when the newest
-          // thread is long, or forum-topic creation rows (MessageService +
-          // MessageActionTopicCreate) that carry no reply count at all. If no
-          // root has a count but threads exist, fetch the actual roots by id
-          // so the watch still gets a thread list.
+          // If not detected yet, try the proper API (messages.getForumTopics)
+          // and see if the chat has forum topics. This catches the common
+          // case where the history page contains only in-thread replies
+          // (T>0, R=0) — the forum-topics API is the authoritative source.
           if (!threadId && !list.thread_mode) {
-            var rootIds = uniqueThreadRootIds(rows);
-            if (!rootIds.length) {
-              rootIds = topicCreationRowIds(rows);
-            }
-            if (rootIds.length) {
-              return fetchMessagesByIds(client, chatId, rootIds).then(function(rootRows) {
-                var roots = normalizeMessageRows(client, chatId, rootRows, readOutboxByChatId[chatId] || 0);
-                return roots.then(function(rootList) {
-                  if (rootList.length) {
-                    rootList.thread_mode = true;
-                    rootList.debug_summary = debugSummary;
-                    rootList.debug_summary_detail = debugSummaryDetail;
-                    return rootList;
-                  }
-                  list.debug_summary = debugSummary;
-                  list.debug_summary_detail = debugSummaryDetail;
-                  return list;
-                });
-              }).catch(function(err) {
-                debugLog('Thread fallback detection failed: ' + (err && err.message ? err.message : err));
-                list.debug_summary = debugSummary;
-                list.debug_summary_detail = debugSummaryDetail;
-                return list;
-              });
-            }
-          }
-          // Always attach diagnostic so we can see what the server returns
-          // regardless of which detection path (or none) fires.
-          if (!threadId) {
-            list.debug_summary = debugSummary;
-            list.debug_summary_detail = debugSummaryDetail;
+            return fetchForumTopics(client, chatId).then(function(topicList) {
+              if (topicList && topicList.length) {
+                topicList.thread_mode = true;
+                return topicList;
+              }
+              return list;
+            });
           }
           return list;
         });
