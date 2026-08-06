@@ -47,18 +47,26 @@
   // ---- helpers ---------------------------------------------------------
 
   function sha256Hex(input) {
-    if (!cryptoShim || !cryptoShim.createHash) {
-      throw new Error('tts: crypto shim not available (need createHash sha256)');
+    // Buffer-free: use the crypto shim's pure-JS helper. The shim's
+    // Hash.digest() needs require('buffer'), which the SDK webpack build
+    // maps to an EXTERNAL — the phone WebView has no `require` global, so
+    // the old path threw "require is not defined" on every TTS attempt.
+    if (cryptoShim && typeof cryptoShim.sha256Hex === 'function') {
+      return cryptoShim.sha256Hex(input);
     }
-    var h = cryptoShim.createHash('sha256');
-    h.update(input);
-    var digest = h.digest();  // Buffer
-    var hex = '';
-    for (var i = 0; i < digest.length; i++) {
-      var b = digest[i].toString(16);
-      hex += b.length === 1 ? '0' + b : b;
+    // Fallback: manual digest loop over Hash's bytes (no Buffer.concat).
+    if (cryptoShim && cryptoShim.createHash) {
+      var h = cryptoShim.createHash('sha256');
+      h.update(input);
+      var digest = h.digest();
+      var hex = '';
+      for (var i = 0; i < digest.length; i++) {
+        var b = digest[i].toString(16);
+        hex += b.length === 1 ? '0' + b : b;
+      }
+      return hex.toUpperCase();
     }
-    return hex.toUpperCase();
+    throw new Error('tts: crypto shim not available (need sha256Hex)');
   }
 
   function windowsTicks(nowMs) {

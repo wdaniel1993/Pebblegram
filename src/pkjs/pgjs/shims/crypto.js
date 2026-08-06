@@ -303,6 +303,22 @@ function createDecipheriv(algorithm, key, iv) {
   return new AesCtrCipher(key, iv);
 }
 
+// sha256Hex(input) -> uppercase hex string.
+// BUFFER-FREE: the shim's Hash.digest() uses require('buffer'), and the
+// SDK webpack config maps `buffer` to an EXTERNAL — in the phone WebView
+// there is no `require` global, so ANY runtime path through Hash.digest()
+// throws "require is not defined" (seen live: TTS "Speak failed: require
+// is not defined"). js-sha256's .array() is pure JS — use it directly.
+function sha256Hex(input) {
+  var bytes = sha256.array(String(input));
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var b = bytes[i].toString(16);
+    hex += b.length === 1 ? '0' + b : b;
+  }
+  return hex.toUpperCase();
+}
+
 module.exports = {
   createHash: createHash,
   createHmac: createHmac,
@@ -310,5 +326,6 @@ module.exports = {
   createDecipheriv: createDecipheriv,
   pbkdf2Sync: pbkdf2Sync,
   randomBytes: randomBytes,
-  randomFillSync: randomFillSync
+  randomFillSync: randomFillSync,
+  sha256Hex: sha256Hex
 };
