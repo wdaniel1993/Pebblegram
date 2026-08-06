@@ -2633,7 +2633,14 @@ static void render_messages(void) {
   }
   recalc_message_layout();
   if (!has_selected_message() && s_at_newest && s_message_count > 0) {
-    s_selected_message = s_message_count;
+    if (s_thread_mode) {
+      // Thread list: select the last (newest) thread row, NOT the compose
+      // bubble. SELECT on a row opens the thread; the compose bubble is
+      // only reachable by scrolling down past the last row.
+      s_selected_message = s_message_count - 1;
+    } else {
+      s_selected_message = s_message_count;
+    }
     set_chat_scroll_offset(s_chat_content_height, false);
     return;
   }
@@ -4352,7 +4359,14 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (preserved_index >= 0) {
       s_selected_message = preserved_index;
     } else if (!s_user_scrolled_messages && !staged_load) {
-      s_selected_message = s_at_newest ? s_message_count : (s_message_count > 0 ? s_message_count - 1 : -1);
+      if (s_at_newest) {
+        // Thread list: select the last thread row, not the compose bubble.
+        // Flat chat: select the compose bubble (s_message_count) for the
+        // "send at bottom" UX.
+        s_selected_message = s_thread_mode ? (s_message_count > 0 ? s_message_count - 1 : -1) : s_message_count;
+      } else {
+        s_selected_message = s_message_count > 0 ? s_message_count - 1 : -1;
+      }
     } else if (s_message_count > 0 && s_selected_message >= s_message_count) {
       s_selected_message = s_message_count - 1;
     } else if (s_message_count <= 0) {
