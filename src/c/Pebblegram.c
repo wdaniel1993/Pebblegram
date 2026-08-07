@@ -103,6 +103,13 @@
 #define TOUCH_KEYBOARD_INPUT_H 30
 #define TOUCH_KEYBOARD_ROW_H 21
 #define TOUCH_KEYBOARD_ROWS 4
+// Touch fling scrolling (emery/gabbro have a real touch screen; the SDK
+// stubs touch_service_* on basalt/diorite, so this is gated by the same
+// availability check as the keyboard).
+#define TOUCH_FLING_TICK_MS 16
+#define TOUCH_FLING_FRICTION_PCT 85   // velocity retained per tick
+#define TOUCH_FLING_MIN_VELOCITY 120  // px/s below which the glide stops
+#define TOUCH_DRAG_SLOP 8             // px of finger movement before a drag counts
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 #define TOUCH_KEYBOARD_AVAILABLE 1
 #else
@@ -367,6 +374,16 @@ static bool s_pending_send_as_reply;
 static bool s_touch_keyboard_open;
 static bool s_touch_keyboard_symbols;
 static bool s_touch_keyboard_shift;
+#if TOUCH_KEYBOARD_AVAILABLE
+// Touch fling scrolling state: drag tracking + glide animation.
+static bool s_touch_drag_active;
+static int s_touch_drag_start_y;
+static int s_touch_drag_start_offset;
+static int s_touch_drag_last_y;
+static uint32_t s_touch_drag_last_t_ms;
+static int s_touch_fling_velocity;   // px/s (positive = scroll down)
+static AppTimer *s_touch_fling_timer;
+#endif
 static char s_touch_keyboard_sent_text[TOUCH_KEYBOARD_MAX_TEXT];
 static char s_current_chat_id[MAX_ID];
 static char s_current_chat_title[48];
@@ -470,6 +487,9 @@ static const char *default_status_text(void);
 static void backlight_flash(uint32_t rgb888, uint32_t hold_ms);
 static void backlight_tint(uint32_t rgb888);
 static void backlight_restore(void);
+#if TOUCH_KEYBOARD_AVAILABLE
+static void touch_cancel_fling(void);
+#endif
 static bool send_command_with_status(const char *command, const char *chat_id, const char *text,
                                      const char *reply_to, const char *message_id, bool show_failures);
 static void show_loading_text(const char *message, bool is_error);
@@ -3570,6 +3590,10 @@ static void destroy_chat_view(void) {
   // reset_voice_transfer_state() also hard-stops the OS ring via
   // speaker_stop() when the stream is open (no-op on speakerless targets).
   cancel_active_voice();
+#if TOUCH_KEYBOARD_AVAILABLE
+  touch_cancel_fling();
+  s_touch_drag_active = false;
+#endif
 #if HAS_SPEAKER
   if (s_tts_clear_timer) {
     app_timer_cancel(s_tts_clear_timer);
@@ -3681,7 +3705,11 @@ static void animate_layer_frame_spring(PropertyAnimation **animation_ref, Layer 
   }
   Animation *animation = (Animation *)*animation_ref;
   animation_set_duration(animation, VIEW_TRANSITION_MS);
-  animation_set_curve(animation, AnimationCurveCustomFunction);
+  // CRITICAL: do NOT call animation_set_curve(animation, AnimationCurveCustomFunction)
+  // here — the firmware asserts `curve < AnimationCurveCustomFunction` in
+  // animation_set_curve (PBL_ASSERTN, animation.c) and the app crashes.
+  // animation_set_custom_curve() sets the enum internally via the safe
+  // prv_animation_set_custom_function path.
   animation_set_custom_curve(animation, spring_curve);
   animation_set_handlers(animation, (AnimationHandlers) {
     .stopped = stopped_handler ? stopped_handler : generic_layer_animation_stopped
@@ -6622,9 +6650,60 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
 }
 
 #if TOUCH_KEYBOARD_AVAILABLE
+// Monotonic-ish milliseconds for touch velocity. time_ms() returns only the
+// ms-of-second; combining with the seconds gives a uint32 ms clock whose
+// modular arithmetic keeps dt correct even across the ~49-day wrap.
+static uint32_t touch_now_ms(void) {
+  time_t secs = 0;
+  uint16_t ms = 0;
+  time_ms(&secs, &ms);
+  return (uint32_t)secs * 1000u + (uint32_t)ms;
+}
+
+static void touch_fling_timer_callback(void *data) {
+  s_touch_fling_timer = NULL;
+  if (s_view_state != ViewStateChat || !s_messages_root) {
+    return;
+  }
+  // Exponential-decay glide: each tick loses TOUCH_FLING_FRICTION_PCT of
+  // its velocity until it drops below TOUCH_FLING_MIN_VELOCITY.
+  s_touch_fling_velocity = (s_touch_fling_velocity * TOUCH_FLING_FRICTION_PCT) / 100;
+  int delta = (s_touch_fling_velocity * TOUCH_FLING_TICK_MS) / 1000;
+  if (delta == 0) {
+    return;
+  }
+  recalc_message_layout();
+  int target = clamp_scroll_offset(s_chat_scroll_offset + delta);
+  if (target == s_chat_scroll_offset) {
+    // Hit a boundary — stop the glide.
+    s_touch_fling_velocity = 0;
+    return;
+  }
+  s_chat_scroll_offset = target;
+  // User-driven scroll: no longer pinned to the newest message.
+  s_user_scrolled_messages = true;
+  if (s_messages_root) {
+    layer_mark_dirty(s_messages_root);
+  }
+  request_next_image();
+  s_touch_fling_timer = app_timer_register(TOUCH_FLING_TICK_MS, touch_fling_timer_callback, NULL);
+}
+
+static void touch_cancel_fling(void) {
+  if (s_touch_fling_timer) {
+    app_timer_cancel(s_touch_fling_timer);
+    s_touch_fling_timer = NULL;
+  }
+  s_touch_fling_velocity = 0;
+}
+
 static void touch_handler(const TouchEvent *event, void *context) {
-  if (!TOUCH_KEYBOARD_ENABLED || !event || event->type != TouchEvent_Liftoff ||
-      s_view_state != ViewStateChat || !s_messages_root) {
+  if (!TOUCH_KEYBOARD_AVAILABLE || !event || s_view_state != ViewStateChat ||
+      !s_messages_root) {
+    return;
+  }
+  // Thread list is a MenuLayer (button-driven) — leave its touches alone.
+  if (s_thread_mode) {
     return;
   }
 
@@ -6634,19 +6713,81 @@ static void touch_handler(const TouchEvent *event, void *context) {
   if (!grect_contains_point(&bounds, &point)) {
     return;
   }
+
   if (s_touch_keyboard_open) {
-    GRect keyboard_rect = touch_keyboard_rect_for_bounds(bounds);
-    char action;
-    char ch = touch_keyboard_char_at(keyboard_rect, point, &action);
-    handle_touch_keyboard_key(ch, action);
+    // Keyboard mode: taps only (Liftoff), keys handle themselves.
+    if (event->type == TouchEvent_Liftoff) {
+      GRect keyboard_rect = touch_keyboard_rect_for_bounds(bounds);
+      char action;
+      char ch = touch_keyboard_char_at(keyboard_rect, point, &action);
+      handle_touch_keyboard_key(ch, action);
+    }
     return;
   }
 
-  if (s_at_newest) {
-    GRect compose_rect = compose_rect_for_bounds(bounds);
-    if (grect_contains_point(&compose_rect, &point)) {
-      open_touch_keyboard();
-    }
+  // Fling/drag scrolling on the message list (only when no keyboard is up).
+  switch (event->type) {
+    case TouchEvent_Touchdown:
+      touch_cancel_fling();
+      s_touch_drag_active = true;
+      s_touch_drag_start_y = point.y;
+      s_touch_drag_start_offset = s_chat_scroll_offset;
+      s_touch_drag_last_y = point.y;
+      s_touch_drag_last_t_ms = touch_now_ms();
+      break;
+    case TouchEvent_PositionUpdate:
+      if (!s_touch_drag_active) {
+        break;
+      }
+      {
+        // Finger moves the list 1:1 while held (drag), tracking velocity
+        // from the last movement for the liftoff glide. NOTE: the drag
+        // formula is offset = start - (y - start_y) (finger up = scroll
+        // down), so the fling velocity carries the same sign convention:
+        // scroll velocity = -finger velocity.
+        int dy = point.y - s_touch_drag_last_y;
+        uint32_t now_ms = touch_now_ms();
+        uint32_t dt_ms = now_ms > s_touch_drag_last_t_ms ? now_ms - s_touch_drag_last_t_ms : 1;
+        s_touch_fling_velocity = -(dy * 1000) / (int)dt_ms;
+        s_touch_drag_last_y = point.y;
+        s_touch_drag_last_t_ms = now_ms;
+        if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
+          break;  // too small to be a drag yet
+        }
+        recalc_message_layout();
+        int target = clamp_scroll_offset(s_touch_drag_start_offset - (point.y - s_touch_drag_start_y));
+        if (target != s_chat_scroll_offset) {
+          s_chat_scroll_offset = target;
+          s_user_scrolled_messages = true;
+          if (s_messages_root) {
+            layer_mark_dirty(s_messages_root);
+          }
+          request_next_image();
+        }
+      }
+      break;
+    case TouchEvent_Liftoff:
+      if (!s_touch_drag_active) {
+        break;
+      }
+      s_touch_drag_active = false;
+      // A lift without meaningful movement is a TAP: open the compose
+      // keyboard if the finger came down on the compose bubble.
+      if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
+        if (s_at_newest) {
+          GRect compose_rect = compose_rect_for_bounds(bounds);
+          if (grect_contains_point(&compose_rect, &point)) {
+            open_touch_keyboard();
+          }
+        }
+        break;
+      }
+      // Real drag: launch the glide if there is enough velocity left.
+      if (abs(s_touch_fling_velocity) >= TOUCH_FLING_MIN_VELOCITY) {
+        s_touch_fling_timer = app_timer_register(TOUCH_FLING_TICK_MS,
+                                                 touch_fling_timer_callback, NULL);
+      }
+      break;
   }
 }
 #endif
@@ -6723,9 +6864,10 @@ static void init(void) {
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_open(APP_INBOX_SIZE, APP_OUTBOX_SIZE);
 #if TOUCH_KEYBOARD_AVAILABLE
-  if (TOUCH_KEYBOARD_ENABLED) {
-    touch_service_subscribe(touch_handler, NULL);
-  }
+  // Touch is used for the fling-scroll gesture on every touch-capable
+  // platform (emery/gabbro); the keyboard itself stays gated by
+  // TOUCH_KEYBOARD_ENABLED inside the handler.
+  touch_service_subscribe(touch_handler, NULL);
 #endif
 
   s_main_window = window_create();
