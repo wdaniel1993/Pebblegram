@@ -1904,12 +1904,38 @@ function refreshOpenChat() {
       return;
     }
     messages = messages || [];
+    var threadMode = !!currentThreadId;
+    // Thread-consistency guard: a thread-LIST refresh must carry the
+    // thread_list marking on every row (mirroring getMessages), and a
+    // thread-scoped refresh must carry the thread anchor on every row
+    // (mirroring getThreadMessages). Without this, a background refresh
+    // merged UNMARKED rows into the flat store — replacing the topic rows
+    // (same message ids!) — so the next cache-served open lost the thread
+    // selection screen and rendered the flat view ("sometimes it skips the
+    // thread selection screen and directly shows all messages"; restart
+    // clears the in-memory store, which is why it "works after restart").
+    var existingThreaded = !threadMode && (messageStore[chatId] || []).some(function(m) {
+      return m.thread_list;
+    });
+    if (!threadMode && (messages.thread_mode || existingThreaded)) {
+      for (var i = 0; i < messages.length; i++) {
+        messages[i].thread_list = true;
+      }
+    } else if (threadMode) {
+      for (var i = 0; i < messages.length; i++) {
+        messages[i].thread_id = currentThreadId;
+      }
+    }
     signature = messageSignature(messages);
     if (signature === currentChatSignature) {
       return;
     }
     currentChatSignature = signature;
-    var existing = messageStore[chatId] || [];
+    // Thread-scoped refreshes merge into the thread store — never the flat
+    // store, which holds the TOPIC LIST for threaded chats (thread pages
+    // live outside the chat cache, exactly like request older/newer).
+    var storeKey = threadMode ? String(chatId) + ':' + String(currentThreadId) : chatId;
+    var existing = threadMode ? (threadMessageStore[storeKey] || []) : (messageStore[chatId] || []);
     var attachedToNewest = storedWindowTouchesNewestTail(existing, messages);
     var previousById = {};
     var appended = [];
@@ -1917,7 +1943,9 @@ function refreshOpenChat() {
     existing.forEach(function(message) {
       previousById[message.id] = message;
     });
-    mergeHistoryMessages(chatId, messages);
+    if (!threadMode) {
+      mergeHistoryMessages(chatId, messages);
+    }
     if (attachedToNewest) {
       messages.forEach(function(message) {
         if (!previousById[message.id]) {
@@ -1927,10 +1955,14 @@ function refreshOpenChat() {
     }
     var merged = mergeMessages(existing, messages, attachedToNewest, attachedToNewest);
     if (merged.changed) {
-      messageStore[chatId] = merged.messages;
-      messageStoreNewest[chatId] = attachedToNewest;
-      if (attachedToNewest) {
-        savePersistentMessages(chatId, messageStore[chatId]);
+      if (threadMode) {
+        threadMessageStore[storeKey] = merged.messages;
+      } else {
+        messageStore[chatId] = merged.messages;
+        messageStoreNewest[chatId] = attachedToNewest;
+        if (attachedToNewest) {
+          savePersistentMessages(chatId, messageStore[chatId]);
+        }
       }
       merged.messages.forEach(function(message) {
         var previous = previousById[message.id];
@@ -1942,7 +1974,8 @@ function refreshOpenChat() {
         sendMessagePatches(chatId, patches);
       }
       if (appended.length) {
-        sendMessageRows(appended, chatId, 'newer', messageStore[chatId].length);
+        sendMessageRows(appended, chatId, 'newer',
+                        (threadMode ? (threadMessageStore[storeKey] || []) : messageStore[chatId] || []).length);
       }
       if (attachedToNewest) {
         markRead(chatId);
