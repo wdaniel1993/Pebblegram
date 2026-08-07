@@ -380,7 +380,6 @@ static bool s_touch_keyboard_symbols;
 static bool s_touch_keyboard_shift;
 #if TOUCH_KEYBOARD_AVAILABLE
 // Touch fling scrolling state: drag tracking + glide animation.
-static bool s_native_touch_nav;      // OS Tier-1 touch nav active (rev 108+)
 static bool s_touch_drag_active;
 static int s_touch_drag_start_y;
 static int s_touch_drag_start_offset;
@@ -6668,16 +6667,11 @@ static uint32_t touch_now_ms(void) {
   return (uint32_t)secs * 1000u + (uint32_t)ms;
 }
 
-// Native Tier-1 touch navigation shipped in firmware rev 108, which is
-// firmware version v4.32.0 (tags: v4.31.0 = rev 102, v4.32.0+ = rev 109).
-// An app built against the rev-109 SDK already cannot INSTALL on older
-// firmware (app_install_entry_is_SDK_compatible), but guard anyway: calling
-// app_touch_navigation_enable on a firmware without the export would jump
-// past the end of the OS function table and crash.
-static bool firmware_supports_touch_nav(void) {
-  const WatchInfoVersion v = watch_info_get_firmware_version();
-  return v.major > 4 || (v.major == 4 && v.minor >= 32);
-}
+// Native Tier-1 touch navigation (rev 108, firmware v4.32.0+) was tried in
+// v1.0.30 via app_touch_navigation_enable and crashed on touch with this
+// app's selection-driven chat MenuLayer. Reverted to the hand-rolled fling
+// (below). See references/sdk-generation-touch-nav.md for the migration
+// recipe + crash analysis.
 
 static void touch_fling_timer_callback(void *data) {
   s_touch_fling_timer = NULL;
@@ -6694,7 +6688,7 @@ static void touch_fling_timer_callback(void *data) {
     // Accumulate fractional rows: a tick moves only a few px, far below
     // one row height, so step a row only once the accumulator crosses it.
     if (s_view_state != ViewStateChatList || !s_chat_menu || s_chat_count <= 0 ||
-        s_chats_loading || s_native_touch_nav) {
+        s_chats_loading) {
       return;
     }
     if (abs(s_touch_fling_velocity) < TOUCH_FLING_MIN_VELOCITY) {
@@ -6756,13 +6750,8 @@ static void touch_handler(const TouchEvent *event, void *context) {
   if (!TOUCH_KEYBOARD_AVAILABLE || !event) {
     return;
   }
-  // Chat list: selection-driven MenuLayer fling/drag. With native Tier-1
-  // touch nav active (rev 108+), the OS drives MenuLayer pan/fling/tap —
-  // stay out of its way or we'd double-scroll.
+  // Chat list: selection-driven MenuLayer fling/drag.
   if (s_view_state == ViewStateChatList) {
-    if (s_native_touch_nav) {
-      return;
-    }
     if (!s_chat_menu || s_chat_count <= 0) {
       return;
     }
@@ -6961,7 +6950,6 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
-  light_enable(false);
   cancel_status_clear();
   destroy_chat_view();
   destroy_chat_avatars();
@@ -6977,14 +6965,20 @@ static void main_window_unload(Window *window) {
 }
 
 static void main_window_appear(Window *window) {
-  light_enable(false);
+  // NOTE: no light_enable(false) here. On revival firmware
+  // light_enable(false) forces LIGHT_STATE_OFF — it actively turns the
+  // backlight off, and nothing re-primes it until a button press. The app
+  // never takes light control, so it must not force it off at startup
+  // (v1.0.31: dark-screen regression fix).
 }
 
 static void init(void) {
   s_view_state = ViewStateChatList;
   s_selected_message = -1;
   s_chats_loading = true;
-  light_enable(false);
+  // NOTE: no light_enable(false) — it would force LIGHT_STATE_OFF on
+  // revival firmware and the backlight would stay dark until a button
+  // press (v1.0.31 dark-screen regression fix).
 
   app_message_register_inbox_received(inbox_received_callback);
   app_message_register_inbox_dropped(inbox_dropped_callback);
@@ -6995,17 +6989,11 @@ static void init(void) {
   // platform (emery/gabbro); the keyboard itself stays gated by
   // TOUCH_KEYBOARD_ENABLED inside the handler.
   touch_service_subscribe(touch_handler, NULL);
-  // Native Tier-1 touch navigation (rev 108, firmware >= v4.32.0): the OS
-  // drives MenuLayer pan/fling/tap itself (chat list + thread list). The
-  // raw subscription above only disables the Tier-2 button bridge, NOT the
-  // widget route — so our message-view fling keeps working while menus get
-  // native gestures. Flag so touch_handler leaves MenuLayers alone.
-#ifdef _PBL_API_EXISTS_app_touch_navigation_enable
-  if (firmware_supports_touch_nav()) {
-    app_touch_navigation_enable(true);
-    s_native_touch_nav = true;
-  }
-#endif
+  // NOTE: native Tier-1 touch nav (app_touch_navigation_enable, rev 108)
+  // was tried in v1.0.30 and CRASHED on touch with this app's chat-list
+  // MenuLayer (OS tap/pan runtime vs our selection-driven menu). Reverted
+  // to the hand-rolled fling below until the firmware interaction is
+  // understood. The SDK 4.18 stubs stay (index-verified against v4.33.0).
 #endif
 
   s_main_window = window_create();
@@ -7020,7 +7008,9 @@ static void init(void) {
 }
 
 static void deinit(void) {
-  light_enable(false);
+  // NOTE: no light_enable(false) — it would force the backlight off and
+  // nothing re-primes it (v1.0.31 dark-screen regression fix). The OS
+  // restores its own light state when the app exits.
   if (s_startup_wake_timer) {
     app_timer_cancel(s_startup_wake_timer);
     s_startup_wake_timer = NULL;
