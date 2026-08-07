@@ -83,7 +83,6 @@
 #define VOICE_EXPECTED_FORMAT 0
 #define VOICE_POLL_MS 50
 #define VOICE_DRAIN_RETRY_MS 8
-#define VOICE_STALL_MS 10000
 #define CHAT_COMMAND_WAKE_RETRY_MS 700
 #define CHAT_COMMAND_MAX_ATTEMPTS 4
 #define CHAT_FIRST_PAINT_ROWS PBL_PLATFORM_SWITCH(PBL_PLATFORM_TYPE_CURRENT, 3, 3, 3, 3, 5, 5, 5)
@@ -3169,61 +3168,6 @@ static void close_touch_keyboard(void) {
 }
 #endif
 
-static void draw_thread_rows(GContext *ctx, GRect bounds) {
-  GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
-  GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
-  GFont count_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
-  int first = 0;
-  while (first < s_message_count - 1 &&
-         s_message_y[first] + s_message_h[first] < s_chat_scroll_offset - 12) {
-    first++;
-  }
-  for (int i = first; i < s_message_count; i++) {
-    Message *message = &s_messages[i];
-    int y = s_message_y[i] - s_chat_scroll_offset;
-    if (y > bounds.size.h) {
-      break;
-    }
-    bool selected = i == s_selected_message;
-    GRect row = GRect(0, y, bounds.size.w, s_message_h[i]);
-    graphics_context_set_fill_color(ctx, selected
-        ? (BW_UI ? GColorLightGray : APP_COLOR_LIGHT)
-        : (BW_UI ? GColorWhite : CHAT_BG));
-    graphics_fill_rect(ctx, row, 0, GCornerNone);
-    if (selected) {
-      graphics_context_set_stroke_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
-      graphics_draw_rect(ctx, GRect(row.origin.x + 1, row.origin.y + 1,
-                                    row.size.w - 2, row.size.h - 2));
-    }
-    char preview[MESSAGE_PREVIEW_TEXT + 8];
-    copy_cstr(preview, sizeof(preview), message->text[0] ? message->text : "Message");
-    if ((int)strlen(preview) > MESSAGE_PREVIEW_TEXT) {
-      truncate_cstr_bytes(preview, sizeof(preview), MESSAGE_PREVIEW_TEXT, " ...");
-    }
-    int count_w = message->thread_replies > 0 ? 42 : 0;
-    int text_w = bounds.size.w - 12 - count_w;
-    graphics_context_set_text_color(ctx, BW_UI ? GColorBlack :
-                                    (message->outgoing ? GColorDarkGray : APP_COLOR));
-    graphics_draw_text(ctx, message->sender[0] ? message->sender :
-                       (message->outgoing ? "You" : "Bot"), sender_font,
-                       GRect(6, y + 2, text_w, 16), GTextOverflowModeTrailingEllipsis,
-                       GTextAlignmentLeft, NULL);
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, preview, text_font,
-                       GRect(6, y + 17, text_w, 18), GTextOverflowModeTrailingEllipsis,
-                       GTextAlignmentLeft, NULL);
-    if (message->thread_replies > 0) {
-      char count_text[10];
-      snprintf(count_text, sizeof(count_text), "» %d", message->thread_replies);
-      graphics_context_set_text_color(ctx, BW_UI ? GColorBlack : APP_COLOR);
-      graphics_draw_text(ctx, count_text, count_font,
-                         GRect(bounds.size.w - count_w - 2, y + (s_message_h[i] - 16) / 2,
-                               count_w, 16), GTextOverflowModeTrailingEllipsis,
-                         GTextAlignmentRight, NULL);
-    }
-  }
-}
-
 static void draw_compose_bubble(GContext *ctx, GRect bounds) {
   GRect compose_rect = compose_rect_for_bounds(bounds);
   int compose_y = compose_rect.origin.y;
@@ -3387,16 +3331,12 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
   }
 
   recalc_message_layout();
+  // Thread list rendering lives in the s_thread_menu MenuLayer; when thread
+  // mode is active this layer is hidden and never reaches the bubble renderer
+  // below. (If a stale state ever leaves both visible, guard here.)
   if (s_thread_mode) {
-    // Threaded bot chat: render the thread list (roots with reply counts)
-    // instead of bubbles. The compose bubble below doubles as the "New chat"
-    // composer: sending from the thread list creates a new topic.
-    draw_thread_rows(ctx, bounds);
-    draw_compose_bubble(ctx, bounds);
     return;
   }
-  // Diagnostic: flat mode state (TEMP until thread interaction verified).
-  // (The visible copy is drawn at the END of this function, after bubbles.)
   GFont text_font = fonts_get_system_font(FONT_KEY_GOTHIC_18);
   GFont sender_font = fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD);
   GFont reaction_font = fonts_get_system_font(FONT_KEY_GOTHIC_14);
@@ -3578,6 +3518,12 @@ static void messages_root_update_proc(Layer *layer, GContext *ctx) {
 }
 
 static void destroy_chat_view(void) {
+  // Teardown must stop any in-flight voice/TTS playback: the messages layer
+  // (which carries the pill) is destroyed, so leaving/switching chats with
+  // audio playing would leave the speaker running with no UI to stop it.
+  // reset_voice_transfer_state() also hard-stops the OS ring via
+  // speaker_stop() when the stream is open (no-op on speakerless targets).
+  cancel_active_voice();
 #if HAS_SPEAKER
   if (s_tts_clear_timer) {
     app_timer_cancel(s_tts_clear_timer);
@@ -5454,8 +5400,10 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     write_voice_chunk(data->value->data, data_len);
     s_voice_expected_seq = expected + data_len;
     s_voice_received += data_len;
-    // Live progress: redraw the TTS status pill as chunks land. Throttle
-    // to every 4th chunk (50ms each) so we don't redraw at 20fps.
+    // Live progress: redraw the TTS status pill as chunks land. With 2048B
+    // chunks at 8kHz 8-bit (256ms each) this fires on every chunk — ~4
+    // redraws/sec, well under the animation budget. The mask keeps older
+    // chunk sizes from over-redrawing if framing ever changes.
 #if HAS_SPEAKER
     if (s_tts_state == TTS_STATE_PLAYING && (s_voice_received & 0x7FF) < 800) {
       if (s_messages_root) {
@@ -6548,6 +6496,15 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
       s_thread_mode = false;
       request_messages(s_current_chat_id);
       return;
+    }
+    // Leaving the chat view must stop any in-flight voice/TTS playback —
+    // the audio belongs to this chat's context and the TTS pill is about
+    // to be destroyed with the messages layer. Without this, a long voice
+    // note keeps playing into the chat list with no way to stop it.
+    if (s_voice_active || s_voice_playing || s_voice_stream_open) {
+      send_command("cancel_voice", s_current_chat_id, NULL, NULL,
+                   has_selected_message() ? s_messages[s_selected_message].id : NULL);
+      cancel_active_voice();
     }
     s_thread_mode = false;
     cancel_message_timeout();

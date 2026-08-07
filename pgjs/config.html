@@ -102,7 +102,7 @@
     <button id="addReply" class="inline" type="button">Add a canned message</button>
   </section>
 
-  <section>
+  <section id="ttsSection">
     <h2>Message voice (TTS)</h2>
     <label for="ttsVoice">Voice for "Speak Message"</label>
     <select id="ttsVoice">
@@ -159,10 +159,17 @@
   var cannedReplies = document.getElementById('cannedReplies');
   var addReply = document.getElementById('addReply');
   var ttsVoice = document.getElementById('ttsVoice');
+  var ttsSection = document.getElementById('ttsSection');
   var status = document.getElementById('status');
   var staleNotice = document.getElementById('staleNotice');
   var resetSession = false;
   var maxReplies = 10;
+
+  // No physical speaker (basalt/diorite/gabbro/chalk): the whole TTS section
+  // is irrelevant — hide it so the page only shows what the watch can use.
+  if (query.hasSpeaker !== '1' && ttsSection) {
+    ttsSection.hidden = true;
+  }
 
   apiId.value = query.apiId || '';
   if (query.hasApiHash === '1') {

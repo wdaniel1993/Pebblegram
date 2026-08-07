@@ -20,7 +20,7 @@ function create(options) {
   auth.setStatusHandler(options.status);
 
   return {
-    settingsPageUrl: function(baseUrl) {
+    settingsPageUrl: function(baseUrl, hasSpeakerFlag) {
       var state = auth.authState();
       return baseUrl +
         '?mode=pgjs' +
@@ -31,7 +31,8 @@ function create(options) {
         '&authStage=' + encodeURIComponent(state.authStage || '') +
         '&hasCodeRequest=' + encodeURIComponent(state.hasCodeRequest ? '1' : '0') +
         '&cannedReplies=' + encodeURIComponent(options.cannedReplies()) +
-        '&ttsVoice=' + encodeURIComponent(options.ttsVoice ? options.ttsVoice() : '');
+        '&ttsVoice=' + encodeURIComponent(options.ttsVoice ? options.ttsVoice() : '') +
+        '&hasSpeaker=' + encodeURIComponent(hasSpeakerFlag ? '1' : '0');
     },
     applySettings: function(data) {
       if (data && data.mode === 'pgjs') {

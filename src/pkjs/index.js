@@ -117,7 +117,18 @@ function cannedReplies() {
 }
 
 function settingsPageUrl() {
-  return activePgjs().settingsPageUrl(TELEGRAM_SETTINGS_PAGE_URL);
+  return activePgjs().settingsPageUrl(TELEGRAM_SETTINGS_PAGE_URL, hasSpeaker());
+}
+
+// Only emery (Time 2) and flint (Pebble 2 Duo) have a physical speaker;
+// the settings page hides the TTS voice picker on every other platform.
+function hasSpeaker() {
+  try {
+    var info = Pebble.getActiveWatchInfo ? Pebble.getActiveWatchInfo() : null;
+    return !!(info && (info.platform === 'emery' || info.platform === 'flint'));
+  } catch (e) {
+    return false;
+  }
 }
 
 function activePgjs() {
