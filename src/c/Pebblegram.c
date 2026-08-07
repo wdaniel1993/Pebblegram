@@ -110,6 +110,10 @@
 #define TOUCH_FLING_FRICTION_PCT 85   // velocity retained per tick
 #define TOUCH_FLING_MIN_VELOCITY 120  // px/s below which the glide stops
 #define TOUCH_DRAG_SLOP 8             // px of finger movement before a drag counts
+// Chat list is selection-driven (MenuLayer, MenuRowAlignCenter): touch drag
+// maps finger dy to row deltas, so fling math works in rows. Row height must
+// match chat_menu_get_cell_height_callback (ROUND_UI ? 42 : 46).
+#define CHAT_LIST_ROW_H (ROUND_UI ? 42 : 46)
 #ifdef _PBL_API_EXISTS_touch_service_subscribe
 #define TOUCH_KEYBOARD_AVAILABLE 1
 #else
@@ -379,9 +383,12 @@ static bool s_touch_keyboard_shift;
 static bool s_touch_drag_active;
 static int s_touch_drag_start_y;
 static int s_touch_drag_start_offset;
+static int s_touch_drag_start_row;   // chat list: row where the drag began
 static int s_touch_drag_last_y;
 static uint32_t s_touch_drag_last_t_ms;
 static int s_touch_fling_velocity;   // px/s (positive = scroll down)
+static int s_touch_fling_accum_px;   // chat-list glide: fractional row accumulator
+static bool s_touch_fling_in_chat_list;  // glide target: chat list rows vs messages
 static AppTimer *s_touch_fling_timer;
 #endif
 static char s_touch_keyboard_sent_text[TOUCH_KEYBOARD_MAX_TEXT];
@@ -6662,14 +6669,48 @@ static uint32_t touch_now_ms(void) {
 
 static void touch_fling_timer_callback(void *data) {
   s_touch_fling_timer = NULL;
-  if (s_view_state != ViewStateChat || !s_messages_root) {
-    return;
-  }
   // Exponential-decay glide: each tick loses TOUCH_FLING_FRICTION_PCT of
   // its velocity until it drops below TOUCH_FLING_MIN_VELOCITY.
   s_touch_fling_velocity = (s_touch_fling_velocity * TOUCH_FLING_FRICTION_PCT) / 100;
   int delta = (s_touch_fling_velocity * TOUCH_FLING_TICK_MS) / 1000;
   if (delta == 0) {
+    return;
+  }
+  if (s_touch_fling_in_chat_list) {
+    // Chat list: glide continues stepping the selected row. The list is
+    // selection-driven (MenuRowAlignCenter), so rows == scroll position.
+    // Accumulate fractional rows: a tick moves only a few px, far below
+    // one row height, so step a row only once the accumulator crosses it.
+    if (s_view_state != ViewStateChatList || !s_chat_menu || s_chat_count <= 0 ||
+        s_chats_loading) {
+      return;
+    }
+    if (abs(s_touch_fling_velocity) < TOUCH_FLING_MIN_VELOCITY) {
+      s_touch_fling_velocity = 0;
+      return;
+    }
+    s_touch_fling_accum_px += delta;
+    int row_delta = s_touch_fling_accum_px / CHAT_LIST_ROW_H;
+    s_touch_fling_accum_px %= CHAT_LIST_ROW_H;
+    if (row_delta == 0) {
+      // Not enough distance yet — keep gliding.
+      s_touch_fling_timer = app_timer_register(TOUCH_FLING_TICK_MS, touch_fling_timer_callback, NULL);
+      return;
+    }
+    int row = s_selected_chat + row_delta;
+    if (row >= s_chat_count) {
+      row = s_chat_count - 1;
+      if (row == s_selected_chat) {
+        // Hit the end — stop the glide.
+        s_touch_fling_velocity = 0;
+        return;
+      }
+    }
+    select_chat_row(row, false);
+    s_touch_fling_timer = app_timer_register(TOUCH_FLING_TICK_MS, touch_fling_timer_callback, NULL);
+    return;
+  }
+  if (s_view_state != ViewStateChat || !s_messages_root) {
     return;
   }
   recalc_message_layout();
@@ -6695,11 +6736,80 @@ static void touch_cancel_fling(void) {
     s_touch_fling_timer = NULL;
   }
   s_touch_fling_velocity = 0;
+  s_touch_fling_accum_px = 0;
+  s_touch_fling_in_chat_list = false;
 }
 
 static void touch_handler(const TouchEvent *event, void *context) {
-  if (!TOUCH_KEYBOARD_AVAILABLE || !event || s_view_state != ViewStateChat ||
-      !s_messages_root) {
+  if (!TOUCH_KEYBOARD_AVAILABLE || !event) {
+    return;
+  }
+  // Chat list: selection-driven MenuLayer fling/drag.
+  if (s_view_state == ViewStateChatList) {
+    if (!s_chat_menu || s_chat_count <= 0) {
+      return;
+    }
+    Layer *menu_layer = menu_layer_get_layer(s_chat_menu);
+    GRect bounds = layer_get_bounds(menu_layer);
+    GRect frame = layer_get_frame(menu_layer);
+    GPoint point = GPoint(event->x - frame.origin.x, event->y - frame.origin.y);
+    if (!grect_contains_point(&bounds, &point)) {
+      return;
+    }
+    switch (event->type) {
+      case TouchEvent_Touchdown:
+        touch_cancel_fling();
+        s_touch_drag_active = true;
+        s_touch_drag_start_y = point.y;
+        s_touch_drag_start_row = s_selected_chat;
+        s_touch_drag_last_y = point.y;
+        s_touch_drag_last_t_ms = touch_now_ms();
+        break;
+      case TouchEvent_PositionUpdate:
+        if (!s_touch_drag_active) {
+          break;
+        }
+        {
+          int dy = point.y - s_touch_drag_last_y;
+          uint32_t now_ms = touch_now_ms();
+          uint32_t dt_ms = now_ms > s_touch_drag_last_t_ms ? now_ms - s_touch_drag_last_t_ms : 1;
+          s_touch_fling_velocity = -(dy * 1000) / (int)dt_ms;
+          s_touch_drag_last_y = point.y;
+          s_touch_drag_last_t_ms = now_ms;
+          if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
+            break;  // too small to be a drag yet
+          }
+          // Finger up (negative dy) = scroll down = higher row index.
+          int row = s_touch_drag_start_row - (point.y - s_touch_drag_start_y) / CHAT_LIST_ROW_H;
+          if (row < 0) {
+            row = 0;
+          }
+          if (row >= s_chat_count) {
+            row = s_chat_count - 1;
+          }
+          if (row != s_selected_chat) {
+            select_chat_row(row, false);
+          }
+        }
+        break;
+      case TouchEvent_Liftoff:
+        if (!s_touch_drag_active) {
+          break;
+        }
+        s_touch_drag_active = false;
+        if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
+          break;  // tap: leave selection alone (buttons open chats)
+        }
+        if (abs(s_touch_fling_velocity) >= TOUCH_FLING_MIN_VELOCITY) {
+          s_touch_fling_in_chat_list = true;
+          s_touch_fling_timer = app_timer_register(TOUCH_FLING_TICK_MS,
+                                                   touch_fling_timer_callback, NULL);
+        }
+        break;
+    }
+    return;
+  }
+  if (s_view_state != ViewStateChat || !s_messages_root) {
     return;
   }
   // Thread list is a MenuLayer (button-driven) — leave its touches alone.
