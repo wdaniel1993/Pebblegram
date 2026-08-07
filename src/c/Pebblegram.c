@@ -467,6 +467,9 @@ static void schedule_message_send_retry(void);
 static void show_status(const char *message);
 static void status_clear_timer_callback(void *data);
 static const char *default_status_text(void);
+static void backlight_flash(uint32_t rgb888, uint32_t hold_ms);
+static void backlight_tint(uint32_t rgb888);
+static void backlight_restore(void);
 static bool send_command_with_status(const char *command, const char *chat_id, const char *text,
                                      const char *reply_to, const char *message_id, bool show_failures);
 static void show_loading_text(const char *message, bool is_error);
@@ -1213,6 +1216,8 @@ static void cancel_active_voice(void) {
     speaker_stop();
   }
   reset_voice_transfer_state();
+  // Playback aborted (Stop / error / leaving the chat) — drop the tint.
+  backlight_restore();
   // TTS: cancelled/stopped — clear the status pill (keeps error detail if
   // the cancel came from a failure path).
 #if HAS_SPEAKER
@@ -1300,6 +1305,8 @@ static void voice_poll_timer_callback(void *data) {
       }
     }
     cancel_voice_poll_timer();
+    // Playback finished — restore the backlight tint.
+    backlight_restore();
     // TTS: playback finished — clear the status pill.
 #if HAS_SPEAKER
     if (s_tts_state == TTS_STATE_PLAYING) {
@@ -1842,6 +1849,45 @@ static void show_loading_text(const char *message, bool is_error) {
   if (s_chat_menu) {
     menu_layer_reload_data(s_chat_menu);
   }
+}
+
+// ---- RGB backlight feedback (revival: emery/gabbro/flint have color LEDs;
+// basalt/diorite stub these to (0) so calls are safe on every platform) ----
+// Telegram blue for incoming, green for sent, red for errors, warm amber
+// while voice/TTS is playing. The OS auto-resets the tint on app exit or
+// system preempt; we restore manually when the event ends.
+static AppTimer *s_backlight_timer = NULL;
+
+static void backlight_restore_timer_callback(void *data) {
+  s_backlight_timer = NULL;
+  light_set_system_color();
+}
+
+// Flash a tint for hold_ms, then restore the user's default backlight color.
+static void backlight_flash(uint32_t rgb888, uint32_t hold_ms) {
+  light_set_color_rgb888(rgb888);
+  if (s_backlight_timer) {
+    app_timer_cancel(s_backlight_timer);
+  }
+  s_backlight_timer = app_timer_register(hold_ms, backlight_restore_timer_callback, NULL);
+}
+
+// Persistent tint (e.g. warm while audio plays). Call backlight_restore()
+// when the activity ends.
+static void backlight_tint(uint32_t rgb888) {
+  if (s_backlight_timer) {
+    app_timer_cancel(s_backlight_timer);
+    s_backlight_timer = NULL;
+  }
+  light_set_color_rgb888(rgb888);
+}
+
+static void backlight_restore(void) {
+  if (s_backlight_timer) {
+    app_timer_cancel(s_backlight_timer);
+    s_backlight_timer = NULL;
+  }
+  light_set_system_color();
 }
 
 static int progress_percent(int current, int total) {
@@ -3604,6 +3650,45 @@ static void animate_layer_frame(PropertyAnimation **animation_ref, Layer *layer,
   animation_schedule(animation);
 }
 
+// Back-ease-out with ~8.7% overshoot — the classic "spring settle" curve
+// (c1 = 1.70158). Returns values ABOVE ANIMATION_NORMALIZED_MAX during the
+// overshoot phase; the interpolator supports progress outside [0, max] for
+// exactly this purpose (verified in firmware animation.c + interpolate docs).
+static AnimationProgress spring_curve(AnimationProgress linear) {
+  const int32_t max = ANIMATION_NORMALIZED_MAX;
+  const int32_t c1 = 111516;   // 1.70158 * 65535
+  const int32_t c3 = c1 + max; // (1.70158 + 1) * 65535
+  const int32_t t = linear;
+  const int32_t u = t - max;   // (t - 1) in the 0..max scale
+  const int64_t u2 = ((int64_t)u * u) / max;
+  const int64_t u3 = (u2 * u) / max;
+  int64_t result = max + (c3 * u3) / max + (c1 * u2) / max;
+  if (result < 0) {
+    result = 0;
+  }
+  return (AnimationProgress)result;
+}
+
+static void animate_layer_frame_spring(PropertyAnimation **animation_ref, Layer *layer,
+                                       GRect from_frame, GRect to_frame,
+                                       AnimationStoppedHandler stopped_handler) {
+  clear_layer_animation(animation_ref);
+  layer_set_frame(layer, from_frame);
+  *animation_ref = property_animation_create_layer_frame(layer, &from_frame, &to_frame);
+  if (!*animation_ref) {
+    layer_set_frame(layer, to_frame);
+    return;
+  }
+  Animation *animation = (Animation *)*animation_ref;
+  animation_set_duration(animation, VIEW_TRANSITION_MS);
+  animation_set_curve(animation, AnimationCurveCustomFunction);
+  animation_set_custom_curve(animation, spring_curve);
+  animation_set_handlers(animation, (AnimationHandlers) {
+    .stopped = stopped_handler ? stopped_handler : generic_layer_animation_stopped
+  }, animation_ref);
+  animation_schedule(animation);
+}
+
 static void show_chat_view(void) {
   s_chat_view_pending = false;
   s_view_state = ViewStateChat;
@@ -3645,7 +3730,7 @@ static void show_chat_view(void) {
     s_chat_scroll_offset = clamp_scroll_offset(s_chat_content_height);
   }
   render_messages();
-  animate_layer_frame(&s_messages_animation, s_messages_root, messages_from, messages_to, NULL);
+  animate_layer_frame_spring(&s_messages_animation, s_messages_root, messages_from, messages_to, NULL);
   if (s_chat_menu) {
     Layer *menu_layer = menu_layer_get_layer(s_chat_menu);
     GRect menu_from = layer_get_frame(menu_layer);
@@ -3687,7 +3772,7 @@ static void render_chat_list_with_transition(void) {
     layer_set_hidden(menu_layer, false);
     menu_layer_reload_data(s_chat_menu);
     select_chat_row(row, false);
-    animate_layer_frame(&s_chat_menu_animation, menu_layer, menu_from, menu_to, NULL);
+    animate_layer_frame_spring(&s_chat_menu_animation, menu_layer, menu_from, menu_to, NULL);
   }
   if (s_messages_root) {
     GRect messages_from = layer_get_frame(s_messages_root);
@@ -4576,6 +4661,12 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     if (replaces_pending) {
       s_touch_keyboard_sent_text[0] = '\0';
     }
+    // Live new message: flash the RGB backlight Telegram blue. Initial
+    // history loads never reach this handler (they use the "message" batch
+    // path), so this fires only for messages arriving while the chat is open.
+    if (!tuple_int(iter, MESSAGE_KEY_IsOutgoing, 0)) {
+      backlight_flash(0x0088CC, 600);  // blue: incoming
+    }
     s_expected_rows = count;
     if (!s_message_stream_silent && follow_bottom) {
       scroll_to_bottom(false);
@@ -5344,6 +5435,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     // status pill to playback mode (duration + progress). Voice notes get
     // the same pill treatment so both paths show live progress.
     tts_set_state(TTS_STATE_PLAYING, NULL, token);
+    // Warm amber backlight while audio is playing (voice notes + TTS).
+    backlight_tint(0xFFB366);
     schedule_voice_poll();
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
@@ -5450,6 +5543,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     // TTS: playback transfer complete. Keep the pill in PLAYING state until
     // the OS reports idle (voice_poll flips it), then it clears — so the
     // progress bar reaches 100% before disappearing.
+    // (Backlight tint is restored in the poll idle branch, not here, so the
+    // warm amber glow lasts through the OS ring drain too.)
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -5491,6 +5586,8 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
     (void)detail;
 #endif
     cancel_active_voice();
+    // Error path — red flash for the failure (voice note or TTS).
+    backlight_flash(0xCC3333, 800);
     if (s_messages_root) {
       layer_mark_dirty(s_messages_root);
     }
@@ -5503,6 +5600,7 @@ static void inbox_received_callback(DictionaryIterator *iter, void *context) {
 
   if (strcmp(type, "sent") == 0) {
     show_status("Sent");
+    backlight_flash(0x00AA55, 500);  // green: message delivered
     return;
   }
 
