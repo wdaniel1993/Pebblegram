@@ -110,6 +110,11 @@
 #define TOUCH_FLING_FRICTION_PCT 85   // velocity retained per tick
 #define TOUCH_FLING_MIN_VELOCITY 120  // px/s below which the glide stops
 #define TOUCH_DRAG_SLOP 8             // px of finger movement before a drag counts
+// Swipe-left = BACK (mirrors the physical BACK button). Screen is 200px wide;
+// 60px of leftward travel with < 32px vertical drift reads as an intentional
+// horizontal swipe, not a scroll or tap.
+#define SWIPE_BACK_DISTANCE 60
+#define SWIPE_BACK_MAX_DY 32
 // Chat list is selection-driven (MenuLayer, MenuRowAlignCenter): touch drag
 // maps finger dy to row deltas, so fling math works in rows. Row height must
 // match chat_menu_get_cell_height_callback (ROUND_UI ? 42 : 46).
@@ -382,6 +387,8 @@ static bool s_touch_keyboard_shift;
 // Touch fling scrolling state: drag tracking + glide animation.
 static bool s_touch_drag_active;
 static int s_touch_drag_start_y;
+static int s_swipe_start_x;        // gesture start, screen coords (swipe-back)
+static int s_swipe_start_y;
 static int s_touch_drag_start_offset;
 static int s_touch_drag_start_row;   // chat list: row where the drag began
 static int s_touch_drag_last_y;
@@ -6402,7 +6409,10 @@ static void action_down_click_handler(ClickRecognizerRef recognizer, void *conte
   }
 }
 
-static void action_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+// BACK while the action window is on top: sub-menus step back to the main
+// action menu, the main menu closes. Shared by the physical BACK (action
+// window click config) and the swipe-left gesture.
+static void action_back_internal(void) {
   if (s_action_mode == ActionMenuFullText) {
     free_full_text_body();
     close_action_window();
@@ -6420,6 +6430,10 @@ static void action_back_click_handler(ClickRecognizerRef recognizer, void *conte
   } else {
     close_action_window();
   }
+}
+
+static void action_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  action_back_internal();
 }
 
 static void action_click_config_provider(void *context) {
@@ -6615,10 +6629,17 @@ static void main_down_click_handler(ClickRecognizerRef recognizer, void *context
   }
 }
 
-static void main_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+// Shared BACK action: physical BACK button AND swipe-left gesture both land
+// here so the two never diverge. Order matters — the topmost surface wins:
+// touch keyboard, then action menu, then chat/thread surfaces, then pop.
+static void handle_back_press(void) {
   if (s_touch_keyboard_open) {
     close_touch_keyboard();
     show_status(s_current_chat_title);
+    return;
+  }
+  if (s_native_action_menu || s_action_window) {
+    action_back_internal();
     return;
   }
   if (s_view_state == ViewStateChat) {
@@ -6654,6 +6675,10 @@ static void main_back_click_handler(ClickRecognizerRef recognizer, void *context
   } else {
     window_stack_pop(true);
   }
+}
+
+static void main_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  handle_back_press();
 }
 
 #if TOUCH_KEYBOARD_AVAILABLE
@@ -6775,6 +6800,24 @@ static int touch_row_at_point(MenuLayer *menu, int row_h, GPoint point) {
 static void touch_handler(const TouchEvent *event, void *context) {
   if (!TOUCH_KEYBOARD_AVAILABLE || !event) {
     return;
+  }
+  // Swipe-left = BACK, detected in screen coords BEFORE any surface-specific
+  // handling so it works on every surface (chat list, thread list, chat
+  // view, touch keyboard, action window). A swipe is a leftward horizontal
+  // gesture: >= SWIPE_BACK_DISTANCE px of leftward travel with less than
+  // SWIPE_BACK_MAX_DY px of vertical drift. Small/large vertical moves fall
+  // through to the existing tap/drag/fling logic below.
+  if (event->type == TouchEvent_Touchdown) {
+    s_swipe_start_x = event->x;
+    s_swipe_start_y = event->y;
+  } else if (event->type == TouchEvent_Liftoff) {
+    int dx = s_swipe_start_x - event->x;
+    int dy = abs(event->y - s_swipe_start_y);
+    if (dx >= SWIPE_BACK_DISTANCE && dy < SWIPE_BACK_MAX_DY) {
+      s_touch_drag_active = false;
+      handle_back_press();
+      return;
+    }
   }
   // Chat list: selection-driven MenuLayer fling/drag (hand-rolled; native
   // Tier-1 touch nav is NOT enabled — see the crash note above).
