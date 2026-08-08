@@ -6754,20 +6754,22 @@ static void touch_cancel_fling(void) {
 // (selection centered via MenuRowAlignCenter) AND the thread list (reload
 // pins row 0 at the top with MenuRowAlignNone — a centered-layout assumption
 // there mapped almost every tap to row 0).
-// Firmware geometry (menu_layer.c): the content sublayer's bounds.origin IS
-// the scroll offset (scroll_layer.c:342); a row at content_y renders at
-// frame_y = content_y + offset.y. So the row under a tap is
-// (point.y + offset) / row_h.
-// VERIFIED in QEMU (APP_LOG + serial capture, offset != 0):
-//   scrolled chat list offset=-46, tap point.y=177 -> row=2 (cid=1003) OK
-//   thread list offset=0, tap point.y=110 -> row=2 (open_thread id=t3) OK
+// Firmware geometry (fw/applib/ui/menu_layer.c): the ScrollLayer's content
+// sublayer bounds.origin IS the offset (scroll_layer.c); rendering uses
+// content_top_y = -offset.y and draws each row at
+// top_diff = row_content_y - content_top_y = row_content_y + offset.y, so
+// frame_y = content_y + offset.y. The row under a tap is therefore
+// (point.y - offset) / row_h. Verified against PIXELS in QEMU: scrolled
+// list (offset=-46): row 2 renders at screen 71..117, tap at screen 202
+// (visually row 4) must open Work Chat — the minus sign does; plus opened
+// Telegram News (the old bug).
 static int touch_row_at_point(MenuLayer *menu, int row_h, GPoint point) {
   int offset = 0;
   ScrollLayer *scroll = menu ? menu_layer_get_scroll_layer(menu) : NULL;
   if (scroll) {
     offset = scroll_layer_get_content_offset(scroll).y;
   }
-  return (point.y + offset) / row_h;
+  return (point.y - offset) / row_h;
 }
 
 static void touch_handler(const TouchEvent *event, void *context) {
