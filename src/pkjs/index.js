@@ -100,6 +100,56 @@ var MESSAGE_FETCH_TIMEOUT_MS = 25000;
 var appVersion = require('./version');
 var MESSAGE_CACHE_ORDER_KEY = 'pebblegram.messageCache.' + appVersion + '.order';
 var MESSAGE_CACHE_PREFIX = 'pebblegram.messageCache.' + appVersion + '.';
+// Authoritative per-chat thread-mode map, persisted separately from the row
+// cache. Row-level thread_list flags get LOST when unmarked rows are merged
+// over them (warmChatHistory, older/newer prefetch, verifyReaction) — the
+// map survives so every store-write site can re-stamp the flag.
+var THREAD_MODE_KEY = 'pebblegram.threadMode.' + appVersion + '.map';
+var threadModeChats = {};
+
+function loadThreadModeChats() {
+  try {
+    var raw = localStorage.getItem(THREAD_MODE_KEY);
+    if (raw) {
+      threadModeChats = JSON.parse(raw) || {};
+    }
+  } catch (e) {
+    threadModeChats = {};
+  }
+}
+
+function isThreadedChat(chatId) {
+  return !!threadModeChats[String(chatId || '')];
+}
+
+function setThreadedChat(chatId) {
+  var id = String(chatId || '');
+  if (!id) {
+    return;
+  }
+  threadModeChats[id] = true;
+  try {
+    localStorage.setItem(THREAD_MODE_KEY, JSON.stringify(threadModeChats));
+  } catch (e) {
+    debugLog('Thread mode map save skipped: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// Stamp thread_list=true on every row of a known-threaded chat. Call before
+// ANY write into the flat store/history store/persistent cache — the flag is
+// the only thing that makes the watch render the thread list instead of the
+// flat message view, and it must survive merges of unmarked rows.
+function markThreadRows(chatId, rows) {
+  if (!isThreadedChat(chatId) || !rows) {
+    return rows;
+  }
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i]) {
+      rows[i].thread_list = true;
+    }
+  }
+  return rows;
+}
 
 function getSetting(name, fallback) {
   var value = localStorage.getItem(name);
@@ -1433,6 +1483,14 @@ function warmChatHistory(chatId) {
   timed('warm history ' + chatId, activePgjs().messages(chatId, MESSAGE_PAGE_FETCH_ROWS)).then(function(messages) {
     delete prefetching[chatId];
     messages = messages || [];
+    if (messages.thread_mode) {
+      setThreadedChat(chatId);
+    }
+    // Stamp thread rows BEFORE merging: warmChatHistory runs at app start
+    // (prefetchTopChats) and its rows land in the persistent cache. Without
+    // the stamp, a later open of a threaded chat serves UNMARKED rows and
+    // the watch renders the flat view (threaded-mode regression).
+    markThreadRows(chatId, messages);
     mergeHistoryMessages(chatId, messages);
     if (!messageStore[chatId]) {
       messageStore[chatId] = limitMessageWindow(messages, true);
@@ -1527,6 +1585,11 @@ function sendStoredMessages(chatId) {
   if (!messages || messages.length === 0) {
     return false;
   }
+  // Cached rows may have LOST their thread_list flag (unmarked rows merged
+  // over them by warm/prefetch/verify paths). Re-stamp from the per-chat
+  // thread-mode authority so a cache-served open still shows the thread
+  // selection screen instead of the flat view.
+  markThreadRows(chatId, messages);
   currentChatSignature = messageSignature(messages);
   touchChatCache(chatId);
   markRead(chatId);
@@ -1812,7 +1875,9 @@ function getMessages(chatId) {
     messages = messages || [];
     if (messages.thread_mode) {
       // Threaded bot chat: the history IS the thread list. Mark every row so
-      // the watch switches to thread-list rendering for this chat.
+      // the watch switches to thread-list rendering for this chat, and record
+      // the chat as threaded (survives row-cache merges).
+      setThreadedChat(chatId);
       for (var i = 0; i < messages.length; i++) {
         messages[i].thread_list = true;
       }
@@ -1914,10 +1979,13 @@ function refreshOpenChat() {
     // selection screen and rendered the flat view ("sometimes it skips the
     // thread selection screen and directly shows all messages"; restart
     // clears the in-memory store, which is why it "works after restart").
-    var existingThreaded = !threadMode && (messageStore[chatId] || []).some(function(m) {
+    var existingThreaded = !threadMode && ((messageStore[chatId] || []).some(function(m) {
       return m.thread_list;
-    });
+    }) || isThreadedChat(chatId));
     if (!threadMode && (messages.thread_mode || existingThreaded)) {
+      if (messages.thread_mode) {
+        setThreadedChat(chatId);
+      }
       for (var i = 0; i < messages.length; i++) {
         messages[i].thread_list = true;
       }
@@ -1997,9 +2065,9 @@ function verifyReaction(chatId, messageId, token) {
     if (!message) {
       return false;
     }
-    mergeHistoryMessages(chatId, [message]);
+    mergeHistoryMessages(chatId, markThreadRows(chatId, [message]));
     existing = messageStore[chatId] || [];
-    merged = mergeMessages(existing, [message], false, false);
+    merged = mergeMessages(existing, markThreadRows(chatId, [message]), false, false);
     if (merged.changed) {
       messageStore[chatId] = merged.messages;
       savePersistentMessages(chatId, messageStore[chatId]);
@@ -2208,7 +2276,7 @@ function getOlderMessages(chatId, anchorId, beforeId, silent, threadId) {
       sendOlderWindow(chatId, anchorId, beforeId, silent);
       return;
     }
-    mergeHistoryMessages(chatId, older);
+    mergeHistoryMessages(chatId, markThreadRows(chatId, older));
     sendOlderWindow(chatId, anchorId, beforeId, silent);
   }).catch(function(err) {
     done('messages_done', 0, 0, silent ? 'silent' : null);
@@ -2255,7 +2323,7 @@ function getNewerMessages(chatId, anchorId, afterId, silent, threadId) {
       sendNewerWindow(chatId, anchorId, afterId, silent);
       return;
     }
-    mergeHistoryMessages(chatId, newer);
+    mergeHistoryMessages(chatId, markThreadRows(chatId, newer));
     sendNewerWindow(chatId, anchorId, afterId, silent);
   }).catch(function(err) {
     delete newerLoadPromises[key];
@@ -2281,7 +2349,7 @@ function prefetchOlderMessages(chatId, beforeId) {
     if (older.length === 0) {
       oldestComplete[chatId] = true;
     }
-    mergeHistoryMessages(chatId, older);
+    mergeHistoryMessages(chatId, markThreadRows(chatId, older));
   }).catch(function(err) {
     delete pagePrefetching[key];
     debugLog('Older prefetch failed: ' + (err && err.message ? err.message : err));
@@ -2305,7 +2373,7 @@ function prefetchNewerMessages(chatId, afterId) {
     if (newer.length === 0) {
       newestComplete[chatId] = true;
     }
-    mergeHistoryMessages(chatId, newer);
+    mergeHistoryMessages(chatId, markThreadRows(chatId, newer));
   }).catch(function(err) {
     delete pagePrefetching[key];
     debugLog('Newer prefetch failed: ' + (err && err.message ? err.message : err));
@@ -2833,6 +2901,7 @@ Pebble.addEventListener('ready', function() {
   watchReady = true;
   logLaunch('Pebble ready event');
   configureForPlatform();
+  loadThreadModeChats();
   debugLog('Pebblegram AI JS ready, backend=pgjs, canned=' + cannedReplies());
   prewarmPhoneBackend();
   getChats(false);
