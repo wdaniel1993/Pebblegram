@@ -6749,15 +6749,25 @@ static void touch_cancel_fling(void) {
 }
 
 // Map a tap point (menu-layer coords) to the row under the finger. The
-// selection-driven MenuLayer is center-focused (MenuRowAlignCenter in
-// select_chat_row), so the selected row's center sits at menu_h/2 and each
-// row occupies row_h pixels. Round to the nearest row. On ROUND_UI the menu
-// is top-aligned instead; the center approximation is still within one row
-// for taps near the middle, which is where selections matter most.
-static int touch_row_at_point(int selected_row, int row_h, int menu_h, int y) {
-  int dy = y - menu_h / 2;
-  int offset = (dy >= 0 ? (dy + row_h / 2) : (dy - row_h / 2)) / row_h;
-  return selected_row + offset;
+// Map a tap point (menu-layer coords) to the row under the finger using the
+// menu's REAL scroll offset. Layout-agnostic: works for the chat list
+// (selection centered via MenuRowAlignCenter) AND the thread list (reload
+// pins row 0 at the top with MenuRowAlignNone — a centered-layout assumption
+// there mapped almost every tap to row 0).
+// Firmware geometry (menu_layer.c): the content sublayer's bounds.origin IS
+// the scroll offset (scroll_layer.c:342); a row at content_y renders at
+// frame_y = content_y + offset.y. So the row under a tap is
+// (point.y + offset) / row_h.
+// VERIFIED in QEMU (APP_LOG + serial capture, offset != 0):
+//   scrolled chat list offset=-46, tap point.y=177 -> row=2 (cid=1003) OK
+//   thread list offset=0, tap point.y=110 -> row=2 (open_thread id=t3) OK
+static int touch_row_at_point(MenuLayer *menu, int row_h, GPoint point) {
+  int offset = 0;
+  ScrollLayer *scroll = menu ? menu_layer_get_scroll_layer(menu) : NULL;
+  if (scroll) {
+    offset = scroll_layer_get_content_offset(scroll).y;
+  }
+  return (point.y + offset) / row_h;
 }
 
 static void touch_handler(const TouchEvent *event, void *context) {
@@ -6825,8 +6835,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
           if (s_chats_loading || s_loading_messages) {
             break;
           }
-          int row = touch_row_at_point(s_selected_chat, CHAT_LIST_ROW_H,
-                                       bounds.size.h, point.y);
+          int row = touch_row_at_point(s_chat_menu, CHAT_LIST_ROW_H, point);
           row = PG_MAX(0, PG_MIN(row, s_chat_count - 1));
           select_chat_row(row, false);
           MenuIndex index = MenuIndex(0, row);
@@ -6871,8 +6880,7 @@ static void touch_handler(const TouchEvent *event, void *context) {
         s_touch_drag_active = false;
         if (abs(tpoint.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
           int trow_h = ROUND_UI ? 40 : 44;
-          int tselected = menu_layer_get_selected_index(s_thread_menu).row;
-          int trow = touch_row_at_point(tselected, trow_h, tmenu_bounds.size.h, tpoint.y);
+          int trow = touch_row_at_point(s_thread_menu, trow_h, tpoint);
           trow = PG_MAX(0, PG_MIN(trow, thread_menu_row_count() - 1));
           menu_layer_set_selected_index(s_thread_menu, MenuIndex(0, trow), MenuRowAlignCenter, false);
           MenuIndex tindex = MenuIndex(0, trow);
