@@ -6748,6 +6748,18 @@ static void touch_cancel_fling(void) {
   s_touch_fling_in_chat_list = false;
 }
 
+// Map a tap point (menu-layer coords) to the row under the finger. The
+// selection-driven MenuLayer is center-focused (MenuRowAlignCenter in
+// select_chat_row), so the selected row's center sits at menu_h/2 and each
+// row occupies row_h pixels. Round to the nearest row. On ROUND_UI the menu
+// is top-aligned instead; the center approximation is still within one row
+// for taps near the middle, which is where selections matter most.
+static int touch_row_at_point(int selected_row, int row_h, int menu_h, int y) {
+  int dy = y - menu_h / 2;
+  int offset = (dy >= 0 ? (dy + row_h / 2) : (dy - row_h / 2)) / row_h;
+  return selected_row + offset;
+}
+
 static void touch_handler(const TouchEvent *event, void *context) {
   if (!TOUCH_KEYBOARD_AVAILABLE || !event) {
     return;
@@ -6807,7 +6819,19 @@ static void touch_handler(const TouchEvent *event, void *context) {
         }
         s_touch_drag_active = false;
         if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
-          break;  // tap: leave selection alone (buttons open chats)
+          // Tap: select the row under the finger and open it (same as
+          // pressing SELECT). Only when not mid-load, mirroring
+          // main_select_click_handler's guards.
+          if (s_chats_loading || s_loading_messages) {
+            break;
+          }
+          int row = touch_row_at_point(s_selected_chat, CHAT_LIST_ROW_H,
+                                       bounds.size.h, point.y);
+          row = PG_MAX(0, PG_MIN(row, s_chat_count - 1));
+          select_chat_row(row, false);
+          MenuIndex index = MenuIndex(0, row);
+          chat_menu_select_callback(s_chat_menu, &index, NULL);
+          break;
         }
         if (abs(s_touch_fling_velocity) >= TOUCH_FLING_MIN_VELOCITY) {
           s_touch_fling_in_chat_list = true;
@@ -6821,8 +6845,43 @@ static void touch_handler(const TouchEvent *event, void *context) {
   if (s_view_state != ViewStateChat || !s_messages_root) {
     return;
   }
-  // Thread list is a MenuLayer (button-driven) — leave its touches alone.
+  // Thread list: taps open the tapped thread (mirror SELECT). The menu is
+  // button-driven otherwise — only taps are handled here, no drag/fling.
   if (s_thread_mode) {
+    if (!s_thread_menu) {
+      return;
+    }
+    Layer *tmenu_layer = menu_layer_get_layer(s_thread_menu);
+    GRect tmenu_bounds = layer_get_bounds(tmenu_layer);
+    GRect tmenu_frame = layer_get_frame(tmenu_layer);
+    GPoint tpoint = GPoint(event->x - tmenu_frame.origin.x, event->y - tmenu_frame.origin.y);
+    if (!grect_contains_point(&tmenu_bounds, &tpoint)) {
+      return;
+    }
+    switch (event->type) {
+      case TouchEvent_Touchdown:
+        touch_cancel_fling();
+        s_touch_drag_active = true;
+        s_touch_drag_start_y = tpoint.y;
+        break;
+      case TouchEvent_Liftoff:
+        if (!s_touch_drag_active) {
+          break;
+        }
+        s_touch_drag_active = false;
+        if (abs(tpoint.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
+          int trow_h = ROUND_UI ? 40 : 44;
+          int tselected = menu_layer_get_selected_index(s_thread_menu).row;
+          int trow = touch_row_at_point(tselected, trow_h, tmenu_bounds.size.h, tpoint.y);
+          trow = PG_MAX(0, PG_MIN(trow, thread_menu_row_count() - 1));
+          menu_layer_set_selected_index(s_thread_menu, MenuIndex(0, trow), MenuRowAlignCenter, false);
+          MenuIndex tindex = MenuIndex(0, trow);
+          thread_menu_select_callback(s_thread_menu, &tindex, NULL);
+        }
+        break;
+      default:
+        break;
+    }
     return;
   }
 
@@ -6891,12 +6950,33 @@ static void touch_handler(const TouchEvent *event, void *context) {
       }
       s_touch_drag_active = false;
       // A lift without meaningful movement is a TAP: open the compose
-      // keyboard if the finger came down on the compose bubble.
+      // keyboard if the finger came down on the compose bubble; otherwise
+      // select the tapped message (mirror SELECT -> action menu).
       if (abs(point.y - s_touch_drag_start_y) < TOUCH_DRAG_SLOP) {
         if (s_at_newest) {
           GRect compose_rect = compose_rect_for_bounds(bounds);
           if (grect_contains_point(&compose_rect, &point)) {
             open_touch_keyboard();
+            break;
+          }
+        }
+        // Hit-test the message rows (s_message_y is in scroll space; the
+        // visible y is message_y - scroll_offset). Tap on a message selects
+        // it and opens the action menu, same as pressing SELECT.
+        if (s_message_count > 0 && s_messages_root) {
+          recalc_message_layout();
+          int hit = -1;
+          for (int i = 0; i < s_message_count; i++) {
+            int top = s_message_y[i] - s_chat_scroll_offset;
+            int bottom = top + s_message_h[i];
+            if (point.y >= top && point.y < bottom) {
+              hit = i;
+              break;
+            }
+          }
+          if (hit >= 0) {
+            s_selected_message = hit;
+            show_action_window(ActionMenuMain);
           }
         }
         break;
