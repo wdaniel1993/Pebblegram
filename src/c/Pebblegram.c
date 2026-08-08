@@ -6668,10 +6668,12 @@ static uint32_t touch_now_ms(void) {
 }
 
 // Native Tier-1 touch navigation (rev 108, firmware v4.32.0+) was tried in
-// v1.0.30 via app_touch_navigation_enable and crashed on touch with this
-// app's selection-driven chat MenuLayer. Reverted to the hand-rolled fling
-// (below). See references/sdk-generation-touch-nav.md for the migration
-// recipe + crash analysis.
+// v1.0.30 via app_touch_navigation_enable and CRASHED on touch with this
+// app's selection-driven chat MenuLayer (verified in QEMU v4.33.0: the app
+// task faults inside the OS touch_nav_dispatch handler -> process killed).
+// Reverted to the hand-rolled fling (below), which survives touch on both
+// the chat list and the chat view. See references/sdk-generation-touch-nav.md
+// for the migration recipe + crash analysis.
 
 static void touch_fling_timer_callback(void *data) {
   s_touch_fling_timer = NULL;
@@ -6750,7 +6752,8 @@ static void touch_handler(const TouchEvent *event, void *context) {
   if (!TOUCH_KEYBOARD_AVAILABLE || !event) {
     return;
   }
-  // Chat list: selection-driven MenuLayer fling/drag.
+  // Chat list: selection-driven MenuLayer fling/drag (hand-rolled; native
+  // Tier-1 touch nav is NOT enabled — see the crash note above).
   if (s_view_state == ViewStateChatList) {
     if (!s_chat_menu || s_chat_count <= 0) {
       return;
@@ -6991,9 +6994,10 @@ static void init(void) {
   touch_service_subscribe(touch_handler, NULL);
   // NOTE: native Tier-1 touch nav (app_touch_navigation_enable, rev 108)
   // was tried in v1.0.30 and CRASHED on touch with this app's chat-list
-  // MenuLayer (OS tap/pan runtime vs our selection-driven menu). Reverted
-  // to the hand-rolled fling below until the firmware interaction is
-  // understood. The SDK 4.18 stubs stay (index-verified against v4.33.0).
+  // MenuLayer (verified in QEMU v4.33.0: app task faults in the OS
+  // touch_nav_dispatch handler -> process killed). Reverted to the
+  // hand-rolled fling. The SDK 4.18 stubs stay (index-verified against
+  // v4.33.0).
 #endif
 
   s_main_window = window_create();
