@@ -6952,7 +6952,6 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
-  light_enable(false);
   cancel_status_clear();
   destroy_chat_view();
   destroy_chat_avatars();
@@ -6968,14 +6967,19 @@ static void main_window_unload(Window *window) {
 }
 
 static void main_window_appear(Window *window) {
-  light_enable(false);
+  // NOTE: no light_enable(false) here. On revival firmware
+  // light_enable(false) forces LIGHT_STATE_OFF — it actively turns the
+  // backlight off, and nothing re-primes it until a button press. The app
+  // never takes light control, so it must not force it off at startup.
 }
 
 static void init(void) {
   s_view_state = ViewStateChatList;
   s_selected_message = -1;
   s_chats_loading = true;
-  light_enable(false);
+  // NOTE: no light_enable(false) — it would force LIGHT_STATE_OFF on
+  // revival firmware and the backlight would stay dark until a button
+  // press (v1.0.31 dark-screen regression fix).
 
   app_message_register_inbox_received(inbox_received_callback);
   app_message_register_inbox_dropped(inbox_dropped_callback);
@@ -7006,7 +7010,9 @@ static void init(void) {
 }
 
 static void deinit(void) {
-  light_enable(false);
+  // NOTE: no light_enable(false) — it would force the backlight off and
+  // nothing re-primes it (v1.0.31 dark-screen regression fix). The OS
+  // restores its own light state when the app exits.
   if (s_startup_wake_timer) {
     app_timer_cancel(s_startup_wake_timer);
     s_startup_wake_timer = NULL;
